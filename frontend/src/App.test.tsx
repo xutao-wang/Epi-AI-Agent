@@ -1101,6 +1101,163 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "Analyze diabetes outcomes" })).toBeInTheDocument();
   });
 
+  it("refreshes an untitled conversation until its generated title arrives", async () => {
+    vi.useFakeTimers();
+    let historyRequests = 0;
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "http://api.test/api/runtime/options") {
+        return Promise.resolve(runtimeOptionsResponse());
+      }
+      if (url === "http://api.test/api/conversations") {
+        historyRequests += 1;
+        const title = historyRequests >= 4
+          ? "Concurrent response check"
+          : "Untitled conversation";
+        return Promise.resolve(jsonResponse({
+          items: historyRequests === 1 ? [] : [{
+            thread_id: "thread-1",
+            title,
+            title_source: "automatic",
+            model_name: "gpt-5.4",
+            created_at: "2026-08-05T00:00:00+00:00",
+            updated_at: "2026-08-05T00:00:00+00:00",
+          }],
+        }));
+      }
+      if (url === "http://api.test/api/threads") {
+        return Promise.resolve(createThreadResponse());
+      }
+      if (url === "http://api.test/api/threads/thread-1/messages") {
+        return Promise.resolve(jsonResponse(threadState({
+          run: {
+            state: "done",
+            steps: 1,
+            error: null,
+            error_code: null,
+            user_message: null,
+            started_at: null,
+            updated_at: null,
+          },
+          conversation: [
+            { id: "user-1", role: "user", text: "Check concurrency" },
+            { id: "assistant-1", role: "assistant", text: "Agent response ready" },
+          ],
+        })));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+
+    render(<App apiBase="http://api.test" fetchImpl={fetchMock} />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(historyRequests).toBe(1);
+    fireEvent.change(screen.getByLabelText("Ask a question about your dataset!"), {
+      target: { value: "Check concurrency" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByText("Agent response ready")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Untitled conversation" }),
+    ).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(historyRequests).toBe(3);
+    expect(
+      screen.getByRole("button", { name: "Untitled conversation" }),
+    ).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(
+      screen.getByRole("button", { name: "Concurrent response check" }),
+    ).toBeInTheDocument();
+    const stoppedAt = historyRequests;
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    expect(historyRequests).toBe(stoppedAt);
+  });
+
+  it("stops title refresh when the active conversation is replaced", async () => {
+    vi.useFakeTimers();
+    let historyRequests = 0;
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "http://api.test/api/runtime/options") {
+        return Promise.resolve(runtimeOptionsResponse());
+      }
+      if (url === "http://api.test/api/conversations") {
+        historyRequests += 1;
+        return Promise.resolve(jsonResponse({
+          items: historyRequests === 1 ? [] : [{
+            thread_id: "thread-1",
+            title: "Untitled conversation",
+            title_source: "automatic",
+            model_name: "gpt-5.4",
+            created_at: "2026-08-05T00:00:00+00:00",
+            updated_at: "2026-08-05T00:00:00+00:00",
+          }],
+        }));
+      }
+      if (url === "http://api.test/api/threads") {
+        return Promise.resolve(createThreadResponse());
+      }
+      if (url === "http://api.test/api/threads/thread-1/messages") {
+        return Promise.resolve(jsonResponse(threadState({
+          run: {
+            state: "done",
+            steps: 1,
+            error: null,
+            error_code: null,
+            user_message: null,
+            started_at: null,
+            updated_at: null,
+          },
+        })));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+
+    render(<App apiBase="http://api.test" fetchImpl={fetchMock} />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(historyRequests).toBe(1);
+    fireEvent.change(screen.getByLabelText("Ask a question about your dataset!"), {
+      target: { value: "Check cancellation" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    screen.getByRole("button", { name: "Untitled conversation" });
+    fireEvent.click(screen.getByRole("button", {
+      name: "Start new conversation from saved conversations",
+    }));
+    const stoppedAt = historyRequests;
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    expect(historyRequests).toBe(stoppedAt);
+  });
+
   it("keeps DB-RAG review controls out of the sidebar", async () => {
     const fetchMock = vi
       .fn()
