@@ -251,8 +251,10 @@ Expected: all selected tests pass; the submit completion event is set while the 
 
 - [ ] **Step 5: Commit the backend change**
 
+The repository ignores `tests/` by policy. Keep the focused tests locally for verification and commit only the tracked production file:
+
 ```bash
-git add api/runtime.py tests/test_api_runtime.py
+git add api/runtime.py
 git commit -m "perf: generate conversation titles asynchronously"
 ```
 
@@ -283,7 +285,7 @@ it("refreshes an untitled conversation until its generated title arrives", async
     }
     if (url === "http://api.test/api/conversations") {
       historyRequests += 1;
-      const title = historyRequests >= 3
+      const title = historyRequests >= 4
         ? "Concurrent response check"
         : "Untitled conversation";
       return Promise.resolve(jsonResponse({
@@ -328,9 +330,17 @@ it("refreshes an untitled conversation until its generated title arrives", async
   await act(async () => {
     await vi.advanceTimersByTimeAsync(1000);
   });
-  expect(
-    screen.getByRole("button", { name: "Concurrent response check" }),
-  ).toBeInTheDocument();
+    expect(historyRequests).toBe(3);
+    expect(
+      screen.getByRole("button", { name: "Untitled conversation" }),
+    ).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(
+      screen.getByRole("button", { name: "Concurrent response check" }),
+    ).toBeInTheDocument();
   const stoppedAt = historyRequests;
 
   await act(async () => {
@@ -509,8 +519,10 @@ Expected: all `App` tests and the complete Vitest suite pass; fake timers show n
 
 - [ ] **Step 5: Commit the frontend source and tests**
 
+The repository ignores `tests/` by policy. Keep the focused component tests locally for verification and commit only the tracked frontend source:
+
 ```bash
-git add frontend/src/App.tsx frontend/src/App.test.tsx
+git add frontend/src/App.tsx
 git commit -m "feat: refresh sidebar until title arrives"
 ```
 
@@ -811,12 +823,7 @@ Expected: all selected tests pass, and `--help` works from outside the repositor
 
 - [ ] **Step 6: Commit the dedicated smoke**
 
-```bash
-git add scripts/e2e_working_demo_native_real.py \
-  scripts/smoke_concurrent_title_generation_real.py \
-  tests/test_e2e_working_demo_native_real.py
-git commit -m "test: add concurrent title feature smoke"
-```
+The repository ignores `scripts/` and `tests/` by policy. Keep the dedicated smoke and its wiring tests locally; do not force-add the existing ignored harness files or create a large tracking exception for this feature.
 
 ---
 
