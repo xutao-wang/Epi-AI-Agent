@@ -33,6 +33,8 @@ interface Props {
 }
 
 const POLL_INTERVAL_MS = 1000;
+const TITLE_POLL_TIMEOUT_MS = 120_000;
+const UNTITLED_CONVERSATION = "Untitled conversation";
 
 function assertNever(value: never): never {
   throw new Error(`Unsupported interrupt: ${JSON.stringify(value)}`);
@@ -152,6 +154,7 @@ export default function App({
     null,
   );
   const [savedConversations, setSavedConversations] = useState<ConversationSummary[]>([]);
+  const [titlePollingThreadId, setTitlePollingThreadId] = useState<string | null>(null);
   const [selectedRuntimeSettings, setSelectedRuntimeSettings] =
     useState<RuntimeSettings>(EMPTY_RUNTIME_SETTINGS);
   const [message, setMessage] = useState("");
@@ -203,6 +206,50 @@ export default function App({
   }, [apiClient, loadConversationHistory]);
 
   useEffect(() => {
+    if (
+      !loadConversationHistory ||
+      !titlePollingThreadId ||
+      titlePollingThreadId !== threadId
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    let timeoutId: number | undefined;
+    const deadline = Date.now() + TITLE_POLL_TIMEOUT_MS;
+
+    async function pollOnce() {
+      const items = await refreshSavedConversations();
+      if (cancelled) {
+        return;
+      }
+      const activeConversation = items?.find(
+        (item) => item.thread_id === titlePollingThreadId,
+      );
+      if (
+        activeConversation &&
+        activeConversation.title !== UNTITLED_CONVERSATION
+      ) {
+        setTitlePollingThreadId((current) =>
+          current === titlePollingThreadId ? null : current,
+        );
+        return;
+      }
+      if (Date.now() < deadline) {
+        timeoutId = window.setTimeout(pollOnce, POLL_INTERVAL_MS);
+      }
+    }
+
+    void pollOnce();
+    return () => {
+      cancelled = true;
+      if (timeoutId !== undefined) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, [apiClient, loadConversationHistory, threadId, titlePollingThreadId]);
+
+  useEffect(() => {
     if (state?.runtime_settings) {
       setSelectedRuntimeSettings(state.runtime_settings);
     }
@@ -252,16 +299,20 @@ export default function App({
     setState(nextState);
   }
 
-  async function refreshSavedConversations() {
+  async function refreshSavedConversations(): Promise<ConversationSummary[] | null> {
     const requestId = savedConversationsRequestRef.current + 1;
     savedConversationsRequestRef.current = requestId;
     try {
       const response = await apiClient.listConversations();
-      if (requestId === savedConversationsRequestRef.current) {
-        setSavedConversations(response.items ?? []);
+      if (requestId !== savedConversationsRequestRef.current) {
+        return null;
       }
+      const items = response.items ?? [];
+      setSavedConversations(items);
+      return items;
     } catch {
       // A history refresh must not block the active analysis workflow.
+      return null;
     }
   }
 
@@ -483,10 +534,7 @@ export default function App({
       );
       applyThreadState(nextState);
       if (loadConversationHistory) {
-        void refreshSavedConversations();
-        window.setTimeout(() => {
-          void refreshSavedConversations();
-        }, 1000);
+        setTitlePollingThreadId(activeThreadId);
       }
       setStagedAttachments([]);
       setAttachmentErrors([]);
