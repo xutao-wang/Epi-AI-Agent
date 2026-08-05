@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import csv
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 import hashlib
 import io
@@ -624,6 +625,14 @@ class ReportAgentApiRuntime:
         default=None,
         init=False,
     )
+    _title_executor: ThreadPoolExecutor = field(
+        default_factory=lambda: ThreadPoolExecutor(
+            max_workers=2,
+            thread_name_prefix="conversation-title",
+        ),
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         if self.runtime_root is not None:
@@ -1035,12 +1044,18 @@ class ReportAgentApiRuntime:
         if not started:
             raise ThreadAlreadyRunningError(thread_id)
         if self.history_store is not None:
+            existing_record = self.history_store.get(thread_id)
             record = self.history_store.create(
                 thread_id,
                 model_name=thread.settings.model_name,
             )
-            if text.strip() and record.title == "Untitled conversation" and self.title_generator:
-                self._generate_title(thread_id, text)
+            if (
+                existing_record is None
+                and text.strip()
+                and record.title == "Untitled conversation"
+                and self.title_generator is not None
+            ):
+                self._title_executor.submit(self._generate_title, thread_id, text)
         thread.locked = True
 
     def _generate_title(self, thread_id: str, text: str) -> None:
