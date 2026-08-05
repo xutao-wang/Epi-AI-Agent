@@ -2682,7 +2682,7 @@ describe("App", () => {
         target: { value: "Use only baseline rows." },
       },
     );
-    fireEvent.click(screen.getByRole("button", { name: "Submit feedback" }));
+    fireEvent.click(screen.getByRole("button", { name: "Request revision" }));
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenLastCalledWith(
