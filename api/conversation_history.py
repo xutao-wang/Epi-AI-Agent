@@ -31,20 +31,15 @@ class ConversationHistoryStore:
         self._db_path = Path(db_path).expanduser().resolve()
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS conversation_history (
-                    thread_id TEXT PRIMARY KEY,
-                    title TEXT NOT NULL,
-                    title_source TEXT NOT NULL CHECK(title_source IN ('automatic', 'manual')),
-                    model_name TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    last_opened_at TEXT,
-                    archived_at TEXT
-                )
-                """
-            )
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA busy_timeout=5000")
+            connection.execute("BEGIN")
+            table_exists = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                "AND name = 'conversation_history'"
+            ).fetchone()
+            if not table_exists:
+                self._create_table(connection)
             columns = {
                 row[1]
                 for row in connection.execute("PRAGMA table_info(conversation_history)")
@@ -61,9 +56,54 @@ class ConversationHistoryStore:
                     "UPDATE conversation_history SET last_opened_at = updated_at "
                     "WHERE last_opened_at IS NULL"
                 )
+            if "owner_user_id" not in columns:
+                self._migrate_legacy_table(connection)
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS conversation_history_owner_activity_idx "
+                "ON conversation_history (owner_user_id, archived_at, updated_at DESC)"
+            )
+
+    @staticmethod
+    def _create_table(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE conversation_history (
+                owner_user_id TEXT,
+                thread_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                title_source TEXT NOT NULL CHECK(title_source IN ('automatic', 'manual')),
+                model_name TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_opened_at TEXT,
+                archived_at TEXT,
+                PRIMARY KEY (owner_user_id, thread_id)
+            )
+            """
+        )
+
+    @classmethod
+    def _migrate_legacy_table(cls, connection: sqlite3.Connection) -> None:
+        connection.execute(
+            "ALTER TABLE conversation_history RENAME TO conversation_history_legacy"
+        )
+        cls._create_table(connection)
+        connection.execute(
+            """
+            INSERT INTO conversation_history
+            (owner_user_id, thread_id, title, title_source, model_name, created_at,
+             updated_at, last_opened_at, archived_at)
+            SELECT NULL, thread_id, title, title_source, model_name, created_at,
+                   updated_at, last_opened_at, archived_at
+            FROM conversation_history_legacy
+            """
+        )
+        connection.execute("DROP TABLE conversation_history_legacy")
 
     def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(self._db_path)
+        connection = sqlite3.connect(self._db_path)
+        connection.execute("PRAGMA busy_timeout=5000")
+        return connection
 
     @staticmethod
     def _now() -> str:
@@ -82,95 +122,140 @@ class ConversationHistoryStore:
             raise ValueError("title is required")
         return normalized[:_MAX_TITLE_LENGTH]
 
-    def create(self, thread_id: str, *, model_name: str) -> ConversationSummary:
+    def create(
+        self,
+        owner_user_id: str,
+        thread_id: str,
+        *,
+        model_name: str,
+    ) -> ConversationSummary:
         now = self._now()
         with self._connect() as connection:
             connection.execute(
                 """
                 INSERT OR IGNORE INTO conversation_history
-                (thread_id, title, title_source, model_name, created_at, updated_at, last_opened_at)
-                VALUES (?, ?, 'automatic', ?, ?, ?, ?)
+                (owner_user_id, thread_id, title, title_source, model_name, created_at,
+                 updated_at, last_opened_at)
+                VALUES (?, ?, ?, 'automatic', ?, ?, ?, ?)
                 """,
-                (thread_id, _UNTITLED, model_name, now, now, now),
+                (owner_user_id, thread_id, _UNTITLED, model_name, now, now, now),
             )
-        record = self.get(thread_id)
+        record = self.get(owner_user_id, thread_id)
         assert record is not None
         return record
 
-    def get(self, thread_id: str) -> ConversationSummary | None:
+    def get(self, owner_user_id: str, thread_id: str) -> ConversationSummary | None:
         with self._connect() as connection:
             row = connection.execute(
                 "SELECT thread_id, title, title_source, model_name, created_at, updated_at, last_opened_at, archived_at "
-                "FROM conversation_history WHERE thread_id = ?",
-                (thread_id,),
+                "FROM conversation_history WHERE owner_user_id = ? AND thread_id = ?",
+                (owner_user_id, thread_id),
             ).fetchone()
         return self._summary(row)
 
-    def list(self) -> list[ConversationSummary]:
+    def list(self, owner_user_id: str) -> list[ConversationSummary]:
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT thread_id, title, title_source, model_name, created_at, updated_at, last_opened_at, archived_at "
-                "FROM conversation_history ORDER BY updated_at DESC, created_at DESC"
+                "FROM conversation_history WHERE owner_user_id = ? "
+                "ORDER BY updated_at DESC, created_at DESC",
+                (owner_user_id,),
             ).fetchall()
         return [ConversationSummary(*row) for row in rows]
 
-    def archive(self, thread_id: str) -> ConversationSummary | None:
+    def archive(
+        self,
+        owner_user_id: str,
+        thread_id: str,
+    ) -> ConversationSummary | None:
         with self._connect() as connection:
             connection.execute(
-                "UPDATE conversation_history SET archived_at = ? WHERE thread_id = ?",
-                (self._now(), thread_id),
+                "UPDATE conversation_history SET archived_at = ? "
+                "WHERE owner_user_id = ? AND thread_id = ?",
+                (self._now(), owner_user_id, thread_id),
             )
-        return self.get(thread_id)
+        return self.get(owner_user_id, thread_id)
 
-    def restore(self, thread_id: str) -> ConversationSummary | None:
+    def restore(
+        self,
+        owner_user_id: str,
+        thread_id: str,
+    ) -> ConversationSummary | None:
         with self._connect() as connection:
             connection.execute(
                 "UPDATE conversation_history SET archived_at = NULL, updated_at = ? "
-                "WHERE thread_id = ?",
-                (self._now(), thread_id),
+                "WHERE owner_user_id = ? AND thread_id = ?",
+                (self._now(), owner_user_id, thread_id),
             )
-        return self.get(thread_id)
+        return self.get(owner_user_id, thread_id)
 
-    def delete(self, thread_id: str) -> bool:
+    def delete(self, owner_user_id: str, thread_id: str) -> bool:
         with self._connect() as connection:
             result = connection.execute(
-                "DELETE FROM conversation_history WHERE thread_id = ?",
-                (thread_id,),
+                "DELETE FROM conversation_history "
+                "WHERE owner_user_id = ? AND thread_id = ?",
+                (owner_user_id, thread_id),
             )
         return result.rowcount == 1
 
-    def touch(self, thread_id: str) -> None:
+    def touch(self, owner_user_id: str, thread_id: str) -> None:
         with self._connect() as connection:
             connection.execute(
-                "UPDATE conversation_history SET updated_at = ? WHERE thread_id = ?",
-                (self._now(), thread_id),
+                "UPDATE conversation_history SET updated_at = ? "
+                "WHERE owner_user_id = ? AND thread_id = ?",
+                (self._now(), owner_user_id, thread_id),
             )
 
-    def mark_opened(self, thread_id: str) -> ConversationSummary | None:
+    def mark_opened(
+        self,
+        owner_user_id: str,
+        thread_id: str,
+    ) -> ConversationSummary | None:
         with self._connect() as connection:
             connection.execute(
-                "UPDATE conversation_history SET last_opened_at = ? WHERE thread_id = ?",
-                (self._now(), thread_id),
+                "UPDATE conversation_history SET last_opened_at = ? "
+                "WHERE owner_user_id = ? AND thread_id = ?",
+                (self._now(), owner_user_id, thread_id),
             )
-        return self.get(thread_id)
+        return self.get(owner_user_id, thread_id)
 
-    def rename(self, thread_id: str, title: str) -> ConversationSummary | None:
+    def rename(
+        self,
+        owner_user_id: str,
+        thread_id: str,
+        title: str,
+    ) -> ConversationSummary | None:
         with self._connect() as connection:
             connection.execute(
                 "UPDATE conversation_history SET title = ?, title_source = 'manual', updated_at = ? "
-                "WHERE thread_id = ?",
-                (self._title(title), self._now(), thread_id),
+                "WHERE owner_user_id = ? AND thread_id = ?",
+                (self._title(title), self._now(), owner_user_id, thread_id),
             )
-        return self.get(thread_id)
+        return self.get(owner_user_id, thread_id)
 
-    def set_automatic_title(self, thread_id: str, title: str) -> ConversationSummary | None:
+    def set_automatic_title(
+        self,
+        owner_user_id: str,
+        thread_id: str,
+        title: str,
+    ) -> ConversationSummary | None:
         with self._connect() as connection:
             connection.execute(
                 "UPDATE conversation_history SET title = ?, updated_at = ? "
-                "WHERE thread_id = ? AND title_source = 'automatic'",
-                (self._title(title), self._now(), thread_id),
+                "WHERE owner_user_id = ? AND thread_id = ? "
+                "AND title_source = 'automatic'",
+                (self._title(title), self._now(), owner_user_id, thread_id),
             )
-        return self.get(thread_id)
+        return self.get(owner_user_id, thread_id)
+
+    def claim_unowned(self, owner_user_id: str) -> int:
+        with self._connect() as connection:
+            result = connection.execute(
+                "UPDATE conversation_history SET owner_user_id = ? "
+                "WHERE owner_user_id IS NULL",
+                (owner_user_id,),
+            )
+        return result.rowcount
 
 
 class OpenAIConversationTitleGenerator:

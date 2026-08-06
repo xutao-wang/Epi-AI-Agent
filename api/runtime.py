@@ -27,6 +27,7 @@ from openai import (
 import pandas as pd
 from pydantic import TypeAdapter, ValidationError
 
+from api.auth import RequestIdentity
 from api.schemas import (
     ActiveInterrupt,
     ApiThreadState,
@@ -703,11 +704,20 @@ class ReportAgentApiRuntime:
             raise ValueError("timeout_seconds must be greater than 0")
         return normalized
 
-    def _thread(self, thread_id: str) -> ThreadRuntime:
+    def _thread(
+        self,
+        thread_id: str,
+        *,
+        identity: RequestIdentity | None = None,
+    ) -> ThreadRuntime:
         with self._lock:
             thread = self._threads.get(thread_id)
             if thread is None:
-                record = self.history_store.get(thread_id) if self.history_store else None
+                record = (
+                    self.history_store.get(identity.owner_user_id, thread_id)
+                    if self.history_store and identity is not None
+                    else None
+                )
                 settings = {"model_name": record.model_name} if record else None
                 thread = ThreadRuntime(
                     settings=self._normalize_settings(settings),
@@ -984,6 +994,7 @@ class ReportAgentApiRuntime:
 
     def submit_message(
         self,
+        identity: RequestIdentity,
         thread_id: str,
         text: str,
         attachment_ids: list[str] | None = None,
@@ -991,7 +1002,7 @@ class ReportAgentApiRuntime:
         active_study_id: str | None = None,
     ) -> None:
         attachment_ids = list(attachment_ids or [])
-        thread = self._thread(thread_id)
+        thread = self._thread(thread_id, identity=identity)
         if model_name:
             if thread.locked:
                 raise ValueError("The model is locked for this conversation.")
@@ -1048,8 +1059,9 @@ class ReportAgentApiRuntime:
         if not started:
             raise ThreadAlreadyRunningError(thread_id)
         if self.history_store is not None:
-            existing_record = self.history_store.get(thread_id)
+            existing_record = self.history_store.get(identity.owner_user_id, thread_id)
             record = self.history_store.create(
+                identity.owner_user_id,
                 thread_id,
                 model_name=thread.settings.model_name,
             )
@@ -1059,36 +1071,60 @@ class ReportAgentApiRuntime:
                 and record.title == "Untitled conversation"
                 and self.title_generator is not None
             ):
-                self._title_executor.submit(self._generate_title, thread_id, text)
+                self._title_executor.submit(
+                    self._generate_title,
+                    identity.owner_user_id,
+                    thread_id,
+                    text,
+                )
         thread.locked = True
 
-    def _generate_title(self, thread_id: str, text: str) -> None:
+    def _generate_title(
+        self,
+        owner_user_id: str,
+        thread_id: str,
+        text: str,
+    ) -> None:
         try:
             assert self.history_store is not None
             assert self.title_generator is not None
             self.history_store.set_automatic_title(
+                owner_user_id,
                 thread_id,
                 self.title_generator.generate(text),
             )
         except Exception:
             return
 
-    def list_conversations(self):
-        return self.history_store.list() if self.history_store else []
+    def list_conversations(self, identity: RequestIdentity):
+        return self.history_store.list(identity.owner_user_id) if self.history_store else []
 
-    def rename_conversation(self, thread_id: str, title: str):
+    def rename_conversation(
+        self,
+        identity: RequestIdentity,
+        thread_id: str,
+        title: str,
+    ):
         if self.history_store is None:
             return None
-        return self.history_store.rename(thread_id, title)
+        return self.history_store.rename(identity.owner_user_id, thread_id, title)
 
-    def open_conversation(self, thread_id: str):
+    def open_conversation(self, identity: RequestIdentity, thread_id: str):
         if self.history_store is None:
             return None
-        return self.history_store.mark_opened(thread_id)
+        return self.history_store.mark_opened(identity.owner_user_id, thread_id)
 
-    def _assert_conversation_mutable(self, thread_id: str) -> bool:
-        if self.history_store is None or self.history_store.get(thread_id) is None:
+    def _assert_conversation_mutable(
+        self,
+        identity: RequestIdentity,
+        thread_id: str,
+    ) -> bool:
+        if (
+            self.history_store is None
+            or self.history_store.get(identity.owner_user_id, thread_id) is None
+        ):
             return False
+        self._thread(thread_id, identity=identity)
         state = self.state(thread_id)
         if state.run.state == "running":
             raise ThreadAlreadyRunningError(thread_id)
@@ -1096,22 +1132,22 @@ class ReportAgentApiRuntime:
             raise ThreadAwaitingReviewError(thread_id)
         return True
 
-    def archive_conversation(self, thread_id: str):
-        if not self._assert_conversation_mutable(thread_id):
+    def archive_conversation(self, identity: RequestIdentity, thread_id: str):
+        if not self._assert_conversation_mutable(identity, thread_id):
             return None
         assert self.history_store is not None
-        return self.history_store.archive(thread_id)
+        return self.history_store.archive(identity.owner_user_id, thread_id)
 
-    def restore_conversation(self, thread_id: str):
-        if not self._assert_conversation_mutable(thread_id):
+    def restore_conversation(self, identity: RequestIdentity, thread_id: str):
+        if not self._assert_conversation_mutable(identity, thread_id):
             return None
         assert self.history_store is not None
-        return self.history_store.restore(thread_id)
+        return self.history_store.restore(identity.owner_user_id, thread_id)
 
-    def delete_conversation(self, thread_id: str) -> bool:
-        if not self._assert_conversation_mutable(thread_id):
+    def delete_conversation(self, identity: RequestIdentity, thread_id: str) -> bool:
+        if not self._assert_conversation_mutable(identity, thread_id):
             return False
-        thread = self._thread(thread_id)
+        thread = self._thread(thread_id, identity=identity)
         app, _runner = self._ensure_graph(thread)
         app.checkpointer.delete_thread(thread_id)
         if self._attachment_store is not None:
@@ -1119,7 +1155,7 @@ class ReportAgentApiRuntime:
         with self._lock:
             self._threads.pop(thread_id, None)
         assert self.history_store is not None
-        return self.history_store.delete(thread_id)
+        return self.history_store.delete(identity.owner_user_id, thread_id)
 
     def stage_attachments(
         self,
@@ -1264,11 +1300,12 @@ class ReportAgentApiRuntime:
 
     def resume_interrupt(
         self,
+        identity: RequestIdentity,
         thread_id: str,
         interrupt_id: str,
         payload: dict[str, Any],
     ) -> None:
-        thread = self._thread(thread_id)
+        thread = self._thread(thread_id, identity=identity)
         thread.locked = True
         app, runner = self._ensure_graph(thread)
         snapshot = app.get_state(graph_config(thread_id), subgraphs=True)
@@ -1291,7 +1328,7 @@ class ReportAgentApiRuntime:
         if not started:
             raise ThreadAlreadyRunningError(thread_id)
         if self.history_store is not None:
-            self.history_store.touch(thread_id)
+            self.history_store.touch(identity.owner_user_id, thread_id)
 
     def state(self, thread_id: str) -> ApiThreadState:
         thread = self._thread(thread_id)
