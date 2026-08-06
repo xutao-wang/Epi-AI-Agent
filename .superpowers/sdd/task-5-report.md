@@ -150,3 +150,23 @@ server at `127.0.0.1:0` and the sandbox raises
 `PermissionError: [Errno 1] Operation not permitted`. This is the first
 remaining full-suite blocker after the session-header fix; it is an execution
 sandbox limitation, not an application assertion failure.
+
+## DB-RAG wrapper forwarding regression
+
+`tests/test_scoped_db_rag_persistence.py` now also invokes the production
+`epi_agent.db_rag.tools._persist_extraction_result` wrapper with a real
+`ThreadStorageScope`. A narrow recording wrapper delegates to the real
+`persist_sql_subset_artifact`, proving the exact authorized scope is passed as
+`runtime_root` while real staging, promotion, and commit create the scoped
+dataset artifact. Removing the production `runtime_root=runtime_root` argument
+therefore fails this regression.
+
+Verification:
+
+```bash
+.venv/bin/python -m pytest tests/test_user_storage.py tests/test_scoped_db_rag_persistence.py tests/test_attachment_artifacts.py tests/test_dataset_artifacts.py tests/test_attachment_tools.py tests/test_db_rag_agent_tools.py tests/test_db_rag_agent_sql.py tests/test_api_runtime.py tests/test_analysis_provenance_api.py -q
+.venv/bin/python scripts/smoke_user_storage.py
+git diff --check
+```
+
+Output: `277 passed in 5.00s`; smoke and whitespace validation exited 0.
