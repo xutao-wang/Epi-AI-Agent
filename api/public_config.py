@@ -17,6 +17,7 @@ class ApplicationAuthConfig:
     aws_region: str | None
     cognito_user_pool_id: str | None
     cognito_app_client_id: str | None
+    cognito_logout_endpoint: str | None
     redirect_uri: str | None
     post_logout_redirect_uri: str | None
 
@@ -36,6 +37,7 @@ _COGNITO_ENVIRONMENT_NAMES = (
     "REPORT_AGENT_AWS_REGION",
     "REPORT_AGENT_COGNITO_USER_POOL_ID",
     "REPORT_AGENT_COGNITO_APP_CLIENT_ID",
+    "REPORT_AGENT_COGNITO_LOGOUT_ENDPOINT",
     "REPORT_AGENT_AUTH_REDIRECT_URI",
     "REPORT_AGENT_AUTH_POST_LOGOUT_REDIRECT_URI",
 )
@@ -64,6 +66,7 @@ def application_auth_config(environ: Mapping[str, str]) -> ApplicationAuthConfig
         aws_region=values["REPORT_AGENT_AWS_REGION"],
         cognito_user_pool_id=values["REPORT_AGENT_COGNITO_USER_POOL_ID"],
         cognito_app_client_id=values["REPORT_AGENT_COGNITO_APP_CLIENT_ID"],
+        cognito_logout_endpoint=values["REPORT_AGENT_COGNITO_LOGOUT_ENDPOINT"],
         redirect_uri=values["REPORT_AGENT_AUTH_REDIRECT_URI"],
         post_logout_redirect_uri=values["REPORT_AGENT_AUTH_POST_LOGOUT_REDIRECT_URI"],
     )
@@ -75,6 +78,7 @@ def public_app_config(config: ApplicationAuthConfig) -> PublicAppConfig:
 
     assert config.cognito_issuer is not None
     assert config.cognito_app_client_id is not None
+    assert config.cognito_logout_endpoint is not None
     assert config.redirect_uri is not None
     assert config.post_logout_redirect_uri is not None
     return PublicAppConfig(
@@ -83,6 +87,7 @@ def public_app_config(config: ApplicationAuthConfig) -> PublicAppConfig:
         cognito=CognitoPublicConfig(
             authority=config.cognito_issuer,
             client_id=config.cognito_app_client_id,
+            logout_endpoint=config.cognito_logout_endpoint,
             redirect_uri=config.redirect_uri,
             post_logout_redirect_uri=config.post_logout_redirect_uri,
         ),

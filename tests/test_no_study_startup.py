@@ -113,6 +113,7 @@ def test_application_factory_cognito_mode_starts_without_credentials(
             "REPORT_AGENT_AWS_REGION": "us-east-1",
             "REPORT_AGENT_COGNITO_USER_POOL_ID": "us-east-1_example",
             "REPORT_AGENT_COGNITO_APP_CLIENT_ID": "client-123",
+            "REPORT_AGENT_COGNITO_LOGOUT_ENDPOINT": "https://auth.example.test/logout",
             "REPORT_AGENT_AUTH_REDIRECT_URI": "https://example.test/callback",
             "REPORT_AGENT_AUTH_POST_LOGOUT_REDIRECT_URI": "https://example.test/",
             "REPORT_AGENT_RUNTIME_ROOT": str(tmp_path / "runtime"),

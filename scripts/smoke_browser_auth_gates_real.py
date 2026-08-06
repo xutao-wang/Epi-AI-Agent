@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the compiled browser auth gates against the real local FastAPI app."""
+"""Exercise local and Cognito-like auth flows in the compiled browser UI."""
 
 from __future__ import annotations
 
@@ -13,9 +13,11 @@ import tempfile
 import time
 import traceback
 from typing import Any
+from urllib.parse import parse_qs, urlencode, urlparse
 
+from cryptography.hazmat.primitives.asymmetric import rsa
+import jwt
 import requests
-from playwright.sync_api import Page, sync_playwright
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -56,7 +58,7 @@ def _write_failure_diagnostics(
     *,
     artifact_dir: Path,
     error: BaseException,
-    page: Page | None,
+    page: Any | None,
     requests_seen: list[dict[str, Any]],
 ) -> None:
     (artifact_dir / "failure.txt").write_text(
@@ -81,7 +83,274 @@ def _write_failure_diagnostics(
             pass
 
 
+def _runtime_options() -> dict[str, Any]:
+    settings = {
+        "model_name": "gpt-5.4",
+        "temperature": 0.2,
+        "top_p": 1.0,
+        "max_steps": 8,
+        "timeout_seconds": 120,
+        "db_rag_embedding_model": "text-embedding-3-small",
+        "db_rag_reranker_model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    }
+    return {
+        "defaults": settings,
+        "capabilities": {
+            "publication_knowledge": {
+                "status": "available",
+                "message": "Publication knowledge is available.",
+            },
+            "db_rag_dataset": {
+                "status": "not_configured",
+                "message": "DB-RAG is not configured.",
+            },
+        },
+        "models": [
+            {
+                "id": "gpt-5.4",
+                "label": "gpt-5.4 (Standard)",
+                "reasoning_tier": "standard",
+                "summary": "Smoke-test model.",
+                "initial_output_tokens": 8192,
+                "automatic_output_token_ceiling": 16384,
+                "user_output_token_increment": 8192,
+                "absolute_output_token_ceiling": 24576,
+                "request_timeout_seconds": 120,
+                "workflow_timeout_seconds": 300,
+                "automatic_output_cost": "$0.00",
+                "incremental_output_cost": "$0.00",
+            }
+        ],
+    }
+
+
+def _exercise_cognito_flow(
+    *,
+    browser: Any,
+    app_url: str,
+    deadline: float,
+    requests_seen: list[dict[str, Any]],
+) -> None:
+    """Drive a real OIDC/PKCE browser flow against an in-process fake issuer."""
+    context = browser.new_context(viewport={"width": 1440, "height": 1000})
+    page = context.new_page()
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    key_id = "browser-auth-smoke-key"
+    jwk = json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(private_key.public_key()))
+    jwk.update({"kid": key_id, "use": "sig", "alg": "RS256"})
+    issuer = f"{app_url}/oidc"
+    client_id = "browser-auth-smoke-client"
+    redirect_uri = f"{app_url}/auth/callback"
+    logout_uri = f"{app_url}/"
+    fake_provider_key = "smoke-provider-key-not-a-secret"
+    flow_events: list[str] = []
+    authorization_nonce = ""
+
+    def json_reply(route: Any, body: Any, *, status: int = 200) -> None:
+        route.fulfill(
+            status=status,
+            content_type="application/json",
+            body=json.dumps(body),
+        )
+
+    def protected_headers(request: Any) -> None:
+        authorization = request.headers.get("authorization", "")
+        if authorization != "Bearer smoke-access-token":
+            raise AssertionError(
+                f"Protected Cognito request lacks bearer token: {request.url}"
+            )
+        session_id = request.headers.get("x-epi-session-id", "")
+        if not session_id or session_id == LOCAL_SESSION_ID:
+            raise AssertionError(
+                f"Protected Cognito request lacks random tab session: {request.url}"
+            )
+
+    def handle_route(route: Any) -> None:
+        nonlocal authorization_nonce
+        request = route.request
+        parsed = urlparse(request.url)
+        path = parsed.path
+        if path == "/api/public-config":
+            if "authorization" in request.headers or "x-epi-session-id" in request.headers:
+                raise AssertionError("Cognito public config used protected headers.")
+            json_reply(
+                route,
+                {
+                    "auth_mode": "cognito",
+                    "provider_key_required": True,
+                    "cognito": {
+                        "authority": issuer,
+                        "client_id": client_id,
+                        "logout_endpoint": f"{app_url}/logout",
+                        "redirect_uri": redirect_uri,
+                        "post_logout_redirect_uri": logout_uri,
+                    },
+                },
+            )
+            return
+        if path == "/oidc/.well-known/openid-configuration":
+            json_reply(
+                route,
+                {
+                    "issuer": issuer,
+                    "authorization_endpoint": f"{app_url}/authorize",
+                    "token_endpoint": f"{app_url}/token",
+                    "jwks_uri": f"{app_url}/jwks",
+                    "response_types_supported": ["code"],
+                    "subject_types_supported": ["public"],
+                    "id_token_signing_alg_values_supported": ["RS256"],
+                    "code_challenge_methods_supported": ["S256"],
+                },
+            )
+            return
+        if path == "/jwks":
+            json_reply(route, {"keys": [jwk]})
+            return
+        if path == "/authorize":
+            query = parse_qs(parsed.query)
+            if query.get("response_type") != ["code"]:
+                raise AssertionError(f"Authorization Code flow missing: {query!r}")
+            if query.get("code_challenge_method") != ["S256"]:
+                raise AssertionError(f"PKCE S256 challenge missing: {query!r}")
+            if query.get("scope") != ["openid email"]:
+                raise AssertionError(f"Unexpected OIDC scopes: {query!r}")
+            authorization_nonce = query.get("nonce", [""])[0]
+            callback = query["redirect_uri"][0]
+            callback_query = urlencode(
+                {"code": "smoke-authorization-code", "state": query["state"][0]}
+            )
+            flow_events.append("authorize")
+            route.fulfill(status=302, headers={"location": f"{callback}?{callback_query}"})
+            return
+        if path == "/token":
+            form = parse_qs(request.post_data or "")
+            if form.get("grant_type") != ["authorization_code"]:
+                raise AssertionError(f"Authorization code exchange missing: {form!r}")
+            if not form.get("code_verifier", [""])[0]:
+                raise AssertionError("OIDC callback omitted the PKCE code verifier.")
+            now = int(time.time())
+            id_token = jwt.encode(
+                {
+                    "iss": issuer,
+                    "aud": client_id,
+                    "sub": "browser-smoke-user",
+                    "email": "browser-smoke@example.com",
+                    "iat": now,
+                    "exp": now + 300,
+                    "nonce": authorization_nonce,
+                },
+                private_key,
+                algorithm="RS256",
+                headers={"kid": key_id},
+            )
+            flow_events.append("callback-token")
+            json_reply(
+                route,
+                {
+                    "access_token": "smoke-access-token",
+                    "token_type": "Bearer",
+                    "expires_in": 300,
+                    "scope": "openid email",
+                    "id_token": id_token,
+                },
+            )
+            return
+        if path == "/api/session/provider-key":
+            protected_headers(request)
+            flow_events.append(f"provider-key:{request.method}")
+            if request.method == "GET":
+                json_reply(route, {"configured": False})
+                return
+            if request.method == "PUT":
+                payload = json.loads(request.post_data or "{}")
+                if payload != {"api_key": fake_provider_key}:
+                    raise AssertionError("Provider key PUT body was malformed.")
+                json_reply(route, {"configured": True})
+                return
+            if request.method == "DELETE":
+                route.fulfill(status=204, body="")
+                return
+        if path == "/api/runtime/options":
+            protected_headers(request)
+            flow_events.append("runtime-options")
+            json_reply(route, _runtime_options())
+            return
+        if path == "/api/conversations":
+            protected_headers(request)
+            flow_events.append("conversations")
+            json_reply(route, {"items": []})
+            return
+        if path == "/logout":
+            query = parse_qs(parsed.query)
+            if query != {"client_id": [client_id], "logout_uri": [logout_uri]}:
+                raise AssertionError(f"Cognito logout query is malformed: {query!r}")
+            flow_events.append("hosted-logout")
+            route.fulfill(status=200, content_type="text/plain", body="signed out")
+            return
+        route.continue_()
+
+    def record_request(request: Any) -> None:
+        if request.url.startswith(app_url):
+            requests_seen.append(
+                {
+                    "url": request.url,
+                    "method": request.method,
+                    "headers": dict(request.headers),
+                }
+            )
+
+    context.route("**/*", handle_route)
+    page.on("request", record_request)
+    try:
+        page.goto(app_url, wait_until="networkidle", timeout=_remaining_ms(deadline))
+        page.get_by_role("button", name="Sign in").click()
+        page.get_by_label("OpenAI API key").wait_for(timeout=_remaining_ms(deadline))
+        page.get_by_label("OpenAI API key").fill(fake_provider_key)
+        page.get_by_role("button", name="Save key").click()
+        page.get_by_text("Signed in as browser-smoke@example.com").wait_for(
+            timeout=_remaining_ms(deadline)
+        )
+        if page.get_by_label("OpenAI API key").count():
+            raise AssertionError("Provider key remained rendered after validation.")
+        storage = page.evaluate(
+            "JSON.stringify({session: Object.fromEntries(Object.entries(sessionStorage)), "
+            "local: Object.fromEntries(Object.entries(localStorage))})"
+        )
+        if fake_provider_key in storage:
+            raise AssertionError("Provider key was persisted in browser storage.")
+        page.get_by_role("button", name="Sign out").click()
+        page.wait_for_url(f"{app_url}/logout?**", timeout=_remaining_ms(deadline))
+
+        required = {
+            "authorize",
+            "callback-token",
+            "provider-key:GET",
+            "provider-key:PUT",
+            "runtime-options",
+            "conversations",
+            "provider-key:DELETE",
+            "hosted-logout",
+        }
+        missing = required.difference(flow_events)
+        if missing:
+            raise AssertionError(f"Cognito flow omitted events: {sorted(missing)!r}")
+        ordered = [
+            "authorize",
+            "callback-token",
+            "provider-key:PUT",
+            "provider-key:DELETE",
+            "hosted-logout",
+        ]
+        positions = [flow_events.index(item) for item in ordered]
+        if positions != sorted(positions):
+            raise AssertionError(f"Cognito flow occurred out of order: {flow_events!r}")
+    finally:
+        context.close()
+
+
 def run(args: argparse.Namespace) -> int:
+    from playwright.sync_api import sync_playwright
+
     deadline = time.monotonic() + args.timeout_seconds
     artifact_dir = (
         Path(args.artifact_dir)
@@ -138,7 +407,7 @@ def run(args: argparse.Namespace) -> int:
         env=environment,
         log_path=artifact_dir / "api.log",
     )
-    page: Page | None = None
+    page: Any | None = None
     requests_seen: list[dict[str, Any]] = []
     try:
         _wait_for_http(
@@ -261,6 +530,12 @@ def run(args: argparse.Namespace) -> int:
                 page.screenshot(
                     path=str(artifact_dir / "final-screenshot.png"),
                     full_page=True,
+                )
+                _exercise_cognito_flow(
+                    browser=browser,
+                    app_url=app_url,
+                    deadline=deadline,
+                    requests_seen=requests_seen,
                 )
             finally:
                 browser.close()

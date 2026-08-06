@@ -189,6 +189,8 @@ export default function App({
     Record<string, ClarificationExchange>
   >({});
   const [isModelLockHintVisible, setIsModelLockHintVisible] = useState(false);
+  const [isSigningOut, setIsSigningOut] = useState(false);
+  const [signOutError, setSignOutError] = useState(false);
   const authenticatedEmail =
     typeof authenticatedUser?.profile.email === "string"
       ? authenticatedUser.profile.email
@@ -850,6 +852,17 @@ export default function App({
     }
   }
 
+  async function signOut() {
+    setIsSigningOut(true);
+    setSignOutError(false);
+    try {
+      await onSignOut();
+    } catch {
+      setSignOutError(true);
+      setIsSigningOut(false);
+    }
+  }
+
   return (
     <AppShell
       sidebar={
@@ -857,8 +870,11 @@ export default function App({
           {authenticatedUser ? (
             <section className="authenticated-user-panel" aria-label="Signed-in user">
               <p>{authenticatedEmail ? `Signed in as ${authenticatedEmail}` : "Signed in"}</p>
-              <button onClick={() => void onSignOut()} type="button">
-                Sign out
+              {signOutError ? (
+                <p role="alert">Sign out could not be completed. Please try again.</p>
+              ) : null}
+              <button disabled={isSigningOut} onClick={() => void signOut()} type="button">
+                {isSigningOut ? "Signing out" : "Sign out"}
               </button>
             </section>
           ) : null}

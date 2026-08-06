@@ -11,6 +11,7 @@ RunState = Literal["idle", "running", "interrupted", "done", "error", "timeout"]
 class CognitoPublicConfig(BaseModel):
     authority: str
     client_id: str
+    logout_endpoint: str
     redirect_uri: str
     post_logout_redirect_uri: str
 

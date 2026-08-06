@@ -7,13 +7,21 @@ interface Props {
   onSignOut: () => Promise<void>;
 }
 
-type GatePhase = "checking" | "form" | "validating" | "validation-error" | "ready";
+type GatePhase =
+  | "checking"
+  | "status-error"
+  | "form"
+  | "validating"
+  | "validation-error"
+  | "ready";
 
 export default function ProviderKeyGate({ apiClient, children, onSignOut }: Props) {
   const [phase, setPhase] = useState<GatePhase>(
     apiClient.requiresProviderKey ? "checking" : "ready",
   );
   const [apiKey, setApiKey] = useState("");
+  const [isSigningOut, setIsSigningOut] = useState(false);
+  const [signOutError, setSignOutError] = useState(false);
 
   useEffect(() => {
     if (!apiClient.requiresProviderKey) {
@@ -29,7 +37,7 @@ export default function ProviderKeyGate({ apiClient, children, onSignOut }: Prop
       })
       .catch(() => {
         if (!cancelled) {
-          setPhase("form");
+          setPhase("status-error");
         }
       });
     return () => {
@@ -53,11 +61,47 @@ export default function ProviderKeyGate({ apiClient, children, onSignOut }: Prop
     }
   }
 
+  async function retryStatusCheck() {
+    setPhase("checking");
+    try {
+      const status = await apiClient.getProviderKeyStatus();
+      setPhase(status.configured ? "ready" : "form");
+    } catch {
+      setPhase("status-error");
+    }
+  }
+
+  async function signOut() {
+    setIsSigningOut(true);
+    setSignOutError(false);
+    try {
+      await onSignOut();
+    } catch {
+      setSignOutError(true);
+      setIsSigningOut(false);
+    }
+  }
+
   if (phase === "ready") {
     return children;
   }
   if (phase === "checking") {
     return <main className="gate-shell" role="status">Checking provider key…</main>;
+  }
+  if (phase === "status-error") {
+    return (
+      <main className="gate-shell">
+        <section className="gate-card">
+          <h1>Connect OpenAI</h1>
+          <p role="alert">
+            Provider key status could not be checked. Check your connection and try again.
+          </p>
+          <button onClick={() => void retryStatusCheck()} type="button">
+            Try again
+          </button>
+        </section>
+      </main>
+    );
   }
 
   return (
@@ -83,17 +127,22 @@ export default function ProviderKeyGate({ apiClient, children, onSignOut }: Prop
               The provider key could not be validated. Check the key and try again.
             </p>
           ) : null}
+          {signOutError ? (
+            <p role="alert">
+              Sign out could not be completed. Check your connection and try again.
+            </p>
+          ) : null}
           <div className="gate-actions">
             <button disabled={!apiKey.trim() || phase === "validating"} type="submit">
               {phase === "validating" ? "Validating…" : "Save key"}
             </button>
             <button
               className="gate-secondary-action"
-              disabled={phase === "validating"}
-              onClick={() => void onSignOut()}
+              disabled={phase === "validating" || isSigningOut}
+              onClick={() => void signOut()}
               type="button"
             >
-              Sign out
+              {isSigningOut ? "Signing out…" : "Sign out"}
             </button>
           </div>
         </form>

@@ -14,6 +14,13 @@ import type { PublicAppConfig } from "./types";
 
 export const TAB_SESSION_STORAGE_KEY = "report-agent.tab-session-id";
 
+export class AuthenticationExpiredError extends Error {
+  constructor() {
+    super("Your sign-in session expired. Sign in again to continue.");
+    this.name = "AuthenticationExpiredError";
+  }
+}
+
 export interface UserManagerLike {
   getUser(): Promise<User | null>;
   removeUser(): Promise<void>;
@@ -43,6 +50,7 @@ interface CreateBrowserAuthClientOptions {
   sessionStorage?: Storage;
   randomUUID?: () => string;
   locationHref?: () => string;
+  navigateTo?: (url: string) => void;
   replaceUrl?: (url: string) => void;
   userManagerFactory?: (settings: UserManagerSettings) => UserManagerLike;
 }
@@ -101,6 +109,7 @@ export async function createBrowserAuthClient({
   sessionStorage = window.sessionStorage,
   randomUUID = () => window.crypto.randomUUID(),
   locationHref = () => window.location.href,
+  navigateTo = (url) => window.location.assign(url),
   replaceUrl = (url) => window.history.replaceState({}, document.title, url),
   userManagerFactory = (settings) => new UserManager(settings),
 }: CreateBrowserAuthClientOptions = {}): Promise<BrowserAuthClient> {
@@ -137,11 +146,28 @@ export async function createBrowserAuthClient({
     stateStore: oidcStore,
     userStore: oidcStore,
   });
+  const signedOutListeners = new Set<() => void>();
+
+  function notifySignedOut() {
+    for (const listener of signedOutListeners) {
+      listener();
+    }
+  }
+
+  async function expireSession() {
+    try {
+      await manager.removeUser();
+    } catch {
+      // The in-memory gate must still leave the authenticated state.
+    } finally {
+      notifySignedOut();
+    }
+  }
 
   async function activeUser(): Promise<User | null> {
     const user = await manager.getUser();
     if (user?.expired) {
-      await manager.removeUser();
+      await expireSession();
       return null;
     }
     return user;
@@ -150,7 +176,14 @@ export async function createBrowserAuthClient({
   const apiClient = createApiClient({
     apiBase,
     fetchImpl,
-    getAccessToken: async () => (await activeUser())?.access_token ?? null,
+    getAccessToken: async () => {
+      const user = await activeUser();
+      if (!user) {
+        notifySignedOut();
+        throw new AuthenticationExpiredError();
+      }
+      return user.access_token;
+    },
     sessionId,
   });
 
@@ -171,13 +204,24 @@ export async function createBrowserAuthClient({
     signIn: () => manager.signinRedirect(),
     async signOut() {
       await apiClient.clearProviderKey();
-      await manager.signoutRedirect();
+      await manager.removeUser();
+      const logoutUrl = new URL(config.cognito.logout_endpoint);
+      logoutUrl.searchParams.set("client_id", config.cognito.client_id);
+      logoutUrl.searchParams.set(
+        "logout_uri",
+        config.cognito.post_logout_redirect_uri,
+      );
+      navigateTo(logoutUrl.toString());
     },
     subscribeToAccessTokenExpired(callback) {
-      return manager.events.addAccessTokenExpired(async () => {
-        await manager.removeUser();
-        callback();
+      signedOutListeners.add(callback);
+      const removeOidcHandler = manager.events.addAccessTokenExpired(() => {
+        void expireSession();
       });
+      return () => {
+        signedOutListeners.delete(callback);
+        removeOidcHandler();
+      };
     },
   };
 }

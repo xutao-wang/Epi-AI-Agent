@@ -18,6 +18,7 @@ def test_cognito_public_config_contains_only_browser_safe_values() -> None:
         "REPORT_AGENT_AWS_REGION": "us-east-1",
         "REPORT_AGENT_COGNITO_USER_POOL_ID": "us-east-1_example",
         "REPORT_AGENT_COGNITO_APP_CLIENT_ID": "client-123",
+        "REPORT_AGENT_COGNITO_LOGOUT_ENDPOINT": "https://auth.example/logout",
         "REPORT_AGENT_AUTH_REDIRECT_URI": "https://demo.example/callback",
         "REPORT_AGENT_AUTH_POST_LOGOUT_REDIRECT_URI": "https://demo.example/",
         "OPENAI_API_KEY": "must-not-be-public",
@@ -32,6 +33,7 @@ def test_cognito_public_config_contains_only_browser_safe_values() -> None:
                 "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_example"
             ),
             "client_id": "client-123",
+            "logout_endpoint": "https://auth.example/logout",
             "redirect_uri": "https://demo.example/callback",
             "post_logout_redirect_uri": "https://demo.example/",
         },
@@ -60,6 +62,7 @@ def test_application_auth_config_rejects_unsupported_auth_modes(
         "REPORT_AGENT_AWS_REGION",
         "REPORT_AGENT_COGNITO_USER_POOL_ID",
         "REPORT_AGENT_COGNITO_APP_CLIENT_ID",
+        "REPORT_AGENT_COGNITO_LOGOUT_ENDPOINT",
         "REPORT_AGENT_AUTH_REDIRECT_URI",
         "REPORT_AGENT_AUTH_POST_LOGOUT_REDIRECT_URI",
     ],
@@ -72,6 +75,7 @@ def test_cognito_auth_config_requires_each_configured_value(
         "REPORT_AGENT_AWS_REGION": "us-east-1",
         "REPORT_AGENT_COGNITO_USER_POOL_ID": "us-east-1_example",
         "REPORT_AGENT_COGNITO_APP_CLIENT_ID": "client-123",
+        "REPORT_AGENT_COGNITO_LOGOUT_ENDPOINT": "https://auth.example/logout",
         "REPORT_AGENT_AUTH_REDIRECT_URI": "https://demo.example/callback",
         "REPORT_AGENT_AUTH_POST_LOGOUT_REDIRECT_URI": "https://demo.example/",
     }

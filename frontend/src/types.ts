@@ -9,6 +9,7 @@ export type RunState =
 export interface CognitoPublicConfig {
   authority: string;
   client_id: string;
+  logout_endpoint: string;
   redirect_uri: string;
   post_logout_redirect_uri: string;
 }

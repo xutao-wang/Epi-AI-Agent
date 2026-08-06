@@ -12,6 +12,7 @@ const cognitoConfig = {
   cognito: {
     authority: "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_example",
     client_id: "public-client-id",
+    logout_endpoint: "https://auth.example.test/logout",
     redirect_uri: "https://app.test/auth/callback",
     post_logout_redirect_uri: "https://app.test/",
   },
@@ -150,7 +151,7 @@ describe("createBrowserAuthClient", () => {
     expect(manager.signinRedirect).not.toHaveBeenCalled();
   });
 
-  it("deletes the server-side provider key before Cognito sign-out", async () => {
+  it("deletes the provider key, removes local user, then uses the Cognito logout endpoint", async () => {
     const order: string[] = [];
     const fetchMock = vi
       .fn()
@@ -160,21 +161,29 @@ describe("createBrowserAuthClient", () => {
         return Promise.resolve(new Response(null, { status: 204 }));
       });
     const manager = userManager({
-      signoutRedirect: vi.fn().mockImplementation(() => {
-        order.push("signout");
+      removeUser: vi.fn().mockImplementation(() => {
+        order.push("remove-user");
         return Promise.resolve();
       }),
+    });
+    const navigateTo = vi.fn((url: string) => {
+      order.push(`navigate:${url}`);
     });
     const client = await createBrowserAuthClient({
       apiBase: "http://api.test",
       fetchImpl: fetchMock,
       randomUUID: () => "11111111-1111-4111-8111-111111111111",
+      navigateTo,
       userManagerFactory: () => manager,
     });
 
     await client.signOut();
 
-    expect(order).toEqual(["delete:DELETE", "signout"]);
+    const logoutUrl =
+      "https://auth.example.test/logout?client_id=public-client-id&" +
+      "logout_uri=https%3A%2F%2Fapp.test%2F";
+    expect(order).toEqual(["delete:DELETE", "remove-user", `navigate:${logoutUrl}`]);
     expect(fetchMock.mock.calls[1][0]).toBe("http://api.test/api/session/provider-key");
+    expect(navigateTo).toHaveBeenCalledWith(logoutUrl);
   });
 });

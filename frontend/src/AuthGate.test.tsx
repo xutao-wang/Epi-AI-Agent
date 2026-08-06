@@ -1,9 +1,12 @@
 import "@testing-library/jest-dom/vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { User } from "oidc-client-ts";
 import AuthGate from "./AuthGate";
-import type { BrowserAuthClient } from "./authClient";
+import {
+  createBrowserAuthClient,
+  type BrowserAuthClient,
+} from "./authClient";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -105,5 +108,61 @@ describe("AuthGate", () => {
 
     expect(await screen.findByText("Native app null")).toBeInTheDocument();
     expect(client.signIn).not.toHaveBeenCalled();
+  });
+
+  it("returns to signed out and stops a request that discovers token expiry", async () => {
+    const manager = {
+      getUser: vi
+        .fn()
+        .mockResolvedValueOnce(activeUser())
+        .mockResolvedValueOnce({ ...activeUser(), expired: true }),
+      removeUser: vi.fn().mockResolvedValue(undefined),
+      signinRedirect: vi.fn().mockResolvedValue(undefined),
+      signinRedirectCallback: vi.fn().mockResolvedValue(activeUser()),
+      signoutRedirect: vi.fn().mockResolvedValue(undefined),
+      events: {
+        addAccessTokenExpired: vi.fn(() => () => undefined),
+      },
+    };
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          auth_mode: "cognito",
+          provider_key_required: true,
+          cognito: {
+            authority: "https://cognito.example.test/pool",
+            client_id: "public-client-id",
+            logout_endpoint: "https://auth.example.test/logout",
+            redirect_uri: "https://app.test/auth/callback",
+            post_logout_redirect_uri: "https://app.test/",
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    const client = await createBrowserAuthClient({
+      apiBase: "http://api.test",
+      fetchImpl: fetchMock,
+      randomUUID: () => "11111111-1111-4111-8111-111111111111",
+      userManagerFactory: () => manager,
+    });
+    render(
+      <AuthGate createClient={() => Promise.resolve(client)}>
+        {({ apiClient }) => (
+          <button
+            onClick={() => void apiClient.listConversations().catch(() => undefined)}
+            type="button"
+          >
+            Load protected data
+          </button>
+        )}
+      </AuthGate>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Load protected data" }));
+
+    expect(await screen.findByRole("button", { name: "Sign in" })).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(manager.removeUser).toHaveBeenCalledOnce();
   });
 });
