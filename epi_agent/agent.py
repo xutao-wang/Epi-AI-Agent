@@ -22,7 +22,7 @@ from epi_agent.runtime import (
     build_epi_agent_graph,
 )
 from epi_agent.runtimes.python import LocalPythonRuntime
-from epi_agent.studies import StudyRegistry
+from epi_agent.studies import SearchableStudyDesignProvider, StudyBundle, StudyRegistry
 from epi_agent.tool_packs.analysis import (
     build_analysis_review_tool_registry,
 )
@@ -35,6 +35,10 @@ from epi_agent.tool_packs.publication import (
     build_publication_tool_registry,
 )
 from epi_agent.tool_packs.publication.pubmed import is_pubmed_configured
+from epi_agent.tool_packs.study_design import (
+    STUDY_DESIGN_SYSTEM_PROMPT,
+    build_study_design_tool_registry,
+)
 from utils.attachment_readers import AttachmentReaderService
 from utils.dataset_artifacts import is_selectable_dataset_artifact
 from utils.model_runtime_profiles import ModelRuntimeProfile
@@ -126,7 +130,11 @@ General utility rules:
   inspection, or epidemiological analysis."""
 
 
-def build_general_system_prompt(*, include_db_rag: bool) -> str:
+def build_general_system_prompt(
+    *,
+    include_db_rag: bool,
+    include_study_design: bool = False,
+) -> str:
     sections = [
         GENERAL_CORE_INSTRUCTIONS,
         build_publication_system_prompt(
@@ -135,6 +143,8 @@ def build_general_system_prompt(*, include_db_rag: bool) -> str:
     ]
     if include_db_rag:
         sections.append(DB_RAG_SYSTEM_PROMPT)
+    if include_study_design:
+        sections.append(STUDY_DESIGN_SYSTEM_PROMPT)
     return "\n\n".join(sections)
 
 
@@ -302,7 +312,7 @@ def build_epi_agent_context_prompt(
             sort_keys=True,
         )
     )
-    design_context = " ".join(str(study_design_context or "").split())
+    design_context = str(study_design_context or "").strip()
     if design_context:
         return f"{artifact_context}\n\n{design_context}"
     return artifact_context
@@ -407,11 +417,16 @@ def build_general_epi_agent_graph(
     checkpointer: Any | None = None,
     max_iterations: int = DEFAULT_EPI_AGENT_MAX_ITERATIONS,
 ) -> CompiledStateGraph:
+    include_study_design = any(
+        isinstance(study.study_design, SearchableStudyDesignProvider)
+        for study in studies.values
+    )
     registry = build_general_epi_agent_registry(
         service=service,
         python_runtime=python_runtime,
         runtime_root=runtime_root,
         include_db_rag=include_db_rag,
+        studies=studies,
     )
 
     def context_factory(
@@ -452,13 +467,7 @@ def build_general_epi_agent_graph(
             state.get("active_study_id") or default_study_id or ""
         ).strip()
         study = studies.get(active_study_id)
-        study_design = getattr(study, "study_design", None)
-        render_context = getattr(study_design, "render_context", None)
-        study_design_context = (
-            str(render_context()).strip()
-            if callable(render_context)
-            else ""
-        )
+        study_design_context = render_authoritative_study_design_context(study)
         return build_epi_agent_context_prompt(
             state,
             study_design_context=study_design_context,
@@ -471,6 +480,7 @@ def build_general_epi_agent_graph(
             agent_name="epi_agent",
             system_prompt=build_general_system_prompt(
                 include_db_rag=include_db_rag,
+                include_study_design=include_study_design,
             ),
             registry=registry,
             studies=studies,
@@ -490,6 +500,7 @@ def build_general_epi_agent_registry(
     python_runtime: Any | None = None,
     runtime_root: str | Path | None,
     include_db_rag: bool = True,
+    studies: StudyRegistry | None = None,
 ) -> ToolRegistry:
     resolved_python_runtime = python_runtime or LocalPythonRuntime(
         runtime_root=runtime_root,
@@ -499,6 +510,18 @@ def build_general_epi_agent_registry(
             *build_general_tool_registry().tools(),
             *build_attachment_tool_registry(service).tools(),
             *build_publication_tool_registry().tools(),
+            *(
+                build_study_design_tool_registry().tools()
+                if studies is not None
+                and any(
+                    isinstance(
+                        study.study_design,
+                        SearchableStudyDesignProvider,
+                    )
+                    for study in studies.values
+                )
+                else ()
+            ),
             *(
                 build_db_rag_tool_registry().tools()
                 if include_db_rag
@@ -513,6 +536,26 @@ def build_general_epi_agent_registry(
     )
 
 
+def render_authoritative_study_design_context(
+    study: StudyBundle | None,
+) -> str:
+    if study is None or study.study_design is None:
+        return ""
+    render_context = getattr(study.study_design, "render_context", None)
+    if not callable(render_context):
+        return ""
+    context = str(render_context() or "").strip()
+    if not context:
+        return ""
+    identity = study.study_id
+    if study.package_version:
+        identity += f"@{study.package_version}"
+    return (
+        f"Authoritative study design for {identity} ({study.label}):\n"
+        f"{context}"
+    )
+
+
 __all__ = [
     "EpiAgentState",
     "GENERAL_CORE_INSTRUCTIONS",
@@ -522,4 +565,5 @@ __all__ = [
     "build_epi_agent_context_prompt",
     "build_general_epi_agent_graph",
     "build_general_epi_agent_registry",
+    "render_authoritative_study_design_context",
 ]
