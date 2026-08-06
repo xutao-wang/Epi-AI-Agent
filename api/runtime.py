@@ -15,6 +15,7 @@ import uuid
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 from langgraph.graph.state import CompiledStateGraph
 import httpx
@@ -276,6 +277,13 @@ class FileArtifactBytes:
     content: bytes
     mime: str
     filename: str
+
+
+@dataclass(frozen=True)
+class ReadOnlyCheckpointSnapshot:
+    values: dict[str, Any]
+    next: tuple[str, ...]
+    interrupts: tuple[Any, ...]
 
 
 def _matches_pending_analysis_review(
@@ -645,6 +653,7 @@ class ReportAgentApiRuntime:
     default_runtime_settings: dict[str, Any]
     models: list[str]
     runtime_root: str | Path | None = None
+    checkpoint_path: str | Path | None = None
     capabilities: RuntimeCapabilities = field(
         default_factory=lambda: RuntimeCapabilities(
             publication_knowledge=RuntimeCapability(
@@ -846,6 +855,14 @@ class ReportAgentApiRuntime:
                 self._threads[key] = thread
             return thread
 
+    def authorize_thread(
+        self,
+        identity: RequestIdentity,
+        thread_id: str,
+    ) -> None:
+        """Prove ownership without constructing a provider-bound graph."""
+        self._require_owned_thread(identity, thread_id)
+
     def _thread(
         self,
         identity: RequestIdentity | str,
@@ -950,6 +967,55 @@ class ReportAgentApiRuntime:
         if thread.app is None or thread.runner is None:
             raise KeyError(thread.thread_id)
         return thread.app, thread.runner
+
+    def _read_only_checkpoint(
+        self,
+        identity: RequestIdentity,
+        thread_id: str,
+    ) -> ReadOnlyCheckpointSnapshot | None:
+        if self.checkpoint_path is None:
+            return None
+        with SqliteSaver.from_conn_string(str(self.checkpoint_path)) as saver:
+            saved = saver.get_tuple(self._checkpoint_config(identity, thread_id))
+        if saved is None:
+            return None
+        channel_values = dict(saved.checkpoint.get("channel_values") or {})
+        root = channel_values.get("__root__")
+        values = dict(root) if isinstance(root, dict) else channel_values
+        next_nodes = tuple(
+            key.removeprefix("branch:to:")
+            for key in channel_values
+            if key.startswith("branch:to:")
+        )
+        interrupts: list[Any] = []
+        for _task_id, channel, value in list(saved.pending_writes or []):
+            if channel != "__interrupt__":
+                continue
+            if isinstance(value, (list, tuple)):
+                interrupts.extend(value)
+            else:
+                interrupts.append(value)
+        return ReadOnlyCheckpointSnapshot(
+            values=values,
+            next=next_nodes,
+            interrupts=tuple(interrupts),
+        )
+
+    def _snapshot(
+        self,
+        identity: RequestIdentity | str,
+        thread_id: str,
+        thread: ThreadRuntime,
+    ) -> Any | None:
+        if thread.app is not None:
+            app, _runner = self._bound_graph(thread)
+            return app.get_state(
+                self._config_for(identity, thread_id),
+                subgraphs=True,
+            )
+        if isinstance(identity, RequestIdentity):
+            return self._read_only_checkpoint(identity, thread_id)
+        return None
 
     def runtime_info(self) -> RuntimeInfo:
         return RuntimeInfo(**self._normalize_settings().model_dump())
@@ -1382,6 +1448,11 @@ class ReportAgentApiRuntime:
             app.checkpointer.delete_thread(
                 self._checkpoint_config(identity, thread_id)["configurable"]["thread_id"]
             )
+        elif self.checkpoint_path is not None:
+            with SqliteSaver.from_conn_string(str(self.checkpoint_path)) as saver:
+                saver.delete_thread(
+                    self._checkpoint_config(identity, thread_id)["configurable"]["thread_id"]
+                )
         if self._attachment_store is not None:
             self._attachment_store.delete_thread(self._attachment_scope(identity, thread_id))
         with self._lock:
@@ -1467,11 +1538,9 @@ class ReportAgentApiRuntime:
             thread_id = identity
         assert attachment_id is not None
         thread = self._thread(identity, thread_id)
-        app, _runner = self._bound_graph(thread)
-        snapshot = app.get_state(
-            self._config_for(identity, thread_id),
-            subgraphs=True,
-        )
+        snapshot = self._snapshot(identity, thread_id, thread)
+        if snapshot is None:
+            raise KeyError(thread_id)
         values = _projection_values(snapshot)
         artifacts = dict(values.get("artifacts") or {})
         attachment_events = [
@@ -1605,6 +1674,15 @@ class ReportAgentApiRuntime:
                 raise TypeError("identity must be a RequestIdentity")
             self._ensure_graph(identity, thread, provider_api_key)
         if thread.app is None or thread.runner is None:
+            snapshot = self._snapshot(identity, thread_id, thread)
+            if snapshot is not None:
+                return project_thread_state(
+                    thread_id=thread_id,
+                    snapshot=snapshot,
+                    run_status=_idle_status(),
+                    runtime_settings=thread.settings,
+                    runtime_settings_locked=thread.locked,
+                )
             return project_thread_state(
                 thread_id=thread_id,
                 snapshot=None,
@@ -1645,8 +1723,9 @@ class ReportAgentApiRuntime:
         allow_current_pending_review: bool = False,
     ) -> dict[str, Any]:
         thread = self._thread(identity, thread_id)
-        app, _runner = self._bound_graph(thread)
-        snapshot = app.get_state(self._config_for(identity, thread_id), subgraphs=True)
+        snapshot = self._snapshot(identity, thread_id, thread)
+        if snapshot is None:
+            raise KeyError(thread_id)
         values = _projection_values(snapshot)
         datasets = dict(dict(values.get("artifacts") or {}).get("datasets") or {})
         artifact = datasets.get(dataset_id)
@@ -1680,8 +1759,9 @@ class ReportAgentApiRuntime:
         artifact_id: str,
     ) -> dict[str, Any]:
         thread = self._thread(identity, thread_id)
-        app, _runner = self._bound_graph(thread)
-        snapshot = app.get_state(self._config_for(identity, thread_id), subgraphs=True)
+        snapshot = self._snapshot(identity, thread_id, thread)
+        if snapshot is None:
+            raise KeyError(thread_id)
         values = _projection_values(snapshot)
         files = dict(dict(values.get("artifacts") or {}).get("files") or {})
         artifact = files.get(artifact_id)
@@ -1961,8 +2041,9 @@ class ReportAgentApiRuntime:
         else:
             thread_id = identity
         thread = self._thread(identity, thread_id)
-        app, _runner = self._bound_graph(thread)
-        snapshot = app.get_state(self._config_for(identity, thread_id), subgraphs=True)
+        snapshot = self._snapshot(identity, thread_id, thread)
+        if snapshot is None:
+            raise KeyError(thread_id)
         values = dict(getattr(snapshot, "values", None) or {})
         return build_thread_export(
             thread_id,

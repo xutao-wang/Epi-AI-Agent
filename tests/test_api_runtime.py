@@ -9,11 +9,12 @@ import zipfile
 
 import pandas as pd
 import pytest
+import sqlite3
 from httpx import ReadTimeout, Request, Response
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.sqlite import SqliteSaver
-from langgraph.graph import START, StateGraph
-from langgraph.types import Command
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command, interrupt
 from openai import (
     APIConnectionError,
     AuthenticationError,
@@ -3002,6 +3003,116 @@ def test_background_runner_supports_compiled_graph_with_sqlite_saver() -> None:
 
         assert status["state"] == "done"
         assert status["steps"] == 1
+
+
+def test_owner_can_recover_sqlite_interrupt_but_other_user_cannot_read_or_resume(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "owner-recovery.db"
+    history_store = ConversationHistoryStore(database_path)
+    user_a = _identity("user-a")
+    user_b = _identity("user-b")
+
+    builder = StateGraph(dict)
+
+    def seed_artifact(state: dict[str, Any]) -> dict[str, Any]:
+        artifacts = dict(state.get("artifacts") or {})
+        files = dict(artifacts.get("files") or {})
+        files["figure-recovered"] = {
+            "artifact_id": "figure-recovered",
+            "kind": "figure",
+            "producer": "executor",
+            "mime": "image/png",
+            "summary": "Recovered figure",
+            "status": "approved",
+            "created_at": "2026-08-06T00:00:00+00:00",
+            "content": {"data_base64": "cmVjb3ZlcmVk"},
+        }
+        artifacts["files"] = files
+        return {**state, "artifacts": artifacts}
+
+    def request_review(state: dict[str, Any]) -> dict[str, Any]:
+        decision = interrupt(
+            {
+                "type": "model_output_limit",
+                "model_id": "gpt-5.6-sol",
+                "model_label": "gpt-5.6-sol (Medium)",
+                "automatic_token_ceiling": 50_000,
+                "continuation_tokens": 25_000,
+                "additional_output_cost": "$0.75",
+                "message": "Continue generating the analysis?",
+                "actions": ["continue", "cancel"],
+            }
+        )
+        return {**state, "review_decision": decision}
+
+    builder.add_node("seed", seed_artifact)
+    builder.add_node("review", request_review)
+    builder.add_edge(START, "seed")
+    builder.add_edge("seed", "review")
+    builder.add_edge("review", END)
+
+    def runtime_with_connection():
+        connection = sqlite3.connect(database_path, check_same_thread=False)
+        checkpointer = SqliteSaver(connection)
+        runtime = ReportAgentApiRuntime(
+            graph_factory=lambda _settings, _context: builder.compile(
+                checkpointer=checkpointer
+            ),
+            default_runtime_settings=_DEFAULT_RUNTIME_SETTINGS,
+            models=["gpt-5.4"],
+            history_store=history_store,
+            checkpoint_path=database_path,
+        )
+        return runtime, connection
+
+    first_runtime, first_connection = runtime_with_connection()
+    thread_id = first_runtime.create_thread(user_a)
+    first_runtime.submit_message(
+        user_a,
+        thread_id,
+        "Create a cohort",
+        provider_api_key="key-a",
+    )
+    deadline = time.time() + 2
+    first_state = first_runtime.state(user_a, thread_id)
+    while first_state.active_interrupt is None and time.time() < deadline:
+        time.sleep(0.01)
+        first_state = first_runtime.state(user_a, thread_id)
+    assert first_state.active_interrupt is not None
+    interrupt_id = first_state.active_interrupt.id
+    first_runtime._title_executor.shutdown(wait=True)
+    first_connection.close()
+
+    recovered_runtime, recovered_connection = runtime_with_connection()
+    try:
+        recovered = recovered_runtime.state(user_a, thread_id)
+
+        assert recovered.active_interrupt is not None
+        assert recovered.active_interrupt.id == interrupt_id
+        assert recovered_runtime.file_artifact_bytes(
+            user_a,
+            thread_id,
+            "figure-recovered",
+        ).content == b"recovered"
+        assert recovered_runtime.export_thread_archive(user_a, thread_id)
+        with pytest.raises(KeyError):
+            recovered_runtime.state(
+                user_b,
+                thread_id,
+                provider_api_key="key-b",
+            )
+        with pytest.raises(KeyError):
+            recovered_runtime.resume_interrupt(
+                user_b,
+                thread_id,
+                interrupt_id,
+                {"action": "continue"},
+                provider_api_key="key-b",
+            )
+    finally:
+        recovered_runtime._title_executor.shutdown(wait=True)
+        recovered_connection.close()
 
 
 def test_runner_stops_when_interrupt_is_reached() -> None:

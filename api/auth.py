@@ -35,6 +35,11 @@ class TokenVerifier(Protocol):
         raise NotImplementedError
 
 
+class JwksClient(Protocol):
+    def get_signing_key_from_jwt(self, token: str):
+        raise NotImplementedError
+
+
 class LocalTokenVerifier:
     def verify(self, authorization: str | None) -> AuthenticatedUser:
         return AuthenticatedUser(owner_user_id="local-user")
@@ -47,11 +52,12 @@ class CognitoTokenVerifier:
         issuer: str,
         app_client_id: str,
         jwks_url: str | None = None,
+        jwks_client: JwksClient | None = None,
     ) -> None:
         self.issuer = issuer.rstrip("/")
         self.app_client_id = app_client_id
-        self.jwks_client = jwt.PyJWKClient(
-            jwks_url or f"{self.issuer}/.well-known/jwks.json"
+        self.jwks_client = jwks_client or jwt.PyJWKClient(
+            jwks_url or f"{self.issuer}/.well-known/jwks.json",
         )
 
     def verify(self, authorization: str | None) -> AuthenticatedUser:

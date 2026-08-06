@@ -199,6 +199,7 @@ def build_application(*, environ: Mapping[str, str] | None = None) -> FastAPI:
         default_runtime_settings=runtime_settings,
         models=list(allowed_models),
         runtime_root=runtime_root_path,
+        checkpoint_path=db_path,
         history_store=history_store,
         title_generator_factory=lambda _settings, provider_api_key: (
             OpenAIConversationTitleGenerator.from_credentials(

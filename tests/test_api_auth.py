@@ -118,6 +118,28 @@ def test_cognito_verifier_accepts_rs256_access_token(
     )
 
 
+def test_cognito_verifier_accepts_an_injected_jwks_client(
+    rsa_private_key: rsa.RSAPrivateKey,
+) -> None:
+    class StaticJwksClient:
+        def get_signing_key_from_jwt(self, token: str):
+            return type(
+                "SigningKey",
+                (),
+                {"key": rsa_private_key.public_key()},
+            )()
+
+    verifier = CognitoTokenVerifier(
+        issuer=_ISSUER,
+        app_client_id=_APP_CLIENT_ID,
+        jwks_client=StaticJwksClient(),
+    )
+
+    user = verifier.verify(f"Bearer {_access_token(rsa_private_key)}")
+
+    assert user.owner_user_id == "cognito-subject-123"
+
+
 def test_cognito_verifier_does_not_substitute_email_for_subject(
     rsa_private_key: rsa.RSAPrivateKey,
     jwks_url: str,

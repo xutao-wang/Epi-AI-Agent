@@ -68,10 +68,7 @@ from utils.review_interrupts import InvalidInterruptDecisionError
 _UPLOAD_READ_CHUNK_BYTES = 1024 * 1024
 _MULTIPART_OVERHEAD_BYTES = 1024 * 1024
 _PROVIDER_KEY_INVALID_KIND = "PROVIDER_KEY_INVALID"
-
-
-class _RequestBodyTooLarge(Exception):
-    pass
+_PROVIDER_KEY_REQUIRED_CODE = "PROVIDER_KEY_REQUIRED"
 
 
 def _content_disposition(disposition: str, filename: str) -> str:
@@ -89,67 +86,6 @@ def _content_disposition(disposition: str, filename: str) -> str:
         f'{disposition}; filename="{ascii_fallback}"; '
         f"filename*=UTF-8''{quote(clean, safe='')}"
     )
-
-
-class AttachmentRequestBodyLimitMiddleware:
-    def __init__(self, app: Any, *, max_bytes: int) -> None:
-        self.app = app
-        self.max_bytes = max_bytes
-
-    async def __call__(self, scope, receive, send) -> None:
-        is_attachment_upload = (
-            scope.get("type") == "http"
-            and scope.get("method") == "POST"
-            and str(scope.get("path") or "").endswith("/attachments")
-        )
-        if not is_attachment_upload:
-            await self.app(scope, receive, send)
-            return
-
-        headers = {
-            key.lower(): value
-            for key, value in list(scope.get("headers") or [])
-        }
-        declared_length = headers.get(b"content-length")
-        if declared_length is not None:
-            try:
-                if int(declared_length) > self.max_bytes:
-                    response = JSONResponse(
-                        status_code=413,
-                        content={"detail": "Attachment request body is too large"},
-                    )
-                    await response(scope, receive, send)
-                    return
-            except ValueError:
-                pass
-
-        received = 0
-        response_started = False
-
-        async def limited_receive():
-            nonlocal received
-            message = await receive()
-            received += len(message.get("body") or b"")
-            if received > self.max_bytes:
-                raise _RequestBodyTooLarge
-            return message
-
-        async def tracked_send(message):
-            nonlocal response_started
-            if message.get("type") == "http.response.start":
-                response_started = True
-            await send(message)
-
-        try:
-            await self.app(scope, limited_receive, tracked_send)
-        except _RequestBodyTooLarge:
-            if response_started:
-                raise
-            response = JSONResponse(
-                status_code=413,
-                content={"detail": "Attachment request body is too large"},
-            )
-            await response(scope, receive, send)
 
 
 async def _read_bounded_attachment_uploads(
@@ -241,13 +177,26 @@ def create_app(
     credential_store = credential_store or ProviderCredentialStore()
     provider_key_validator = provider_key_validator or OpenAIProviderKeyValidator()
     attachment_limits = runtime.attachment_limits
-    app.add_middleware(
-        AttachmentRequestBodyLimitMiddleware,
-        max_bytes=(
-            attachment_limits.max_message_bytes
-            + _MULTIPART_OVERHEAD_BYTES
-        ),
-    )
+
+    def provider_key_for_work(
+        identity: RequestIdentity,
+        thread_id: str,
+    ) -> str:
+        try:
+            runtime.authorize_thread(identity, thread_id)
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="Conversation not found",
+            ) from exc
+        provider_key = credential_store.get(identity)
+        if provider_key is None:
+            raise HTTPException(
+                status_code=428,
+                detail={"code": _PROVIDER_KEY_REQUIRED_CODE},
+            )
+        return provider_key
+
     app.add_middleware(
         CORSMiddleware,
         allow_origin_regex=cors_origin_regex or cors_allow_origin_regex(),
@@ -391,11 +340,15 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @api.get("/api/runtime")
-    def runtime_info() -> RuntimeInfo:
+    def runtime_info(
+        _identity: RequestIdentity = Depends(require_identity),
+    ) -> RuntimeInfo:
         return runtime.runtime_info()
 
     @api.get("/api/runtime/options")
-    def runtime_options() -> RuntimeOptions:
+    def runtime_options(
+        _identity: RequestIdentity = Depends(require_identity),
+    ) -> RuntimeOptions:
         return runtime.runtime_options()
 
     @api.get("/api/threads/{thread_id}/state")
@@ -404,7 +357,11 @@ def create_app(
         identity: RequestIdentity = Depends(require_identity),
     ) -> ApiThreadState:
         try:
-            return runtime.state(identity, thread_id)
+            return runtime.state(
+                identity,
+                thread_id,
+                provider_api_key=credential_store.get(identity),
+            )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Conversation not found") from exc
 
@@ -414,10 +371,30 @@ def create_app(
     )
     async def stage_attachments(
         thread_id: str,
+        http_request: Request,
         files: list[UploadFile] = File(...),
         identity: RequestIdentity = Depends(require_identity),
     ) -> AttachmentUploadResult:
         try:
+            runtime.authorize_thread(identity, thread_id)
+            declared_length = http_request.headers.get("content-length")
+            try:
+                content_length = (
+                    int(declared_length)
+                    if declared_length is not None
+                    else None
+                )
+            except ValueError:
+                content_length = None
+            if (
+                content_length is not None
+                and content_length
+                > attachment_limits.max_message_bytes + _MULTIPART_OVERHEAD_BYTES
+            ):
+                raise HTTPException(
+                    status_code=413,
+                    detail="Attachment request body is too large",
+                )
             uploads = await _read_bounded_attachment_uploads(
                 files,
                 runtime.attachment_limits,
@@ -614,6 +591,7 @@ def create_app(
         request: SubmitMessageRequest,
         identity: RequestIdentity = Depends(require_identity),
     ) -> ApiThreadState:
+        provider_key = provider_key_for_work(identity, thread_id)
         try:
             runtime.submit_message(
                 identity,
@@ -622,6 +600,7 @@ def create_app(
                 request.attachment_ids,
                 request.model_name,
                 request.active_study_id,
+                provider_api_key=provider_key,
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Conversation not found") from exc
@@ -641,12 +620,14 @@ def create_app(
         request: ResumeInterruptRequest,
         identity: RequestIdentity = Depends(require_identity),
     ) -> ApiThreadState:
+        provider_key = provider_key_for_work(identity, thread_id)
         try:
             runtime.resume_interrupt(
                 identity,
                 thread_id,
                 interrupt_id,
                 request.model_dump(exclude_defaults=True),
+                provider_api_key=provider_key,
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Conversation not found") from exc

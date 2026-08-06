@@ -6,7 +6,7 @@ import zipfile
 
 from fastapi.testclient import TestClient
 
-from api.auth import LOCAL_SESSION_ID
+from api.auth import AuthenticatedUser, LOCAL_SESSION_ID, RequestIdentity
 from api.provider_credentials import ProviderCredentialStore
 from api.runtime import ThreadAlreadyRunningError, ThreadAwaitingReviewError
 from api.schemas import (
@@ -45,6 +45,10 @@ class _FakeRuntime:
             max_message_bytes=96,
         )
         self.released_sessions: list[tuple[str, str]] = []
+        self.authorized_threads: list[str] = []
+        self.state_provider_keys: list[str | None] = []
+        self.submitted_provider_keys: list[str] = []
+        self.resumed_provider_keys: list[str] = []
 
     def release_session(self, owner_user_id: str, session_id: str) -> None:
         self.released_sessions.append((owner_user_id, session_id))
@@ -53,6 +57,9 @@ class _FakeRuntime:
         self.created_threads += 1
         self.created_thread_settings.append(runtime_settings)
         return "thread-created"
+
+    def authorize_thread(self, _identity, thread_id: str) -> None:
+        self.authorized_threads.append(thread_id)
 
     def list_conversations(self, _identity):
         return [
@@ -158,7 +165,14 @@ class _FakeRuntime:
             ),
         )
 
-    def state(self, _identity, thread_id: str) -> ApiThreadState:
+    def state(
+        self,
+        _identity,
+        thread_id: str,
+        *,
+        provider_api_key: str | None = None,
+    ) -> ApiThreadState:
+        self.state_provider_keys.append(provider_api_key)
         return ApiThreadState(
             thread_id=thread_id,
             run=RunStatus(state="idle"),
@@ -177,6 +191,8 @@ class _FakeRuntime:
         attachment_ids: list[str],
         model_name: str | None = None,
         active_study_id: str | None = None,
+        *,
+        provider_api_key: str,
     ) -> None:
         if text == "duplicate":
             raise ThreadAlreadyRunningError(thread_id)
@@ -185,11 +201,21 @@ class _FakeRuntime:
         self.submitted_messages.append((thread_id, text, attachment_ids))
         self.submitted_models.append(model_name)
         self.submitted_studies.append(active_study_id)
+        self.submitted_provider_keys.append(provider_api_key)
 
-    def resume_interrupt(self, _identity, thread_id: str, interrupt_id: str, payload: dict) -> None:
+    def resume_interrupt(
+        self,
+        _identity,
+        thread_id: str,
+        interrupt_id: str,
+        payload: dict,
+        *,
+        provider_api_key: str,
+    ) -> None:
         if payload.get("feedback") == "duplicate":
             raise ThreadAlreadyRunningError(thread_id)
         self.resumed_interrupts.append((thread_id, interrupt_id, payload))
+        self.resumed_provider_keys.append(provider_api_key)
 
     def reset(self, _identity, thread_id: str) -> str:
         self.reset_threads.append(thread_id)
@@ -303,9 +329,22 @@ class _FakeRuntime:
         }
 
 
-def _client(runtime: _FakeRuntime) -> TestClient:
+def _client(
+    runtime: _FakeRuntime,
+    *,
+    with_provider_key: bool = True,
+) -> TestClient:
+    credential_store = ProviderCredentialStore()
+    if with_provider_key:
+        credential_store.put(
+            RequestIdentity(
+                user=AuthenticatedUser(owner_user_id="local-user"),
+                session_id=LOCAL_SESSION_ID,
+            ),
+            "session-provider-key",
+        )
     return TestClient(
-        create_app(runtime=runtime),
+        create_app(runtime=runtime, credential_store=credential_store),
         headers={"X-Epi-Session-ID": LOCAL_SESSION_ID},
     )
 
@@ -863,6 +902,80 @@ def test_attachment_upload_rejects_oversized_file_before_runtime_staging() -> No
     assert not hasattr(runtime, "uploaded")
 
 
+def test_provider_triggering_routes_require_the_exact_session_key() -> None:
+    runtime = _FakeRuntime()
+    client = _client(runtime, with_provider_key=False)
+
+    submit = client.post(
+        "/api/threads/thread-1/messages",
+        json={"text": "Create a cohort"},
+    )
+    resume = client.post(
+        "/api/threads/thread-1/interrupts/interrupt-1/resume",
+        json={"action": "approve", "selected_column_keys": ["age"]},
+    )
+
+    expected = {"detail": {"code": "PROVIDER_KEY_REQUIRED"}}
+    assert submit.status_code == 428
+    assert submit.json() == expected
+    assert resume.status_code == 428
+    assert resume.json() == expected
+    assert runtime.authorized_threads == ["thread-1", "thread-1"]
+    assert runtime.submitted_messages == []
+    assert runtime.resumed_interrupts == []
+
+
+def test_provider_triggering_routes_forward_the_session_key_only_to_work() -> None:
+    runtime = _FakeRuntime()
+    client = _client(runtime)
+
+    assert client.post(
+        "/api/threads/thread-1/messages",
+        json={"text": "Create a cohort"},
+    ).status_code == 200
+    assert client.post(
+        "/api/threads/thread-1/interrupts/interrupt-1/resume",
+        json={"action": "approve", "selected_column_keys": ["age"]},
+    ).status_code == 200
+
+    assert runtime.submitted_provider_keys == ["session-provider-key"]
+    assert runtime.resumed_provider_keys == ["session-provider-key"]
+
+
+def test_read_only_and_empty_thread_routes_remain_usable_without_a_key() -> None:
+    runtime = _FakeRuntime()
+    client = _client(runtime, with_provider_key=False)
+
+    responses = [
+        client.get("/api/conversations"),
+        client.post("/api/conversations/thread-1/open"),
+        client.post("/api/threads"),
+        client.get("/api/runtime"),
+        client.get("/api/runtime/options"),
+        client.get("/api/threads/thread-1/state"),
+        client.get("/api/threads/thread-1/attachments/attachment-1"),
+        client.get("/api/threads/thread-1/datasets/dataset-1/preview"),
+        client.get("/api/threads/thread-1/datasets/dataset-1/schema"),
+        client.get("/api/threads/thread-1/datasets/dataset-1/download"),
+        client.get("/api/threads/thread-1/artifacts/figure-1"),
+        client.get("/api/threads/thread-1/artifacts/table-1/table-preview"),
+        client.get("/api/threads/thread-1/export"),
+        client.get("/api/threads/thread-1/export.zip"),
+    ]
+
+    assert [response.status_code for response in responses] == [200] * len(responses)
+    assert runtime.state_provider_keys == [None]
+
+
+def test_state_uses_an_available_key_for_owner_aware_checkpoint_recovery() -> None:
+    runtime = _FakeRuntime()
+
+    response = _client(runtime).get("/api/threads/thread-1/state")
+
+    assert response.status_code == 200
+    assert runtime.state_provider_keys == ["session-provider-key"]
+
+
 def test_attachment_upload_rejects_aggregate_and_count_limits() -> None:
     runtime = _FakeRuntime()
     client = _client(runtime)
@@ -1129,8 +1242,8 @@ def test_owner_mismatch_routes_return_the_same_non_disclosing_404() -> None:
     class _MissingRuntime(_FakeRuntime):
         def stage_attachments(self, *_args): raise KeyError("hidden")
         def discard_staged_attachment(self, *_args): raise KeyError("hidden")
-        def submit_message(self, *_args): raise KeyError("hidden")
-        def resume_interrupt(self, *_args): raise KeyError("hidden")
+        def submit_message(self, *_args, **_kwargs): raise KeyError("hidden")
+        def resume_interrupt(self, *_args, **_kwargs): raise KeyError("hidden")
         def reset(self, *_args): raise KeyError("hidden")
         def export_thread(self, *_args): raise KeyError("hidden")
         def export_thread_archive(self, *_args): raise KeyError("hidden")
