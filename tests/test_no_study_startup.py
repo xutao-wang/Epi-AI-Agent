@@ -1,0 +1,380 @@
+from __future__ import annotations
+
+import importlib
+import json
+import sqlite3
+import sys
+from pathlib import Path
+from typing import Any
+
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langgraph.checkpoint.memory import InMemorySaver
+import pytest
+
+from epi_agent.agent import build_general_epi_agent_graph
+from epi_agent.artifacts import StateArtifactStore
+from epi_agent.protocol import ToolContext, ToolExecutionError
+from epi_agent.studies import StudyBundle, StudyRegistry
+from epi_agent.tool_packs.publication import build_publication_tool_registry
+from graph.state import MetaKeys
+from utils.attachment_artifacts import LocalAttachmentStore
+from utils.attachment_readers import AttachmentReaderService
+from utils.model_runtime_profiles import model_runtime_profile
+
+
+def test_startup_claims_legacy_history_only_in_local_mode(tmp_path: Path) -> None:
+    from api.app import _history_store_for_auth_mode
+
+    def create_legacy_history(db_path: Path) -> None:
+        with sqlite3.connect(db_path) as connection:
+            connection.execute(
+                """
+                CREATE TABLE conversation_history (
+                    thread_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    title_source TEXT NOT NULL,
+                    model_name TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    last_opened_at TEXT,
+                    archived_at TEXT
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO conversation_history
+                VALUES ('legacy-thread', 'Legacy', 'automatic', 'gpt-5.4',
+                        '2026-08-06T00:00:00+00:00',
+                        '2026-08-06T00:00:00+00:00', NULL, NULL)
+                """
+            )
+
+    local_path = tmp_path / "local.db"
+    create_legacy_history(local_path)
+    local_store = _history_store_for_auth_mode(local_path, auth_mode="local")
+    assert [item.thread_id for item in local_store.list("local-user")] == ["legacy-thread"]
+
+    cognito_path = tmp_path / "cognito.db"
+    create_legacy_history(cognito_path)
+    cognito_store = _history_store_for_auth_mode(cognito_path, auth_mode="cognito")
+    assert cognito_store.list("local-user") == []
+    assert cognito_store.claim_unowned("other-user") == 1
+
+
+class _FinalModel:
+    def __init__(self) -> None:
+        self.messages: list[Any] = []
+
+    def bind_tools(self, _schemas: list[dict[str, Any]]) -> "_FinalModel":
+        return self
+
+    def invoke(
+        self,
+        messages: list[Any],
+        *,
+        config: dict[str, Any],
+        **_kwargs: Any,
+    ) -> AIMessage:
+        del config
+        self.messages = list(messages)
+        return AIMessage(content="A generic epidemiology answer.")
+
+
+class _StudyEvidenceModel:
+    def __init__(self) -> None:
+        self.step = 0
+        self.messages: list[Any] = []
+
+    def bind_tools(self, _schemas: list[dict[str, Any]]) -> "_StudyEvidenceModel":
+        return self
+
+    def invoke(
+        self,
+        messages: list[Any],
+        *,
+        config: dict[str, Any],
+        **_kwargs: Any,
+    ) -> AIMessage:
+        del config
+        self.step += 1
+        self.messages = list(messages)
+        if self.step == 1:
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "publication-search_study_evidence",
+                        "args": {"query": "tuberculosis", "limit": 5},
+                        "id": "call-1",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        return AIMessage(content="Select a study first.")
+
+
+def _service(tmp_path: Path) -> AttachmentReaderService:
+    return AttachmentReaderService(
+        LocalAttachmentStore(tmp_path),
+        runtime_root=tmp_path,
+    )
+
+
+def _state(*, active_study_id: str | None = None) -> dict[str, Any]:
+    state: dict[str, Any] = {
+        "messages": [HumanMessage(content="What is incidence?")],
+        "authorized_attachment_ids": [],
+        "artifact_ids": [],
+        "artifacts": {},
+        "meta": {
+            MetaKeys.THREAD_ID: "thread-1",
+            MetaKeys.LAST_USER_MESSAGE_HASH: "turn-1",
+        },
+        "output": {},
+        "final_response": None,
+        "iteration_count": 0,
+        "failure_signatures": [],
+        "current_turn_artifact_refs": [],
+        "analysis_review_feedback_history": [],
+    }
+    if active_study_id is not None:
+        state["active_study_id"] = active_study_id
+    return state
+
+
+def _bundle(study_id: str, marker: str) -> StudyBundle:
+    class _Design:
+        def render_context(self) -> str:
+            return marker
+
+    return StudyBundle(
+        study_id=study_id,
+        label=study_id,
+        knowledge=object(),
+        catalog=None,
+        data_sources={},
+        study_design=_Design(),
+    )
+
+
+def test_empty_studies_root_starts_with_study_capabilities_unavailable(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("REPORT_AGENT_RUNTIME_ROOT", str(tmp_path / "runtime"))
+    monkeypatch.setenv("REPORT_AGENT_STUDY_ROOT", str(tmp_path / "study_data"))
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    sys.modules.pop("api.app", None)
+
+    module = importlib.import_module("api.app")
+
+    assert module.app is not None
+    assert module.runtime.capabilities.model_dump() == {
+        "publication_knowledge": {
+            "status": "not_configured",
+            "message": "No study package is installed.",
+        },
+        "study_design": {
+            "status": "not_configured",
+            "message": "No study package is installed.",
+        },
+        "db_rag_dataset": {
+            "status": "not_configured",
+            "message": "No study package is installed.",
+        },
+    }
+
+
+def test_generic_agent_completes_without_an_installed_study(tmp_path: Path) -> None:
+    model = _FinalModel()
+    graph = build_general_epi_agent_graph(
+        llm=model,
+        model_profile=model_runtime_profile("gpt-5.4"),
+        service=_service(tmp_path),
+        studies=StudyRegistry(),
+        default_study_id=None,
+        runtime_root=tmp_path,
+        include_db_rag=False,
+        checkpointer=InMemorySaver(),
+    )
+
+    result = graph.invoke(
+        _state(),
+        {"configurable": {"thread_id": "thread-1"}},
+    )
+
+    assert result["final_response"] == "A generic epidemiology answer."
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        (
+            "publication-search_study_evidence",
+            {"query": "tuberculosis", "limit": 5},
+        ),
+        ("publication-open_study_source", {"source_id": "source-1"}),
+    ],
+)
+def test_study_evidence_tools_report_recoverable_no_study_error(
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> None:
+    context = ToolContext(
+        study=None,
+        artifact_store=StateArtifactStore(),
+        thread_id="thread-1",
+        policy=None,
+    )
+
+    with pytest.raises(ToolExecutionError) as error:
+        build_publication_tool_registry(include_pubmed=False).invoke(
+            tool_name,
+            arguments,
+            context=context,
+        )
+
+    assert error.value.code == "NO_STUDY_PACKAGE_INSTALLED"
+    assert error.value.recoverable is True
+
+
+def test_sole_study_is_used_as_the_default(tmp_path: Path) -> None:
+    model = _FinalModel()
+    studies = StudyRegistry([_bundle("study-one", "sole-study-marker")])
+    graph = build_general_epi_agent_graph(
+        llm=model,
+        model_profile=model_runtime_profile("gpt-5.4"),
+        service=_service(tmp_path),
+        studies=studies,
+        default_study_id=studies.sole_study_id(),
+        runtime_root=tmp_path,
+        include_db_rag=False,
+        checkpointer=InMemorySaver(),
+    )
+
+    result = graph.invoke(
+        _state(),
+        {"configurable": {"thread_id": "thread-1"}},
+    )
+
+    assert result["final_response"] == "A generic epidemiology answer."
+    assert any(
+        "sole-study-marker" in str(getattr(message, "content", ""))
+        for message in model.messages
+    )
+
+
+def test_explicit_active_study_selects_one_of_multiple_packages(
+    tmp_path: Path,
+) -> None:
+    model = _FinalModel()
+    studies = StudyRegistry(
+        [
+            _bundle("study-one", "first-study-marker"),
+            _bundle("study-two", "selected-study-marker"),
+        ]
+    )
+    graph = build_general_epi_agent_graph(
+        llm=model,
+        model_profile=model_runtime_profile("gpt-5.4"),
+        service=_service(tmp_path),
+        studies=studies,
+        default_study_id=studies.sole_study_id(),
+        runtime_root=tmp_path,
+        include_db_rag=False,
+        checkpointer=InMemorySaver(),
+    )
+
+    result = graph.invoke(
+        _state(active_study_id="study-two"),
+        {"configurable": {"thread_id": "thread-1"}},
+    )
+
+    assert result["final_response"] == "A generic epidemiology answer."
+    rendered_messages = [
+        str(getattr(message, "content", ""))
+        for message in model.messages
+    ]
+    assert any("selected-study-marker" in message for message in rendered_messages)
+    assert all("first-study-marker" not in message for message in rendered_messages)
+
+
+def test_multiple_studies_without_selection_report_selection_required(
+    tmp_path: Path,
+) -> None:
+    model = _StudyEvidenceModel()
+    studies = StudyRegistry(
+        [
+            _bundle("study-one", "first-study-marker"),
+            _bundle("study-two", "second-study-marker"),
+        ]
+    )
+    graph = build_general_epi_agent_graph(
+        llm=model,
+        model_profile=model_runtime_profile("gpt-5.4"),
+        service=_service(tmp_path),
+        studies=studies,
+        default_study_id=None,
+        runtime_root=tmp_path,
+        include_db_rag=False,
+        checkpointer=InMemorySaver(),
+    )
+
+    result = graph.invoke(
+        _state(),
+        {"configurable": {"thread_id": "thread-1"}},
+    )
+
+    assert result["final_response"] == "Select a study first."
+    tool_message = next(
+        message for message in model.messages if isinstance(message, ToolMessage)
+    )
+    error = json.loads(str(tool_message.content))["error"]
+    assert error["code"] == "ACTIVE_STUDY_SELECTION_REQUIRED"
+    assert error["recoverable"] is True
+    assert error["details"] == {
+        "available_study_ids": ["study-one", "study-two"]
+    }
+    assert "No study package is installed" not in error["message"]
+
+
+def test_multiple_installed_studies_report_selection_required_capabilities(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    studies = StudyRegistry(
+        [
+            _bundle("study-one", "first-study-marker"),
+            _bundle("study-two", "second-study-marker"),
+        ]
+    )
+    monkeypatch.setenv("REPORT_AGENT_RUNTIME_ROOT", str(tmp_path / "runtime"))
+    monkeypatch.setenv("REPORT_AGENT_STUDY_ROOT", str(tmp_path / "study_data"))
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(
+        "study_package.registry.discover_studies",
+        lambda _root: studies,
+    )
+    sys.modules.pop("api.app", None)
+
+    module = importlib.import_module("api.app")
+
+    capabilities = module.runtime.capabilities.model_dump()
+    assert {
+        capability["message"]
+        for capability in capabilities.values()
+    } == {"Multiple study packages are installed. Select an active study."}
+
+
+def test_optional_tool_context_has_no_unguarded_study_dereferences() -> None:
+    unsafe = []
+    for path in Path("epi_agent").rglob("*.py"):
+        for line_number, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(),
+            start=1,
+        ):
+            if "context.study." in line:
+                unsafe.append(f"{path}:{line_number}")
+
+    assert unsafe == []

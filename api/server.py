@@ -311,32 +311,41 @@ def create_app(
         return Response(status_code=204)
 
     @api.get("/api/conversations", response_model=ConversationHistoryResponse)
-    def list_conversations() -> ConversationHistoryResponse:
+    def list_conversations(
+        identity: RequestIdentity = Depends(require_identity),
+    ) -> ConversationHistoryResponse:
         return ConversationHistoryResponse(
-            items=[item.__dict__ for item in runtime.list_conversations()]
+            items=[item.__dict__ for item in runtime.list_conversations(identity)]
         )
 
     @api.patch("/api/conversations/{thread_id}")
     def rename_conversation(
         thread_id: str,
         request: RenameConversationRequest,
+        identity: RequestIdentity = Depends(require_identity),
     ):
-        record = runtime.rename_conversation(thread_id, request.title)
+        record = runtime.rename_conversation(identity, thread_id, request.title)
         if record is None:
             raise HTTPException(status_code=404, detail="Conversation not found")
         return record
 
     @api.post("/api/conversations/{thread_id}/open")
-    def open_conversation(thread_id: str):
-        record = runtime.open_conversation(thread_id)
+    def open_conversation(
+        thread_id: str,
+        identity: RequestIdentity = Depends(require_identity),
+    ):
+        record = runtime.open_conversation(identity, thread_id)
         if record is None:
             raise HTTPException(status_code=404, detail="Conversation not found")
         return record
 
     @api.post("/api/conversations/{thread_id}/archive")
-    def archive_conversation(thread_id: str):
+    def archive_conversation(
+        thread_id: str,
+        identity: RequestIdentity = Depends(require_identity),
+    ):
         try:
-            record = runtime.archive_conversation(thread_id)
+            record = runtime.archive_conversation(identity, thread_id)
         except (ThreadAlreadyRunningError, ThreadAwaitingReviewError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         if record is None:
@@ -344,9 +353,12 @@ def create_app(
         return record
 
     @api.post("/api/conversations/{thread_id}/restore")
-    def restore_conversation(thread_id: str):
+    def restore_conversation(
+        thread_id: str,
+        identity: RequestIdentity = Depends(require_identity),
+    ):
         try:
-            record = runtime.restore_conversation(thread_id)
+            record = runtime.restore_conversation(identity, thread_id)
         except (ThreadAlreadyRunningError, ThreadAwaitingReviewError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         if record is None:
@@ -354,9 +366,12 @@ def create_app(
         return record
 
     @api.delete("/api/conversations/{thread_id}", status_code=204)
-    def delete_conversation(thread_id: str) -> Response:
+    def delete_conversation(
+        thread_id: str,
+        identity: RequestIdentity = Depends(require_identity),
+    ) -> Response:
         try:
-            deleted = runtime.delete_conversation(thread_id)
+            deleted = runtime.delete_conversation(identity, thread_id)
         except (ThreadAlreadyRunningError, ThreadAwaitingReviewError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         if not deleted:
@@ -366,10 +381,11 @@ def create_app(
     @api.post("/api/threads")
     def create_thread(
         request: CreateThreadRequest | None = None,
+        identity: RequestIdentity = Depends(require_identity),
     ) -> CreateThreadResponse:
         settings = {"model_name": request.model_name} if request and request.model_name else None
         try:
-            return CreateThreadResponse(thread_id=runtime.create_thread(settings))
+            return CreateThreadResponse(thread_id=runtime.create_thread(identity, settings))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -382,8 +398,14 @@ def create_app(
         return runtime.runtime_options()
 
     @api.get("/api/threads/{thread_id}/state")
-    def get_thread_state(thread_id: str) -> ApiThreadState:
-        return runtime.state(thread_id)
+    def get_thread_state(
+        thread_id: str,
+        identity: RequestIdentity = Depends(require_identity),
+    ) -> ApiThreadState:
+        try:
+            return runtime.state(identity, thread_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Conversation not found") from exc
 
     @api.post(
         "/api/threads/{thread_id}/attachments",
@@ -392,13 +414,14 @@ def create_app(
     async def stage_attachments(
         thread_id: str,
         files: list[UploadFile] = File(...),
+        identity: RequestIdentity = Depends(require_identity),
     ) -> AttachmentUploadResult:
         try:
             uploads = await _read_bounded_attachment_uploads(
                 files,
                 runtime.attachment_limits,
             )
-            return runtime.stage_attachments(thread_id, uploads)
+            return runtime.stage_attachments(identity, thread_id, uploads)
         except AttachmentError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -409,9 +432,10 @@ def create_app(
     def discard_staged_attachment(
         thread_id: str,
         attachment_id: str,
+        identity: RequestIdentity = Depends(require_identity),
     ) -> Response:
         try:
-            runtime.discard_staged_attachment(thread_id, attachment_id)
+            runtime.discard_staged_attachment(identity, thread_id, attachment_id)
         except AttachmentError as exc:
             status_code = 404 if exc.code == "ATTACHMENT_NOT_FOUND" else 400
             raise HTTPException(status_code=status_code, detail=str(exc)) from exc
@@ -421,9 +445,11 @@ def create_app(
     def get_conversation_attachment(
         thread_id: str,
         attachment_id: str,
+        identity: RequestIdentity = Depends(require_identity),
     ) -> Response:
         try:
             artifact = runtime.conversation_attachment_bytes(
+                identity,
                 thread_id,
                 attachment_id,
             )
@@ -448,9 +474,10 @@ def create_app(
         thread_id: str,
         dataset_id: str,
         limit: int = 100,
+        identity: RequestIdentity = Depends(require_identity),
     ) -> DatasetPreview:
         try:
-            return runtime.dataset_preview(thread_id, dataset_id, limit=limit)
+            return runtime.dataset_preview(identity, thread_id, dataset_id, limit=limit)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Dataset not found") from exc
         except FileNotFoundError as exc:
@@ -463,9 +490,13 @@ def create_app(
         "/api/threads/{thread_id}/datasets/{dataset_id}/schema",
         response_model=DatasetSchemaResponse,
     )
-    def dataset_schema(thread_id: str, dataset_id: str) -> DatasetSchemaResponse:
+    def dataset_schema(
+        thread_id: str,
+        dataset_id: str,
+        identity: RequestIdentity = Depends(require_identity),
+    ) -> DatasetSchemaResponse:
         try:
-            return runtime.dataset_schema(thread_id, dataset_id)
+            return runtime.dataset_schema(identity, thread_id, dataset_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Dataset not found") from exc
         except FileNotFoundError as exc:
@@ -478,9 +509,13 @@ def create_app(
         "/api/threads/{thread_id}/datasets/{dataset_id}/provenance",
         response_model=DatasetProvenance,
     )
-    def dataset_provenance(thread_id: str, dataset_id: str) -> DatasetProvenance:
+    def dataset_provenance(
+        thread_id: str,
+        dataset_id: str,
+        identity: RequestIdentity = Depends(require_identity),
+    ) -> DatasetProvenance:
         try:
-            return runtime.dataset_provenance(thread_id, dataset_id)
+            return runtime.dataset_provenance(identity, thread_id, dataset_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Dataset not found") from exc
         except ValueError as exc:
@@ -490,18 +525,26 @@ def create_app(
         "/api/threads/{thread_id}/analysis-runs/{analysis_id}",
         response_model=CompletedAnalysisResult,
     )
-    def analysis_result(thread_id: str, analysis_id: str) -> CompletedAnalysisResult:
+    def analysis_result(
+        thread_id: str,
+        analysis_id: str,
+        identity: RequestIdentity = Depends(require_identity),
+    ) -> CompletedAnalysisResult:
         try:
-            return runtime.analysis_result(thread_id, analysis_id)
+            return runtime.analysis_result(identity, thread_id, analysis_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Analysis result not found") from exc
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @api.get("/api/threads/{thread_id}/datasets/{dataset_id}/download")
-    def dataset_download(thread_id: str, dataset_id: str) -> Response:
+    def dataset_download(
+        thread_id: str,
+        dataset_id: str,
+        identity: RequestIdentity = Depends(require_identity),
+    ) -> Response:
         try:
-            content = runtime.dataset_csv_bytes(thread_id, dataset_id)
+            content = runtime.dataset_csv_bytes(identity, thread_id, dataset_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Dataset not found") from exc
         except FileNotFoundError as exc:
@@ -518,9 +561,13 @@ def create_app(
         )
 
     @api.get("/api/threads/{thread_id}/artifacts/{artifact_id}")
-    def file_artifact(thread_id: str, artifact_id: str) -> Response:
+    def file_artifact(
+        thread_id: str,
+        artifact_id: str,
+        identity: RequestIdentity = Depends(require_identity),
+    ) -> Response:
         try:
-            artifact = runtime.file_artifact_bytes(thread_id, artifact_id)
+            artifact = runtime.file_artifact_bytes(identity, thread_id, artifact_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Artifact not found") from exc
         except FileNotFoundError as exc:
@@ -547,18 +594,24 @@ def create_app(
         thread_id: str,
         artifact_id: str,
         limit: int = 100,
+        identity: RequestIdentity = Depends(require_identity),
     ) -> TablePreview:
         try:
-            return runtime.table_preview(thread_id, artifact_id, limit=limit)
+            return runtime.table_preview(identity, thread_id, artifact_id, limit=limit)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Table artifact not found") from exc
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @api.post("/api/threads/{thread_id}/messages")
-    def submit_message(thread_id: str, request: SubmitMessageRequest) -> ApiThreadState:
+    def submit_message(
+        thread_id: str,
+        request: SubmitMessageRequest,
+        identity: RequestIdentity = Depends(require_identity),
+    ) -> ApiThreadState:
         try:
             runtime.submit_message(
+                identity,
                 thread_id,
                 request.text,
                 request.attachment_ids,
@@ -572,16 +625,18 @@ def create_app(
             raise HTTPException(status_code=status_code, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return runtime.state(thread_id)
+        return runtime.state(identity, thread_id)
 
     @api.post("/api/threads/{thread_id}/interrupts/{interrupt_id}/resume")
     def resume_interrupt(
         thread_id: str,
         interrupt_id: str,
         request: ResumeInterruptRequest,
+        identity: RequestIdentity = Depends(require_identity),
     ) -> ApiThreadState:
         try:
             runtime.resume_interrupt(
+                identity,
                 thread_id,
                 interrupt_id,
                 request.model_dump(exclude_defaults=True),
@@ -592,16 +647,22 @@ def create_app(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except StaleInterruptError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return runtime.state(thread_id)
+        return runtime.state(identity, thread_id)
 
     @api.post("/api/threads/{thread_id}/reset")
-    def reset_thread(thread_id: str) -> ResetThreadResponse:
-        return ResetThreadResponse(thread_id=runtime.reset(thread_id))
+    def reset_thread(
+        thread_id: str,
+        identity: RequestIdentity = Depends(require_identity),
+    ) -> ResetThreadResponse:
+        return ResetThreadResponse(thread_id=runtime.reset(identity, thread_id))
 
     @api.get("/api/threads/{thread_id}/export")
-    def export_thread(thread_id: str) -> Response:
+    def export_thread(
+        thread_id: str,
+        identity: RequestIdentity = Depends(require_identity),
+    ) -> Response:
         return Response(
-            content=json.dumps(runtime.export_thread(thread_id), indent=2).encode("utf-8"),
+            content=json.dumps(runtime.export_thread(identity, thread_id), indent=2).encode("utf-8"),
             media_type="application/json",
             headers={
                 "Content-Disposition": f'attachment; filename="{thread_id}-thread.json"',
@@ -609,9 +670,12 @@ def create_app(
         )
 
     @api.get("/api/threads/{thread_id}/export.zip")
-    def export_thread_archive(thread_id: str) -> Response:
+    def export_thread_archive(
+        thread_id: str,
+        identity: RequestIdentity = Depends(require_identity),
+    ) -> Response:
         return Response(
-            content=runtime.export_thread_archive(thread_id),
+            content=runtime.export_thread_archive(identity, thread_id),
             media_type="application/zip",
             headers={
                 "Content-Disposition": f'attachment; filename="{thread_id}-thread.zip"',

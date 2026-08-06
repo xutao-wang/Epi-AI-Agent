@@ -28,6 +28,18 @@ from utils.runtime_defaults import (
     configured_title_model,
 )
 
+
+def _history_store_for_auth_mode(
+    db_path: str | os.PathLike[str],
+    *,
+    auth_mode: str,
+) -> ConversationHistoryStore:
+    """Open history and claim legacy rows only for the fixed local principal."""
+    store = ConversationHistoryStore(db_path)
+    if auth_mode == "local":
+        store.claim_unowned("local-user")
+    return store
+
 _NO_STUDY_MESSAGE = "No study package is installed."
 _STUDY_SELECTION_REQUIRED_MESSAGE = (
     "Multiple study packages are installed. Select an active study."
@@ -86,6 +98,7 @@ allowed_models = configured_openai_models(os.environ)
 title_model = configured_title_model(os.environ)
 max_iterations = configured_epi_agent_max_iterations(os.environ)
 api_key = os.getenv("OPENAI_API_KEY", "")
+auth_mode = os.getenv("REPORT_AGENT_AUTH_MODE", "local").strip().lower()
 runtime_root_path = runtime_root()
 db_path = checkpoint_db_path(runtime_root_path)
 studies = discover_studies(study_root() / "studies")
@@ -135,7 +148,7 @@ runtime = ReportAgentApiRuntime(
     default_runtime_settings=default_runtime_settings,
     models=list(allowed_models),
     runtime_root=runtime_root_path,
-    history_store=ConversationHistoryStore(db_path),
+    history_store=_history_store_for_auth_mode(db_path, auth_mode=auth_mode),
     title_generator=OpenAIConversationTitleGenerator(
         build_openai_llm(model_name=title_model, api_key=api_key)
     ),

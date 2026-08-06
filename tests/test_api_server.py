@@ -49,12 +49,12 @@ class _FakeRuntime:
     def release_session(self, owner_user_id: str, session_id: str) -> None:
         self.released_sessions.append((owner_user_id, session_id))
 
-    def create_thread(self, runtime_settings: dict | None = None) -> str:
+    def create_thread(self, _identity, runtime_settings: dict | None = None) -> str:
         self.created_threads += 1
         self.created_thread_settings.append(runtime_settings)
         return "thread-created"
 
-    def list_conversations(self):
+    def list_conversations(self, _identity):
         return [
             ConversationSummary(
                 thread_id="thread-1",
@@ -66,7 +66,7 @@ class _FakeRuntime:
             )
         ]
 
-    def rename_conversation(self, thread_id: str, title: str):
+    def rename_conversation(self, _identity, thread_id: str, title: str):
         if thread_id != "thread-1":
             return None
         return ConversationSummary(
@@ -78,7 +78,7 @@ class _FakeRuntime:
             updated_at="2026-07-30T00:01:00+00:00",
         )
 
-    def open_conversation(self, thread_id: str):
+    def open_conversation(self, _identity, thread_id: str):
         if thread_id != "thread-1":
             return None
         return ConversationSummary(
@@ -91,7 +91,7 @@ class _FakeRuntime:
             last_opened_at="2026-07-30T18:24:00+00:00",
         )
 
-    def archive_conversation(self, thread_id: str):
+    def archive_conversation(self, _identity, thread_id: str):
         if thread_id != "thread-1":
             return None
         return ConversationSummary(
@@ -104,7 +104,7 @@ class _FakeRuntime:
             archived_at="2026-07-30T01:00:00+00:00",
         )
 
-    def restore_conversation(self, thread_id: str):
+    def restore_conversation(self, _identity, thread_id: str):
         if thread_id != "thread-1":
             return None
         return ConversationSummary(
@@ -117,7 +117,7 @@ class _FakeRuntime:
             archived_at=None,
         )
 
-    def delete_conversation(self, thread_id: str) -> bool:
+    def delete_conversation(self, _identity, thread_id: str) -> bool:
         return thread_id == "thread-1"
 
     def runtime_info(self) -> RuntimeInfo:
@@ -158,7 +158,7 @@ class _FakeRuntime:
             ),
         )
 
-    def state(self, thread_id: str) -> ApiThreadState:
+    def state(self, _identity, thread_id: str) -> ApiThreadState:
         return ApiThreadState(
             thread_id=thread_id,
             run=RunStatus(state="idle"),
@@ -171,6 +171,7 @@ class _FakeRuntime:
 
     def submit_message(
         self,
+        _identity,
         thread_id: str,
         text: str,
         attachment_ids: list[str],
@@ -185,16 +186,16 @@ class _FakeRuntime:
         self.submitted_models.append(model_name)
         self.submitted_studies.append(active_study_id)
 
-    def resume_interrupt(self, thread_id: str, interrupt_id: str, payload: dict) -> None:
+    def resume_interrupt(self, _identity, thread_id: str, interrupt_id: str, payload: dict) -> None:
         if payload.get("feedback") == "duplicate":
             raise ThreadAlreadyRunningError(thread_id)
         self.resumed_interrupts.append((thread_id, interrupt_id, payload))
 
-    def reset(self, thread_id: str) -> str:
+    def reset(self, _identity, thread_id: str) -> str:
         self.reset_threads.append(thread_id)
         return f"{thread_id}-reset"
 
-    def export_thread(self, thread_id: str) -> dict:
+    def export_thread(self, _identity, thread_id: str) -> dict:
         return {
             "thread_id": thread_id,
             "conversation": [],
@@ -206,7 +207,7 @@ class _FakeRuntime:
             "run": {"state": "idle", "steps": 0, "error": None},
         }
 
-    def export_thread_archive(self, thread_id: str) -> bytes:
+    def export_thread_archive(self, _identity, thread_id: str) -> bytes:
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, mode="w") as archive:
             archive.writestr("thread.json", f'{{"thread_id": "{thread_id}"}}')
@@ -214,6 +215,7 @@ class _FakeRuntime:
 
     def stage_attachments(
         self,
+        _identity,
         thread_id: str,
         uploads: list[tuple[str, str, bytes]],
     ) -> AttachmentUploadResult:
@@ -234,12 +236,13 @@ class _FakeRuntime:
 
     def discard_staged_attachment(
         self,
+        _identity,
         thread_id: str,
         attachment_id: str,
     ) -> None:
         self.discarded.append((thread_id, attachment_id))
 
-    def conversation_attachment_bytes(self, thread_id: str, attachment_id: str):
+    def conversation_attachment_bytes(self, _identity, thread_id: str, attachment_id: str):
         return type(
             "ArtifactBytes",
             (),
@@ -252,6 +255,7 @@ class _FakeRuntime:
 
     def dataset_preview(
         self,
+        _identity,
         thread_id: str,
         dataset_id: str,
         *,
@@ -264,16 +268,16 @@ class _FakeRuntime:
             row_count=2,
         )
 
-    def dataset_schema(self, thread_id: str, dataset_id: str) -> DatasetSchemaResponse:
+    def dataset_schema(self, _identity, thread_id: str, dataset_id: str) -> DatasetSchemaResponse:
         return DatasetSchemaResponse(
             dataset_id=dataset_id,
             schema_={"person_id": {"dataType": "integer"}},
         )
 
-    def dataset_csv_bytes(self, thread_id: str, dataset_id: str) -> bytes:
+    def dataset_csv_bytes(self, _identity, thread_id: str, dataset_id: str) -> bytes:
         return b"person_id,condition\n1,diabetes\n"
 
-    def file_artifact_bytes(self, thread_id: str, artifact_id: str):
+    def file_artifact_bytes(self, _identity, thread_id: str, artifact_id: str):
         return type(
             "ArtifactBytes",
             (),
@@ -286,6 +290,7 @@ class _FakeRuntime:
 
     def table_preview(
         self,
+        _identity,
         thread_id: str,
         artifact_id: str,
         *,
@@ -928,6 +933,7 @@ def test_dataset_schema_route_maps_missing_file_to_404() -> None:
     class MissingSchemaRuntime(_FakeRuntime):
         def dataset_schema(
             self,
+            _identity,
             thread_id: str,
             dataset_id: str,
         ) -> DatasetSchemaResponse:
@@ -1058,3 +1064,22 @@ def test_conversation_history_routes_archive_restore_and_delete() -> None:
     assert client.post("/api/conversations/missing/archive").status_code == 404
     assert client.post("/api/conversations/missing/restore").status_code == 404
     assert client.delete("/api/conversations/missing").status_code == 404
+
+
+def test_changed_routes_forward_request_identity_to_runtime() -> None:
+    class _IdentityOnlyRuntime(_FakeRuntime):
+        def __init__(self) -> None:
+            super().__init__()
+            self.identities = []
+
+        def list_conversations(self, identity):
+            self.identities.append(identity)
+            return super().list_conversations(identity)
+
+    runtime = _IdentityOnlyRuntime()
+    client = _client(runtime)
+
+    response = client.get("/api/conversations")
+
+    assert response.status_code == 200
+    assert [identity.owner_user_id for identity in runtime.identities] == ["local-user"]

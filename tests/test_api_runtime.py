@@ -368,6 +368,7 @@ class _RecordingRunner:
         initial_payload: dict | Command | None,
         max_steps: int,
         timeout_seconds: float,
+        checkpoint_config: dict | None = None,
     ) -> bool:
         self.background_calls.append(
             {
@@ -388,6 +389,7 @@ class _RecordingRunner:
         timeout_seconds: float,
         on_initial_payload_error=None,
         on_initial_payload_success=None,
+        checkpoint_config: dict | None = None,
     ) -> bool:
         if self.already_running:
             return False
@@ -396,6 +398,7 @@ class _RecordingRunner:
             initial_payload=payload_factory(),
             max_steps=max_steps,
             timeout_seconds=timeout_seconds,
+            checkpoint_config=checkpoint_config,
         )
         if started and on_initial_payload_success is not None:
             on_initial_payload_success()
@@ -467,7 +470,7 @@ def test_runtime_reopens_saved_thread_with_its_persisted_model(tmp_path: Path) -
         history_store=history_store,
     )
 
-    reopened = runtime._thread("saved-thread", identity=_LOCAL_IDENTITY)
+    reopened = runtime._thread(_LOCAL_IDENTITY, "saved-thread")
 
     assert reopened.settings.model_name == "gpt-5.6-luna"
     assert reopened.locked is True
@@ -496,6 +499,44 @@ def test_runtime_history_operations_are_scoped_to_request_identity(tmp_path: Pat
     assert runtime.delete_conversation(user_b, "thread-a") is False
     assert runtime.rename_conversation(user_a, "thread-a", "Owned title") is not None
     assert history_store.get("user-a", "thread-a").title == "Owned title"
+
+
+def test_runtime_keeps_same_thread_id_isolated_by_owner_before_graph_access(
+    tmp_path: Path,
+) -> None:
+    history_store = ConversationHistoryStore(tmp_path / "history.db")
+    history_store.create("user-a", "shared-thread", model_name="gpt-5.4")
+    history_store.create("user-b", "shared-thread", model_name="gpt-5.4")
+    graphs = [
+        _RuntimeFakeGraph(SimpleNamespace(values={"owner": "user-a"}, next=(), interrupts=[])),
+        _RuntimeFakeGraph(SimpleNamespace(values={"owner": "user-b"}, next=(), interrupts=[])),
+    ]
+
+    runtime = ReportAgentApiRuntime(
+        graph_factory=lambda _settings: graphs.pop(0),
+        default_runtime_settings=_DEFAULT_RUNTIME_SETTINGS,
+        models=["gpt-5.4"],
+        history_store=history_store,
+    )
+    user_a = _identity("user-a")
+    user_b = _identity("user-b")
+
+    runtime.state(user_a, "shared-thread")
+    runtime.state(user_b, "shared-thread")
+
+    assert set(runtime._threads) == {
+        ("user-a", "shared-thread"),
+        ("user-b", "shared-thread"),
+    }
+    graph_a = runtime._threads[("user-a", "shared-thread")].app
+    graph_b = runtime._threads[("user-b", "shared-thread")].app
+    assert graph_a is not graph_b
+    assert graph_a.get_state_calls[0] != graph_b.get_state_calls[0]
+    assert runtime.delete_conversation(user_b, "shared-thread") is True
+    assert graph_a.checkpointer.deleted_threads == []
+    assert graph_b.checkpointer.deleted_threads[0] != "shared-thread"
+    with pytest.raises(KeyError):
+        runtime.state(_identity("user-c"), "shared-thread")
 
 
 def test_state_recovers_one_idle_checkpoint_with_pending_work() -> None:
@@ -547,7 +588,7 @@ def test_runtime_deletes_history_checkpoints_and_attachments(tmp_path: Path) -> 
         history_store=history_store,
     )
     runtime.attachment_store.stage("thread-a", "cohort.csv", "text/csv", b"id\n1\n")
-    runtime._thread("thread-a")
+    runtime._thread(_LOCAL_IDENTITY, "thread-a")
 
     assert runtime.delete_conversation(_LOCAL_IDENTITY, "thread-a") is True
     assert history_store.get("local-user", "thread-a") is None
@@ -566,7 +607,7 @@ def test_runtime_rejects_archive_while_conversation_is_running(tmp_path: Path) -
         models=["gpt-5.4"],
         history_store=history_store,
     )
-    thread = runtime._thread("thread-a")
+    thread = runtime._thread(_LOCAL_IDENTITY, "thread-a")
     thread.app = graph
     thread.runner = SimpleNamespace(
         status=lambda _thread_id: {"state": "running", "steps": 1, "error": None}
@@ -757,7 +798,7 @@ def test_runtime_title_failure_is_isolated_and_not_retried_on_followup(
     runtime.submit_message(_LOCAL_IDENTITY, thread_id, "First message")
     assert title_attempted.wait(timeout=1)
     deadline = time.time() + 2
-    while runtime.state(thread_id).run.state == "running" and time.time() < deadline:
+    while runtime.state(_LOCAL_IDENTITY, thread_id).run.state == "running" and time.time() < deadline:
         time.sleep(0.01)
     runtime.submit_message(_LOCAL_IDENTITY, thread_id, "Follow-up message")
     time.sleep(0.05)
