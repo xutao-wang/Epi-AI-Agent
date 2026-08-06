@@ -67,6 +67,7 @@ from utils.review_interrupts import InvalidInterruptDecisionError
 
 _UPLOAD_READ_CHUNK_BYTES = 1024 * 1024
 _MULTIPART_OVERHEAD_BYTES = 1024 * 1024
+_PROVIDER_KEY_INVALID_KIND = "PROVIDER_KEY_INVALID"
 
 
 class _RequestBodyTooLarge(Exception):
@@ -287,11 +288,14 @@ def create_app(
             provider_key_validator.validate("openai", api_key)
             credential_store.put(identity, api_key)
         except ProviderCredentialError as exc:
+            message = str(exc)
+            if api_key:
+                message = message.replace(api_key, "<redacted>")
             raise HTTPException(
                 status_code=400,
                 detail={
-                    "kind": exc.kind,
-                    "message": str(exc).replace(api_key, "<redacted>"),
+                    "kind": _PROVIDER_KEY_INVALID_KIND,
+                    "message": message,
                 },
             ) from exc
         except ValueError as exc:

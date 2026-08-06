@@ -352,9 +352,10 @@ def test_provider_key_routes_report_status_store_after_validation_and_clear_sess
 def test_provider_key_validation_failure_does_not_store_or_echo_submitted_key() -> None:
     runtime = _FakeRuntime()
     rejected_key = "submitted-secret"
+    raw_kind = f"validator-kind-{rejected_key}"
     store = ProviderCredentialStore()
     validator = _RecordingProviderKeyValidator(
-        ProviderCredentialError("authentication", "The provider rejected this key.")
+        ProviderCredentialError(raw_kind, "The provider rejected this key.")
     )
     client = TestClient(
         create_app(
@@ -373,11 +374,12 @@ def test_provider_key_validation_failure_does_not_store_or_echo_submitted_key() 
     assert response.status_code == 400
     assert response.json() == {
         "detail": {
-            "kind": "authentication",
+            "kind": "PROVIDER_KEY_INVALID",
             "message": "The provider rejected this key.",
         }
     }
     assert rejected_key not in response.text
+    assert raw_kind not in response.text
     assert store.has(
         type("Identity", (), {"owner_user_id": "local-user", "session_id": LOCAL_SESSION_ID})()
     ) is False
