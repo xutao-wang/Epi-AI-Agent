@@ -340,7 +340,6 @@ def test_provider_key_routes_report_status_store_after_validation_and_clear_sess
         json={"api_key": "  example-user-key  "},
     )
     after = client.get("/api/session/provider-key")
-    cleared = client.delete("/api/session/provider-key")
 
     assert before.status_code == 200
     assert before.json() == {"configured": False}
@@ -348,10 +347,51 @@ def test_provider_key_routes_report_status_store_after_validation_and_clear_sess
     assert configured.json() == {"configured": True}
     assert "example-user-key" not in configured.text
     assert validator.calls == [("openai", "example-user-key")]
+    assert runtime.released_sessions == [("local-user", LOCAL_SESSION_ID)]
     assert after.json() == {"configured": True}
+
+    cleared = client.delete("/api/session/provider-key")
+
     assert cleared.status_code == 204
     assert client.get("/api/session/provider-key").json() == {"configured": False}
-    assert runtime.released_sessions == [("local-user", LOCAL_SESSION_ID)]
+    assert runtime.released_sessions == [
+        ("local-user", LOCAL_SESSION_ID),
+        ("local-user", LOCAL_SESSION_ID),
+    ]
+
+
+def test_replacing_provider_key_releases_session_after_each_success() -> None:
+    runtime = _FakeRuntime()
+    store = ProviderCredentialStore()
+    validator = _RecordingProviderKeyValidator()
+    client = TestClient(
+        create_app(
+            runtime=runtime,
+            credential_store=store,
+            provider_key_validator=validator,
+        ),
+        headers={"X-Epi-Session-ID": LOCAL_SESSION_ID},
+    )
+
+    first = client.put(
+        "/api/session/provider-key",
+        json={"api_key": "first-user-key"},
+    )
+    replacement = client.put(
+        "/api/session/provider-key",
+        json={"api_key": "replacement-user-key"},
+    )
+
+    assert first.status_code == 200
+    assert replacement.status_code == 200
+    assert runtime.released_sessions == [
+        ("local-user", LOCAL_SESSION_ID),
+        ("local-user", LOCAL_SESSION_ID),
+    ]
+    assert validator.calls == [
+        ("openai", "first-user-key"),
+        ("openai", "replacement-user-key"),
+    ]
 
 
 def test_provider_key_validation_failure_does_not_store_or_echo_submitted_key() -> None:

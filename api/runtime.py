@@ -628,7 +628,7 @@ class GraphBuildContext:
     owner_user_id: str
     session_id: str
     thread_id: str
-    provider_api_key: str
+    provider_api_key: str = field(repr=False)
     storage: ThreadStorageScope
 
 
@@ -918,31 +918,32 @@ class ReportAgentApiRuntime:
         resolved_key = str(provider_api_key or "").strip()
         if not resolved_key:
             raise ValueError("provider_api_key is required")
-        with thread._lock:
-            if thread.app is not None and (
-                thread.credential_session_id != identity.session_id
-                or thread.release_when_idle
-            ):
-                if self._thread_is_running(
-                    thread.thread_id,
-                    thread,
+        with self._lock:
+            with thread._lock:
+                if thread.app is not None and (
+                    thread.credential_session_id != identity.session_id
+                    or thread.release_when_idle
                 ):
-                    raise ThreadAlreadyRunningError(thread.thread_id)
-                self._clear_graph(thread)
-            if thread.app is None:
-                thread_id = thread.thread_id
-                context = GraphBuildContext(
-                    owner_user_id=identity.owner_user_id,
-                    session_id=identity.session_id,
-                    thread_id=thread_id,
-                    provider_api_key=resolved_key,
-                    storage=self._graph_storage(identity, thread_id),
-                )
-                thread.app = self.graph_factory(thread.settings, context)
-                thread.runner = ApiGraphRunner(thread.app)
-                thread.credential_session_id = identity.session_id
-                thread.release_when_idle = False
-            assert thread.runner is not None
+                    if self._thread_is_running(
+                        thread.thread_id,
+                        thread,
+                    ):
+                        raise ThreadAlreadyRunningError(thread.thread_id)
+                    self._clear_graph(thread)
+                if thread.app is None:
+                    thread_id = thread.thread_id
+                    context = GraphBuildContext(
+                        owner_user_id=identity.owner_user_id,
+                        session_id=identity.session_id,
+                        thread_id=thread_id,
+                        provider_api_key=resolved_key,
+                        storage=self._graph_storage(identity, thread_id),
+                    )
+                    thread.app = self.graph_factory(thread.settings, context)
+                    thread.runner = ApiGraphRunner(thread.app)
+                    thread.credential_session_id = identity.session_id
+                    thread.release_when_idle = False
+                assert thread.runner is not None
 
     @staticmethod
     def _bound_graph(thread: ThreadRuntime) -> tuple[Any, ApiGraphRunner]:

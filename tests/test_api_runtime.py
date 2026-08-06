@@ -355,6 +355,27 @@ class _SlowGraphFactory:
         return self.graph
 
 
+class _ReleaseObservedLock:
+    """Expose when the release worker contends for the runtime lock."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.release_attempted = threading.Event()
+        self.release_acquired = threading.Event()
+
+    def __enter__(self):
+        is_release = threading.current_thread().name == "test-session-release"
+        if is_release:
+            self.release_attempted.set()
+        self._lock.acquire()
+        if is_release:
+            self.release_acquired.set()
+        return self
+
+    def __exit__(self, _exc_type, _exc_value, _traceback) -> None:
+        self._lock.release()
+
+
 class _RecordingRunner:
     def __init__(self, *, already_running: bool = False) -> None:
         self.calls: list[dict] = []
@@ -1092,6 +1113,8 @@ def test_runtime_builds_graph_with_owner_session_key_and_storage_context(
     assert cached.credential_session_id == identity.session_id
     assert not hasattr(cached, "provider_api_key")
     assert "session-key" not in repr(cached)
+    assert "session-key" not in repr(context)
+    assert "session-key" not in repr(factory.calls)
 
 
 def test_runtime_same_thread_id_cache_is_owner_scoped(tmp_path: Path) -> None:
@@ -1167,6 +1190,79 @@ def test_release_session_evicts_only_its_idle_graphs(tmp_path: Path) -> None:
 
     assert ("user-a", "thread-a") not in runtime._threads
     assert ("user-a", "thread-b") in runtime._threads
+
+
+def test_release_session_during_blocked_factory_leaves_no_stale_graph(
+    tmp_path: Path,
+) -> None:
+    history = ConversationHistoryStore(tmp_path / "history.db")
+    identity = _identity("user-a")
+    graph = _BlockingGraph()
+    factory = _SlowGraphFactory(graph)
+    runtime = ReportAgentApiRuntime(
+        graph_factory=factory,
+        default_runtime_settings=_DEFAULT_RUNTIME_SETTINGS,
+        models=["gpt-5.4"],
+        runtime_root=tmp_path / "runtime",
+        history_store=history,
+    )
+    thread_id = runtime.create_thread(identity)
+    thread = runtime._require_owned_thread(identity, thread_id)
+    observed_lock = _ReleaseObservedLock()
+    runtime._lock = observed_lock
+    build_errors: list[Exception] = []
+
+    def build_graph() -> None:
+        try:
+            runtime._ensure_graph(identity, thread, "session-key")
+        except Exception as exc:  # pragma: no cover - asserted below
+            build_errors.append(exc)
+
+    builder = threading.Thread(target=build_graph, name="test-graph-build")
+    releaser = threading.Thread(
+        target=lambda: runtime.release_session("user-a", identity.session_id),
+        name="test-session-release",
+    )
+    builder.start()
+    assert factory.entered.wait(timeout=1)
+    releaser.start()
+    assert observed_lock.release_attempted.wait(timeout=1)
+    assert not observed_lock.release_acquired.wait(timeout=0.1)
+    factory.release.set()
+    builder.join(timeout=2)
+    releaser.join(timeout=2)
+
+    assert not builder.is_alive()
+    assert not releaser.is_alive()
+    assert build_errors == []
+    assert ("user-a", thread_id) not in runtime._threads
+
+
+def test_released_same_session_rebuilds_with_replacement_key(
+    tmp_path: Path,
+) -> None:
+    history = ConversationHistoryStore(tmp_path / "history.db")
+    history.create("user-a", "thread-a", model_name="gpt-5.4")
+    factory = _ContextRecordingGraphFactory()
+    identity = _identity("user-a")
+    runtime = ReportAgentApiRuntime(
+        graph_factory=factory,
+        default_runtime_settings=_DEFAULT_RUNTIME_SETTINGS,
+        models=["gpt-5.4"],
+        runtime_root=tmp_path / "runtime",
+        history_store=history,
+    )
+
+    runtime.state(identity, "thread-a", provider_api_key="first-key")
+    first_graph = runtime._threads[("user-a", "thread-a")].app
+    runtime.release_session(identity.owner_user_id, identity.session_id)
+    runtime.state(identity, "thread-a", provider_api_key="replacement-key")
+
+    assert runtime._threads[("user-a", "thread-a")].app is not first_graph
+    assert [call[1].provider_api_key for call in factory.calls] == [
+        "first-key",
+        "replacement-key",
+    ]
 
 
 def test_release_session_allows_bound_run_to_finish_then_evicts_graph(

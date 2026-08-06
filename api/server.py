@@ -287,6 +287,7 @@ def create_app(
         try:
             provider_key_validator.validate("openai", api_key)
             credential_store.put(identity, api_key)
+            runtime.release_session(identity.owner_user_id, identity.session_id)
         except ProviderCredentialError as exc:
             message = str(exc)
             if api_key:

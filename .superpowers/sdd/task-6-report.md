@@ -107,3 +107,80 @@ The server-route credential-store resolution is intentionally left for the next
 planned task. Task 6 changes the runtime provider-triggering methods to require
 an explicit key and prepares the app-owned credential store; the next task must
 resolve that store in message/resume routes and pass the key into the runtime.
+
+## Important-review fix pass
+
+The follow-up review identified three security/lifecycle gaps in `b3ad697`:
+
+1. `_ensure_graph` held only the thread lock while the factory was blocked, and
+   published `credential_session_id` only after construction. Concurrent
+   `release_session` therefore scanned under the runtime lock, saw no matching
+   session, returned, and allowed the stale graph to be published afterward.
+2. The default dataclass representation of `GraphBuildContext` included the
+   raw `provider_api_key`, so logging the context or a recording-factory call
+   list could disclose it.
+3. Provider-key PUT stored a replacement key without releasing graphs already
+   bound to the same owner/session, allowing the next call to reuse the old
+   provider client.
+
+### RED
+
+Added deterministic regressions for a release contending while a graph factory
+is blocked, context/factory-call representation redaction, same-session rebuild
+after release, and successful/replacement PUT invalidation.
+
+```text
+.venv/bin/python -m pytest tests/test_api_runtime.py::test_runtime_builds_graph_with_owner_session_key_and_storage_context tests/test_api_runtime.py::test_release_session_during_blocked_factory_leaves_no_stale_graph tests/test_api_runtime.py::test_released_same_session_rebuilds_with_replacement_key tests/test_api_server.py::test_provider_key_routes_report_status_store_after_validation_and_clear_session tests/test_api_server.py::test_replacing_provider_key_releases_session_after_each_success -q
+4 failed, 1 passed in 1.17s
+```
+
+The failures were the expected secret in repr, stale graph after blocked-build
+release, and missing PUT release calls. The same-session rebuild test passed
+once release was explicitly invoked, isolating the third defect to the endpoint
+hook.
+
+### GREEN implementation
+
+- `_ensure_graph` now uses the same runtime-lock then thread-lock order as
+  `release_session` and holds both through graph construction and cache
+  publication. A release that begins during a blocked build must wait, then
+  observes and evicts the fully published session-bound graph.
+- `GraphBuildContext.provider_api_key` uses `field(repr=False)`. Repr checks now
+  cover both the context itself and the containing factory-call collection.
+- A validated provider-key PUT stores the normalized key and immediately calls
+  `runtime.release_session(owner_user_id, session_id)`. Initial configuration
+  is harmlessly invalidated; replacement configuration guarantees the next
+  graph build uses the new key.
+
+Direct regressions:
+
+```text
+5 passed in 1.10s
+```
+
+Focused Task 6 plus Task 3 provider coverage:
+
+```text
+.venv/bin/python -m pytest tests/test_llm_vllm.py tests/test_api_runtime.py tests/test_db_rag_dataset_naming.py tests/test_no_study_startup.py tests/test_api_server.py tests/test_provider_credentials.py -q
+176 passed in 3.85s
+```
+
+Integration and foundation suites:
+
+```text
+.venv/bin/python -m pytest tests/test_api_server.py tests/test_graph_studies.py tests/test_db_rag_retrieval.py tests/test_report_study_bundle.py tests/test_conversation_history.py tests/test_run_fastapi.py -q
+118 passed in 2.49s
+
+.venv/bin/python -m pytest tests/test_analysis_provenance_api.py tests/test_api_runtime.py tests/test_api_server.py tests/test_centralized_epi_agent_architecture.py tests/test_conversation_history.py tests/test_no_study_startup.py tests/test_provider_credentials.py tests/test_public_config.py tests/test_scoped_db_rag_persistence.py tests/test_user_storage.py -q
+220 passed in 3.77s
+```
+
+Real smoke, executed once for this fix pass and without a provider call:
+
+```text
+.venv/bin/python scripts/smoke_session_bound_provider_factory_real.py
+session-bound provider factory smoke: PASS
+```
+
+`compileall` and `git diff --check` both exited successfully. No AWS resources
+or frontend authentication work was performed.
