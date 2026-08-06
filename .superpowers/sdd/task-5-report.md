@@ -115,3 +115,38 @@ requests with `400 {"detail":"Invalid session ID"}` (reproduced directly
 against the route without the required session header), plus sandbox-limited
 socket-dependent tests. The scoped artifact and DB-RAG SQL regressions were
 eliminated by the focused 269-test run above.
+
+## Follow-up review evidence
+
+- Added `tests/test_scoped_db_rag_persistence.py`, which invokes the real
+  `persist_sql_subset_artifact` production function with a
+  `ThreadStorageScope` and verifies the durable SQL subset is written to, and
+  reloaded from, that scope's `datasets` directory.
+- Updated the DB-RAG SQL test fixtures to use `context.thread_storage.datasets`
+  rather than a process-global dataset root.
+- The provenance API tests now send the stable local `X-Epi-Session-Id` header;
+  they no longer contribute the former `400 Invalid session ID` failures.
+- Public dataset persistence annotations name `ThreadStorageScope` rather than
+  an opaque object type.
+
+Follow-up verification:
+
+```bash
+.venv/bin/python -m pytest tests/test_user_storage.py tests/test_scoped_db_rag_persistence.py tests/test_attachment_artifacts.py tests/test_dataset_artifacts.py tests/test_attachment_tools.py tests/test_db_rag_agent_tools.py tests/test_db_rag_agent_sql.py tests/test_api_runtime.py tests/test_analysis_provenance_api.py -q
+```
+
+Output:
+
+```text
+276 passed in 4.80s
+```
+
+```bash
+.venv/bin/python -m pytest -q --maxfail=1 --tb=short
+```
+
+Output: 7 passed, then `tests/test_api_auth.py` attempts to bind a local JWKS
+server at `127.0.0.1:0` and the sandbox raises
+`PermissionError: [Errno 1] Operation not permitted`. This is the first
+remaining full-suite blocker after the session-header fix; it is an execution
+sandbox limitation, not an application assertion failure.

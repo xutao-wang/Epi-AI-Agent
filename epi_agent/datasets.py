@@ -12,6 +12,7 @@ from utils.dataset_artifacts import (
     is_selectable_dataset_artifact,
     load_dataset_artifact,
 )
+from utils.user_storage import ThreadStorageScope
 
 
 def _argument_mapping(
@@ -26,7 +27,7 @@ def resolve_dataset(
     arguments: BaseModel | dict[str, Any],
     context: ToolContext,
     *,
-    runtime_root: str | Path | object | None,
+    runtime_root: str | Path | ThreadStorageScope | None,
 ) -> tuple[StoredArtifact, pd.DataFrame]:
     payload = _argument_mapping(arguments)
     reference = ArtifactRef(

@@ -365,7 +365,7 @@ def _mkdir_durable(path: Path) -> None:
 
 def write_dataset_persistence_journal(
     *,
-    runtime_root: str | Path | None,
+    runtime_root: str | Path | ThreadStorageScope | None,
     thread_id: str,
     dataset_id: str,
     attempt: dict[str, Any],
@@ -441,7 +441,7 @@ def load_dataset_persistence_journal(
 
 def cleanup_dataset_staging(
     *,
-    runtime_root: str | Path | None,
+    runtime_root: str | Path | ThreadStorageScope | None,
     thread_id: str,
     dataset_id: str,
     expected_staging_paths: dict[str, Any],
@@ -546,7 +546,7 @@ def _parquet_type_matches(declared: str, actual: str) -> bool:
 
 def load_verified_dataset_artifact(
     *,
-    runtime_root: str | Path | None,
+    runtime_root: str | Path | ThreadStorageScope | None,
     thread_id: str,
     dataset_id: str,
     paths: dict[str, Any],
@@ -651,7 +651,7 @@ def load_verified_dataset_artifact(
 
 def stage_dataset_artifact(
     *,
-    runtime_root: str | Path | None,
+    runtime_root: str | Path | ThreadStorageScope | None,
     thread_id: str,
     dataset_id: str,
     kind: str,
@@ -745,7 +745,7 @@ def stage_dataset_artifact(
 
 def promote_staged_dataset_artifact(
     *,
-    runtime_root: str | Path | None,
+    runtime_root: str | Path | ThreadStorageScope | None,
     thread_id: str,
     dataset_id: str,
     expected_final_paths: dict[str, Any],
@@ -824,7 +824,7 @@ def dataset_artifact_display_label(artifact: dict[str, Any] | None) -> str:
 
 def persist_dataset_artifact(
     *,
-    runtime_root: str | Path | None,
+    runtime_root: str | Path | ThreadStorageScope | None,
     thread_id: str,
     dataset_id: str,
     kind: str,
@@ -877,7 +877,7 @@ def register_dataset_artifact(
 def portable_dataset_artifact(
     artifact: dict[str, Any],
     *,
-    runtime_root: str | Path,
+    runtime_root: str | Path | ThreadStorageScope,
 ) -> dict[str, Any]:
     configured_root = _storage_root(runtime_root)
     portable = dict(artifact)
@@ -902,7 +902,7 @@ def _dataset_storage_path(
     *,
     path_key: str,
     storage_key: str,
-    runtime_root: str | Path | None,
+    runtime_root: str | Path | ThreadStorageScope | None,
 ) -> Path | None:
     legacy_path = artifact.get(path_key)
     if isinstance(legacy_path, str) and legacy_path:
@@ -924,7 +924,7 @@ def _dataset_storage_path(
 def load_dataset_artifact(
     artifact: dict[str, Any],
     *,
-    runtime_root: str | Path | None = None,
+    runtime_root: str | Path | ThreadStorageScope | None = None,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     data_path = _dataset_storage_path(
         artifact,
