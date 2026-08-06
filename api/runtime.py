@@ -657,6 +657,10 @@ class ReportAgentApiRuntime:
             self._threads[thread_id] = thread
         return thread_id
 
+    def release_session(self, owner_user_id: str, session_id: str) -> None:
+        """Reserve the release seam for session-bound runtime work in Task 6."""
+        return None
+
     def _normalize_settings(
         self,
         settings: dict[str, Any] | None = None,

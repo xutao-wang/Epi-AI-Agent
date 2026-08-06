@@ -5,13 +5,34 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Response, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    FastAPI,
+    File,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+)
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from api.deployment import cors_allow_origin_regex
-from api.auth import LocalTokenVerifier, TokenVerifier, request_identity_dependency
+from api.auth import (
+    LocalTokenVerifier,
+    RequestIdentity,
+    TokenVerifier,
+    request_identity_dependency,
+)
+from api.provider_credentials import (
+    OpenAIProviderKeyValidator,
+    ProviderCredentialStore,
+    ProviderKeyValidator,
+)
 from api.runtime import (
     ReportAgentApiRuntime,
     StaleInterruptError,
@@ -29,6 +50,8 @@ from api.schemas import (
     DatasetProvenance,
     DatasetSchemaResponse,
     PublicAppConfig,
+    ProviderKeyRequest,
+    ProviderKeyStatus,
     ResetThreadResponse,
     RenameConversationRequest,
     ResumeInterruptRequest,
@@ -38,6 +61,7 @@ from api.schemas import (
     TablePreview,
 )
 from utils.attachment_artifacts import AttachmentError, AttachmentLimits
+from utils.provider_startup import ProviderCredentialError
 from utils.review_interrupts import InvalidInterruptDecisionError
 
 
@@ -180,8 +204,32 @@ def create_app(
     cors_origin_regex: str | None = None,
     public_config: PublicAppConfig | None = None,
     token_verifier: TokenVerifier | None = None,
+    credential_store: ProviderCredentialStore | None = None,
+    provider_key_validator: ProviderKeyValidator | None = None,
 ) -> FastAPI:
     app = FastAPI(title="RePORT Agent API")
+
+    @app.exception_handler(RequestValidationError)
+    async def redact_provider_key_validation_error(
+        request: Request,
+        exc: RequestValidationError,
+    ) -> JSONResponse:
+        if request.url.path != "/api/session/provider-key":
+            return await request_validation_exception_handler(request, exc)
+        return JSONResponse(
+            status_code=422,
+            content={
+                "detail": [
+                    {
+                        key: value
+                        for key, value in error.items()
+                        if key != "input"
+                    }
+                    for error in exc.errors()
+                ]
+            },
+        )
+
     public_config = public_config or PublicAppConfig(
         auth_mode="local",
         provider_key_required=False,
@@ -189,6 +237,8 @@ def create_app(
     require_identity = request_identity_dependency(
         token_verifier or LocalTokenVerifier()
     )
+    credential_store = credential_store or ProviderCredentialStore()
+    provider_key_validator = provider_key_validator or OpenAIProviderKeyValidator()
     attachment_limits = runtime.attachment_limits
     app.add_middleware(
         AttachmentRequestBodyLimitMiddleware,
@@ -214,6 +264,47 @@ def create_app(
         return public_config
 
     api = APIRouter(dependencies=[Depends(require_identity)])
+
+    @api.get(
+        "/api/session/provider-key",
+        response_model=ProviderKeyStatus,
+    )
+    def provider_key_status(
+        identity: RequestIdentity = Depends(require_identity),
+    ) -> ProviderKeyStatus:
+        return ProviderKeyStatus(configured=credential_store.has(identity))
+
+    @api.put(
+        "/api/session/provider-key",
+        response_model=ProviderKeyStatus,
+    )
+    def configure_provider_key(
+        request: ProviderKeyRequest,
+        identity: RequestIdentity = Depends(require_identity),
+    ) -> ProviderKeyStatus:
+        api_key = request.api_key.strip()
+        try:
+            provider_key_validator.validate("openai", api_key)
+            credential_store.put(identity, api_key)
+        except ProviderCredentialError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "kind": exc.kind,
+                    "message": str(exc).replace(api_key, "<redacted>"),
+                },
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return ProviderKeyStatus(configured=True)
+
+    @api.delete("/api/session/provider-key", status_code=204)
+    def clear_provider_key(
+        identity: RequestIdentity = Depends(require_identity),
+    ) -> Response:
+        credential_store.delete(identity)
+        runtime.release_session(identity.owner_user_id, identity.session_id)
+        return Response(status_code=204)
 
     @api.get("/api/conversations", response_model=ConversationHistoryResponse)
     def list_conversations() -> ConversationHistoryResponse:

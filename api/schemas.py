@@ -21,6 +21,14 @@ class PublicAppConfig(BaseModel):
     cognito: CognitoPublicConfig | None = None
 
 
+class ProviderKeyRequest(BaseModel):
+    api_key: str = Field(min_length=1, max_length=4096)
+
+
+class ProviderKeyStatus(BaseModel):
+    configured: bool
+
+
 class RunStatus(BaseModel):
     state: RunState
     steps: int = 0

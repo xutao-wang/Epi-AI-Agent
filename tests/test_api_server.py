@@ -7,6 +7,7 @@ import zipfile
 from fastapi.testclient import TestClient
 
 from api.auth import LOCAL_SESSION_ID
+from api.provider_credentials import ProviderCredentialStore
 from api.runtime import ThreadAlreadyRunningError, ThreadAwaitingReviewError
 from api.schemas import (
     ApiThreadState,
@@ -25,6 +26,7 @@ from api.conversation_history import ConversationSummary
 from api.server import create_app
 from utils.attachment_artifacts import AttachmentLimits
 from utils.model_runtime_profiles import model_runtime_profile
+from utils.provider_startup import ProviderCredentialError
 
 
 class _FakeRuntime:
@@ -42,6 +44,10 @@ class _FakeRuntime:
             max_files_per_message=2,
             max_message_bytes=96,
         )
+        self.released_sessions: list[tuple[str, str]] = []
+
+    def release_session(self, owner_user_id: str, session_id: str) -> None:
+        self.released_sessions.append((owner_user_id, session_id))
 
     def create_thread(self, runtime_settings: dict | None = None) -> str:
         self.created_threads += 1
@@ -297,6 +303,111 @@ def _client(runtime: _FakeRuntime) -> TestClient:
         create_app(runtime=runtime),
         headers={"X-Epi-Session-ID": LOCAL_SESSION_ID},
     )
+
+
+class _RecordingProviderKeyValidator:
+    def __init__(self, error: ProviderCredentialError | None = None) -> None:
+        self.error = error
+        self.calls: list[tuple[str, str]] = []
+
+    def validate(self, provider: str, api_key: str) -> None:
+        self.calls.append((provider, api_key))
+        if self.error is not None:
+            raise self.error
+
+
+def test_provider_key_routes_report_status_store_after_validation_and_clear_session() -> None:
+    runtime = _FakeRuntime()
+    store = ProviderCredentialStore()
+    validator = _RecordingProviderKeyValidator()
+    client = TestClient(
+        create_app(
+            runtime=runtime,
+            credential_store=store,
+            provider_key_validator=validator,
+        ),
+        headers={"X-Epi-Session-ID": LOCAL_SESSION_ID},
+    )
+
+    before = client.get("/api/session/provider-key")
+    configured = client.put(
+        "/api/session/provider-key",
+        json={"api_key": "  example-user-key  "},
+    )
+    after = client.get("/api/session/provider-key")
+    cleared = client.delete("/api/session/provider-key")
+
+    assert before.status_code == 200
+    assert before.json() == {"configured": False}
+    assert configured.status_code == 200
+    assert configured.json() == {"configured": True}
+    assert "example-user-key" not in configured.text
+    assert validator.calls == [("openai", "example-user-key")]
+    assert after.json() == {"configured": True}
+    assert cleared.status_code == 204
+    assert client.get("/api/session/provider-key").json() == {"configured": False}
+    assert runtime.released_sessions == [("local-user", LOCAL_SESSION_ID)]
+
+
+def test_provider_key_validation_failure_does_not_store_or_echo_submitted_key() -> None:
+    runtime = _FakeRuntime()
+    rejected_key = "submitted-secret"
+    store = ProviderCredentialStore()
+    validator = _RecordingProviderKeyValidator(
+        ProviderCredentialError("authentication", "The provider rejected this key.")
+    )
+    client = TestClient(
+        create_app(
+            runtime=runtime,
+            credential_store=store,
+            provider_key_validator=validator,
+        ),
+        headers={"X-Epi-Session-ID": LOCAL_SESSION_ID},
+    )
+
+    response = client.put(
+        "/api/session/provider-key",
+        json={"api_key": rejected_key},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "detail": {
+            "kind": "authentication",
+            "message": "The provider rejected this key.",
+        }
+    }
+    assert rejected_key not in response.text
+    assert store.has(
+        type("Identity", (), {"owner_user_id": "local-user", "session_id": LOCAL_SESSION_ID})()
+    ) is False
+
+
+def test_provider_key_schema_rejection_never_echoes_submitted_key() -> None:
+    submitted_key = "very-long-submitted-secret-" * 200
+    client = TestClient(
+        create_app(runtime=_FakeRuntime()),
+        headers={"X-Epi-Session-ID": LOCAL_SESSION_ID},
+    )
+
+    response = client.put(
+        "/api/session/provider-key",
+        json={"api_key": submitted_key},
+    )
+
+    assert response.status_code == 422
+    assert submitted_key not in response.text
+
+
+def test_provider_key_routes_require_a_valid_request_identity() -> None:
+    client = TestClient(create_app(runtime=_FakeRuntime()))
+
+    assert client.get("/api/session/provider-key").status_code == 400
+    assert client.put(
+        "/api/session/provider-key",
+        json={"api_key": "example-user-key"},
+    ).status_code == 400
+    assert client.delete("/api/session/provider-key").status_code == 400
 
 
 def test_health_route_returns_ok_without_touching_runtime() -> None:
