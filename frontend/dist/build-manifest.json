@@ -1,5 +1,5 @@
 {
-  "built_at": "2026-08-06T17:03:28.179596+00:00",
+  "built_at": "2026-08-06T17:20:31.134321+00:00",
   "source_sha256": {
     "frontend/index.html": "45c166b8283673e1fef261b0b97872368389f8988e723780b21b548d10e1372e",
     "frontend/package-lock.json": "23253186864b6acb555626d0da169c7aefa12bbc98838e0bb341be240866c9b7",
@@ -34,8 +34,8 @@
     "frontend/src/RuntimeSettingsPanel.tsx": "902bc7a9e69220fe8685d9c74032c3816b3307a2dcb88aced96bba95f9df4db1",
     "frontend/src/StructuredOutput.test.tsx": "ac2646de3aee749a7f47b9823a2b8616a779526fe19ee5d56bd27ddb6ba37e04",
     "frontend/src/StructuredOutput.tsx": "a08fdab1385a3c0e15cbdc2bc4298c50a9aa21e6a29db7182a19b43809aef46f",
-    "frontend/src/apiClient.test.ts": "4d2204da78b06ad0455539c5dc837b90e4e9d745dd6299c5ebe1879e591cd27c",
-    "frontend/src/apiClient.ts": "ea2027614558dc419e50314515350d7968ac447e085d58384a5bb85b599cc38d",
+    "frontend/src/apiClient.test.ts": "f72f2977702c3acaed22239493e3d8ed36546903c3ed7205284fdb3fa4e76921",
+    "frontend/src/apiClient.ts": "b597566453dc9c6333caeda6f8429fd23a7c61f7ae42240af2e652961d89fea2",
     "frontend/src/config.test.ts": "162e78e8b9d8d7b8151f0e50e4c4ec88739bcc51b3fb3a447fb5063782f5f60e",
     "frontend/src/config.ts": "e1dd49bf31ef600311bc1b235b88b8436008267821c72e24c649b85ddfb52ca9",
     "frontend/src/main.tsx": "443d9192b60dc74f454066a32ff7fdf11e60fb2ad8eb81165d12a0e8c4c987d0",

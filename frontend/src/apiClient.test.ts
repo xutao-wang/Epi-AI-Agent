@@ -16,6 +16,7 @@ import {
   restoreConversation,
   getRuntimeInfo,
   getRuntimeOptions,
+  LOCAL_SESSION_ID,
   resumeInterrupt,
   resetThread,
   submitMessage,
@@ -111,6 +112,20 @@ const approvePayload: ResumeInterruptPayload = {
 };
 
 describe("apiClient", () => {
+  it("adds the fixed local session header to bound client requests", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ items: [] }));
+    const client = createApiClient({
+      apiBase: "http://api.test",
+      fetchImpl: fetchMock,
+    });
+
+    await client.listConversations();
+
+    const request = new Request(fetchMock.mock.calls[0][0], fetchMock.mock.calls[0][1]);
+    expect(request.headers.get("X-Epi-Session-ID")).toBe(LOCAL_SESSION_ID);
+    expect(LOCAL_SESSION_ID).toBe("00000000-0000-4000-8000-000000000001");
+  });
+
   it("lists saved conversations", async () => {
     const response = {
       items: [
@@ -271,6 +286,7 @@ describe("apiClient", () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       "http://api.test/api/runtime/options",
+      { headers: expect.any(Headers) },
     );
   });
 
@@ -461,13 +477,14 @@ describe("apiClient", () => {
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
       "http://127.0.0.1:8000/api/runtime",
+      { headers: expect.any(Headers) },
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
       "http://127.0.0.1:8000/api/threads/thread-1/messages",
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: expect.any(Headers),
         body: JSON.stringify({ text: "Find NIH grants" }),
       },
     );
@@ -476,7 +493,7 @@ describe("apiClient", () => {
       "http://127.0.0.1:8000/api/threads/thread-1/interrupts/interrupt-1/resume",
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: expect.any(Headers),
         body: JSON.stringify({ action: "cancel" }),
       },
     );
@@ -496,10 +513,12 @@ describe("apiClient", () => {
 
     expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/threads", {
       method: "POST",
+      headers: expect.any(Headers),
     });
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
       "/api/threads/thread-1/state",
+      { headers: expect.any(Headers) },
     );
   });
 
@@ -595,6 +614,7 @@ describe("apiClient", () => {
     expect(preview.rows).toEqual([{ subject_id: "SUB-1" }]);
     expect(fetchMock).toHaveBeenCalledWith(
       "http://api.test/api/threads/thread-1/datasets/subset-1/preview?limit=25",
+      { headers: expect.any(Headers) },
     );
   });
 
@@ -615,6 +635,7 @@ describe("apiClient", () => {
     expect(schema.schema).toEqual({ subject_id: { dataType: "string" } });
     expect(fetchMock).toHaveBeenCalledWith(
       "http://api.test/api/threads/thread-1/datasets/subset-1/schema",
+      { headers: expect.any(Headers) },
     );
   });
 
@@ -637,6 +658,7 @@ describe("apiClient", () => {
       .resolves.toMatchObject({ dataset_id: "subset-1", sql: 'SELECT "AGE" FROM "Index Baseline"' });
     expect(fetchMock).toHaveBeenCalledWith(
       "http://api.test/api/threads/thread-1/datasets/subset-1/provenance",
+      { headers: expect.any(Headers) },
     );
   });
 
@@ -662,6 +684,7 @@ describe("apiClient", () => {
       .resolves.toMatchObject({ analysis_run_id: "analysis-1", python_code: "print('exact')" });
     expect(fetchMock).toHaveBeenCalledWith(
       "http://api.test/api/threads/thread-1/analysis-runs/analysis-1",
+      { headers: expect.any(Headers) },
     );
   });
 
@@ -704,6 +727,7 @@ describe("apiClient", () => {
     });
     expect(fetchMock).toHaveBeenCalledWith(
       "http://api.test/api/threads/thread-1/artifacts/table-1/table-preview?limit=100",
+      { headers: expect.any(Headers) },
     );
   });
 

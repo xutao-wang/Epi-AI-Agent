@@ -15,6 +15,8 @@ import type {
 
 type FetchImpl = typeof fetch;
 
+export const LOCAL_SESSION_ID = "00000000-0000-4000-8000-000000000001";
+
 interface CreateThreadResponse {
   thread_id: string;
 }
@@ -391,39 +393,45 @@ export function createApiClient({
   apiBase = "",
   fetchImpl = fetch,
 }: CreateApiClientOptions = {}) {
+  const localSessionFetch: FetchImpl = (input, init = {}) => {
+    const headers = new Headers(init.headers);
+    headers.set("X-Epi-Session-ID", LOCAL_SESSION_ID);
+    return fetchImpl(input, { ...init, headers });
+  };
+
   return {
     createThread(modelName?: string) {
-      return createThread(fetchImpl, apiBase, modelName);
+      return createThread(localSessionFetch, apiBase, modelName);
     },
     getRuntimeInfo() {
-      return getRuntimeInfo(fetchImpl, apiBase);
+      return getRuntimeInfo(localSessionFetch, apiBase);
     },
     listConversations() {
-      return listConversations(fetchImpl, apiBase);
+      return listConversations(localSessionFetch, apiBase);
     },
     renameConversation(threadId: string, title: string) {
-      return renameConversation(fetchImpl, apiBase, threadId, title);
+      return renameConversation(localSessionFetch, apiBase, threadId, title);
     },
     markConversationOpened(threadId: string) {
-      return markConversationOpened(fetchImpl, apiBase, threadId);
+      return markConversationOpened(localSessionFetch, apiBase, threadId);
     },
     archiveConversation(threadId: string) {
-      return archiveConversation(fetchImpl, apiBase, threadId);
+      return archiveConversation(localSessionFetch, apiBase, threadId);
     },
     restoreConversation(threadId: string) {
-      return restoreConversation(fetchImpl, apiBase, threadId);
+      return restoreConversation(localSessionFetch, apiBase, threadId);
     },
     deleteConversation(threadId: string) {
-      return deleteConversation(fetchImpl, apiBase, threadId);
+      return deleteConversation(localSessionFetch, apiBase, threadId);
     },
     getRuntimeOptions() {
-      return getRuntimeOptions(fetchImpl, apiBase);
+      return getRuntimeOptions(localSessionFetch, apiBase);
     },
     resetThread(threadId: string) {
-      return resetThread(fetchImpl, apiBase, threadId);
+      return resetThread(localSessionFetch, apiBase, threadId);
     },
     getThreadState(threadId: string) {
-      return getThreadState(fetchImpl, apiBase, threadId);
+      return getThreadState(localSessionFetch, apiBase, threadId);
     },
     submitMessage(
       threadId: string,
@@ -432,7 +440,7 @@ export function createApiClient({
       modelName?: string,
     ) {
       return submitMessage(
-        fetchImpl,
+        localSessionFetch,
         apiBase,
         threadId,
         text,
@@ -441,11 +449,11 @@ export function createApiClient({
       );
     },
     uploadAttachments(threadId: string, files: File[]) {
-      return uploadAttachments(fetchImpl, apiBase, threadId, files);
+      return uploadAttachments(localSessionFetch, apiBase, threadId, files);
     },
     discardStagedAttachment(threadId: string, attachmentId: string) {
       return discardStagedAttachment(
-        fetchImpl,
+        localSessionFetch,
         apiBase,
         threadId,
         attachmentId,
@@ -459,19 +467,19 @@ export function createApiClient({
       interruptId: string,
       payload: ResumeInterruptPayload,
     ) {
-      return resumeInterrupt(fetchImpl, apiBase, threadId, interruptId, payload);
+      return resumeInterrupt(localSessionFetch, apiBase, threadId, interruptId, payload);
     },
     getDatasetPreview(threadId: string, datasetId: string, limit = 100) {
-      return getDatasetPreview(fetchImpl, apiBase, threadId, datasetId, limit);
+      return getDatasetPreview(localSessionFetch, apiBase, threadId, datasetId, limit);
     },
     getDatasetSchema(threadId: string, datasetId: string) {
-      return getDatasetSchema(fetchImpl, apiBase, threadId, datasetId);
+      return getDatasetSchema(localSessionFetch, apiBase, threadId, datasetId);
     },
     getDatasetProvenance(threadId: string, datasetId: string) {
-      return getDatasetProvenance(fetchImpl, apiBase, threadId, datasetId);
+      return getDatasetProvenance(localSessionFetch, apiBase, threadId, datasetId);
     },
     getAnalysisResult(threadId: string, analysisId: string) {
-      return getAnalysisResult(fetchImpl, apiBase, threadId, analysisId);
+      return getAnalysisResult(localSessionFetch, apiBase, threadId, analysisId);
     },
     datasetDownloadUrl(threadId: string, datasetId: string) {
       return datasetDownloadUrl(apiBase, threadId, datasetId);
@@ -480,10 +488,10 @@ export function createApiClient({
       return artifactUrl(apiBase, threadId, artifactId);
     },
     getTablePreview(threadId: string, artifactId: string, limit = 100) {
-      return getTablePreview(fetchImpl, apiBase, threadId, artifactId, limit);
+      return getTablePreview(localSessionFetch, apiBase, threadId, artifactId, limit);
     },
     getArtifactText(threadId: string, artifactId: string) {
-      return getArtifactText(fetchImpl, apiBase, threadId, artifactId);
+      return getArtifactText(localSessionFetch, apiBase, threadId, artifactId);
     },
     threadExportUrl(threadId: string) {
       return threadExportUrl(apiBase, threadId);
