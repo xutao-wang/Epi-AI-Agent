@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from defusedxml import ElementTree as SafeElementTree
 from defusedxml.common import DefusedXmlException
+from utils.user_storage import ThreadStorageScope, UserStorageLayout
 
 
 _SUPPORTED_FORMATS: dict[str, tuple[str, str]] = {
@@ -322,6 +323,7 @@ class LocalAttachmentStore:
     ) -> None:
         self.runtime_root = Path(runtime_root).expanduser().resolve()
         self.root = self.runtime_root / "attachments"
+        self.root.mkdir(parents=True, exist_ok=True)
         self.limits = limits or AttachmentLimits.from_env()
         self.cleanup_expired_staged(
             older_than_seconds=self.limits.staged_ttl_seconds,
@@ -354,15 +356,42 @@ class LocalAttachmentStore:
                 "attachment was not found for this thread",
             )
 
-    def _attachment_dir(self, thread_id: str, attachment_id: str) -> Path:
+    def _scope_thread_id(self, scope: ThreadStorageScope | str) -> str:
+        if isinstance(scope, ThreadStorageScope):
+            return scope.thread_id
+        return scope
+
+    def _attachment_dir(
+        self,
+        scope: ThreadStorageScope | str,
+        attachment_id: str,
+    ) -> Path:
         self._validate_attachment_id(attachment_id)
-        return self.root / self._thread_component(thread_id) / attachment_id
+        if isinstance(scope, ThreadStorageScope):
+            return scope.attachments / attachment_id
+        # A raw thread is accepted only for local compatibility. Prefer the
+        # formal local-user scope for new writes, but retain reads of files
+        # created by the pre-owner-layout attachment store.
+        legacy = self.root / self._thread_component(scope) / attachment_id
+        if legacy.exists():
+            return legacy
+        return UserStorageLayout(self.runtime_root).thread(
+            "local-user", scope
+        ).attachments / attachment_id
 
-    def _manifest_path(self, thread_id: str, attachment_id: str) -> Path:
-        return self._attachment_dir(thread_id, attachment_id) / "manifest.json"
+    def _manifest_path(
+        self,
+        scope: ThreadStorageScope | str,
+        attachment_id: str,
+    ) -> Path:
+        return self._attachment_dir(scope, attachment_id) / "manifest.json"
 
-    def _content_path(self, thread_id: str, attachment_id: str) -> Path:
-        return self._attachment_dir(thread_id, attachment_id) / "content"
+    def _content_path(
+        self,
+        scope: ThreadStorageScope | str,
+        attachment_id: str,
+    ) -> Path:
+        return self._attachment_dir(scope, attachment_id) / "content"
 
     @staticmethod
     def _atomic_write(path: Path, content: bytes) -> None:
@@ -392,7 +421,7 @@ class LocalAttachmentStore:
 
     def stage(
         self,
-        thread_id: str,
+        scope: ThreadStorageScope | str,
         filename: str,
         declared_mime: str,
         content: bytes,
@@ -404,8 +433,9 @@ class LocalAttachmentStore:
             )
         detected = detect_supported_attachment(filename, declared_mime, content)
         attachment_id = f"attachment-{uuid4().hex}"
-        thread_component = self._thread_component(thread_id)
-        storage_key = f"attachments/{thread_component}/{attachment_id}/content"
+        thread_id = self._scope_thread_id(scope)
+        content_path = self._content_path(scope, attachment_id)
+        storage_key = content_path.relative_to(self.runtime_root).as_posix()
         manifest: dict[str, Any] = {
             "id": attachment_id,
             "thread_id": thread_id,
@@ -421,15 +451,26 @@ class LocalAttachmentStore:
             "status": "staged",
             "created_at": datetime.now(UTC).isoformat(),
         }
-        self._atomic_write(self._content_path(thread_id, attachment_id), content)
+        self._atomic_write(content_path, content)
         self._atomic_write_json(
-            self._manifest_path(thread_id, attachment_id),
+            self._manifest_path(scope, attachment_id),
             manifest,
         )
         return dict(manifest)
 
-    def require(self, thread_id: str, attachment_id: str) -> dict[str, Any]:
-        manifest_path = self._manifest_path(thread_id, attachment_id)
+    def require(
+        self,
+        scope: ThreadStorageScope | str,
+        attachment_id: str,
+    ) -> dict[str, Any]:
+        thread_id = self._scope_thread_id(scope)
+        manifest_path = self._manifest_path(scope, attachment_id)
+        if (
+            isinstance(scope, ThreadStorageScope)
+            and scope.owner_user_id == "local-user"
+            and not manifest_path.exists()
+        ):
+            manifest_path = self._manifest_path(scope.thread_id, attachment_id)
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except (FileNotFoundError, OSError, json.JSONDecodeError) as exc:
@@ -448,10 +489,17 @@ class LocalAttachmentStore:
             )
         return dict(manifest)
 
-    def read_bytes(self, thread_id: str, attachment_id: str) -> bytes:
-        manifest = self.require(thread_id, attachment_id)
+    def read_bytes(self, scope: ThreadStorageScope | str, attachment_id: str) -> bytes:
+        manifest = self.require(scope, attachment_id)
         try:
-            content = self._content_path(thread_id, attachment_id).read_bytes()
+            content_path = self._content_path(scope, attachment_id)
+            if (
+                isinstance(scope, ThreadStorageScope)
+                and scope.owner_user_id == "local-user"
+                and not content_path.exists()
+            ):
+                content_path = self._content_path(scope.thread_id, attachment_id)
+            content = content_path.read_bytes()
         except OSError as exc:
             raise AttachmentError(
                 "ATTACHMENT_NOT_FOUND",
@@ -469,10 +517,10 @@ class LocalAttachmentStore:
 
     def mark_available(
         self,
-        thread_id: str,
+        scope: ThreadStorageScope | str,
         attachment_id: str,
     ) -> dict[str, Any]:
-        manifest = self.require(thread_id, attachment_id)
+        manifest = self.require(scope, attachment_id)
         if manifest.get("status") != "staged":
             raise AttachmentError(
                 "INVALID_ATTACHMENT_STATE",
@@ -481,17 +529,17 @@ class LocalAttachmentStore:
         manifest["status"] = "available"
         manifest["available_at"] = datetime.now(UTC).isoformat()
         self._atomic_write_json(
-            self._manifest_path(thread_id, attachment_id),
+            self._manifest_path(scope, attachment_id),
             manifest,
         )
         return dict(manifest)
 
     def begin_binding(
         self,
-        thread_id: str,
+        scope: ThreadStorageScope | str,
         attachment_id: str,
     ) -> dict[str, Any]:
-        manifest = self.require(thread_id, attachment_id)
+        manifest = self.require(scope, attachment_id)
         if manifest.get("status") != "staged":
             raise AttachmentError(
                 "INVALID_ATTACHMENT_STATE",
@@ -500,17 +548,17 @@ class LocalAttachmentStore:
         manifest["status"] = "binding"
         manifest["binding_started_at"] = datetime.now(UTC).isoformat()
         self._atomic_write_json(
-            self._manifest_path(thread_id, attachment_id),
+            self._manifest_path(scope, attachment_id),
             manifest,
         )
         return dict(manifest)
 
     def commit_binding(
         self,
-        thread_id: str,
+        scope: ThreadStorageScope | str,
         attachment_id: str,
     ) -> dict[str, Any]:
-        manifest = self.require(thread_id, attachment_id)
+        manifest = self.require(scope, attachment_id)
         if manifest.get("status") != "binding":
             raise AttachmentError(
                 "INVALID_ATTACHMENT_STATE",
@@ -520,18 +568,18 @@ class LocalAttachmentStore:
         manifest.pop("binding_started_at", None)
         manifest["available_at"] = datetime.now(UTC).isoformat()
         self._atomic_write_json(
-            self._manifest_path(thread_id, attachment_id),
+            self._manifest_path(scope, attachment_id),
             manifest,
         )
         return dict(manifest)
 
     def record_inspection(
         self,
-        thread_id: str,
+        scope: ThreadStorageScope | str,
         attachment_id: str,
         profile: dict[str, Any],
     ) -> dict[str, Any]:
-        manifest = self.require(thread_id, attachment_id)
+        manifest = self.require(scope, attachment_id)
         if manifest.get("status") not in {"binding", "available"}:
             raise AttachmentError(
                 "INVALID_ATTACHMENT_STATE",
@@ -539,17 +587,17 @@ class LocalAttachmentStore:
             )
         manifest["inspection"] = json.loads(json.dumps(profile))
         self._atomic_write_json(
-            self._manifest_path(thread_id, attachment_id),
+            self._manifest_path(scope, attachment_id),
             manifest,
         )
         return dict(manifest)
 
     def rollback_binding(
         self,
-        thread_id: str,
+        scope: ThreadStorageScope | str,
         attachment_id: str,
     ) -> dict[str, Any]:
-        manifest = self.require(thread_id, attachment_id)
+        manifest = self.require(scope, attachment_id)
         if manifest.get("status") != "binding":
             raise AttachmentError(
                 "INVALID_ATTACHMENT_STATE",
@@ -558,7 +606,7 @@ class LocalAttachmentStore:
         manifest["status"] = "staged"
         manifest.pop("binding_started_at", None)
         self._atomic_write_json(
-            self._manifest_path(thread_id, attachment_id),
+            self._manifest_path(scope, attachment_id),
             manifest,
         )
         return dict(manifest)
@@ -584,24 +632,38 @@ class LocalAttachmentStore:
         )
         return dict(manifest)
 
-    def discard_staged(self, thread_id: str, attachment_id: str) -> None:
-        manifest = self.require(thread_id, attachment_id)
+    def discard_staged(self, scope: ThreadStorageScope | str, attachment_id: str) -> None:
+        manifest = self.require(scope, attachment_id)
         if manifest.get("status") != "staged":
             raise AttachmentError(
                 "INVALID_ATTACHMENT_STATE",
                 "only staged attachments can be discarded",
             )
-        directory = self._attachment_dir(thread_id, attachment_id)
-        self._content_path(thread_id, attachment_id).unlink(missing_ok=True)
-        self._manifest_path(thread_id, attachment_id).unlink(missing_ok=True)
+        directory = self._attachment_dir(scope, attachment_id)
+        self._content_path(scope, attachment_id).unlink(missing_ok=True)
+        self._manifest_path(scope, attachment_id).unlink(missing_ok=True)
         try:
             directory.rmdir()
         except OSError:
             pass
 
-    def delete_thread(self, thread_id: str) -> None:
+    def delete_thread(self, scope: ThreadStorageScope | str) -> None:
+        if isinstance(scope, ThreadStorageScope):
+            shutil.rmtree(scope.root, ignore_errors=True)
+            if scope.owner_user_id == "local-user":
+                shutil.rmtree(
+                    self.root / self._thread_component(scope.thread_id),
+                    ignore_errors=True,
+                )
+            return
         shutil.rmtree(
-            self.root / self._thread_component(thread_id),
+            self.root / self._thread_component(scope),
+            ignore_errors=True,
+        )
+        shutil.rmtree(
+            UserStorageLayout(self.runtime_root).thread(
+                "local-user", scope
+            ).root,
             ignore_errors=True,
         )
 
@@ -610,9 +672,13 @@ class LocalAttachmentStore:
             raise ValueError("older_than_seconds must be non-negative")
         cutoff = datetime.now(UTC).timestamp() - older_than_seconds
         removed = 0
-        if not self.root.exists():
-            return removed
-        for manifest_path in self.root.glob("*/attachment-*/manifest.json"):
+        manifest_paths = list(self.root.glob("*/attachment-*/manifest.json"))
+        manifest_paths.extend(
+            self.runtime_root.glob(
+                "users/*/threads/*/attachments/attachment-*/manifest.json"
+            )
+        )
+        for manifest_path in manifest_paths:
             try:
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 status = manifest.get("status")

@@ -6,6 +6,7 @@ import re
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from pydantic import BaseModel
+from utils.user_storage import ThreadStorageScope
 
 if TYPE_CHECKING:
     from epi_agent.studies import StudyBundle
@@ -287,6 +288,7 @@ class ToolContext:
     artifact_store: ArtifactStore
     thread_id: str
     policy: Any
+    thread_storage: ThreadStorageScope | None = None
     attachment_store: Any | None = None
     authorized_attachment_ids: tuple[str, ...] = ()
     current_attachment_ids: tuple[str, ...] = ()

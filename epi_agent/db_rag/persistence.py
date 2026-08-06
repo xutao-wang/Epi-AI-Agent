@@ -7,7 +7,6 @@ from db_rag.service.dataset_naming import generate_dataset_name
 from db_rag.service.schema import _lookup_schema_variable_metadata
 from graph.state import MetaKeys
 from utils.dataset_artifacts import (
-    DEFAULT_RUNTIME_ROOT,
     StagedDatasetArtifact,
     persist_dataset_artifact,
     register_dataset_artifact,
@@ -508,7 +507,7 @@ def persist_sql_subset_artifact(
         )
 
     persistence_arguments = {
-        "runtime_root": runtime_root or DEFAULT_RUNTIME_ROOT,
+        "runtime_root": runtime_root,
         "thread_id": thread_id,
         "dataset_id": str(dataset_id or "").strip()
         or f"subset-{uuid4().hex[:8]}",
@@ -535,7 +534,6 @@ def persist_sql_subset_artifact(
 
 
 __all__ = [
-    "DEFAULT_RUNTIME_ROOT",
     "persist_sql_subset_artifact",
     "serialize_columns",
 ]

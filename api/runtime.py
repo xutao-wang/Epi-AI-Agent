@@ -74,6 +74,7 @@ from utils.attachment_artifacts import (
     validate_message_attachment_limits,
 )
 from utils.attachment_readers import AttachmentReaderService
+from utils.user_storage import ThreadStorageScope, UserStorageLayout
 from utils.display_history import build_display_history
 from utils.export_thread import build_thread_export
 from utils.review_interrupts import (
@@ -109,7 +110,11 @@ def graph_config(
             f"{owner_user_id}\x00{thread_id}".encode("utf-8")
         ).hexdigest()
         checkpoint_thread_id = f"owner-{digest}"
-    return {"configurable": {"thread_id": checkpoint_thread_id}}
+    configurable: dict[str, Any] = {"thread_id": checkpoint_thread_id}
+    if owner_user_id is not None and owner_user_id != "local-user":
+        configurable["owner_user_id"] = owner_user_id
+        configurable["conversation_thread_id"] = thread_id
+    return {"configurable": configurable}
 
 
 def _idle_status() -> dict[str, Any]:
@@ -773,19 +778,19 @@ class ReportAgentApiRuntime:
             return ReportAgentApiRuntime._checkpoint_config(identity, thread_id)
         return graph_config(thread_id)
 
-    @staticmethod
     def _attachment_scope(
+        self,
         identity: RequestIdentity | str,
         thread_id: str,
-    ) -> str:
+    ) -> ThreadStorageScope | str:
+        if self.runtime_root is None:
+            return thread_id
         owner_user_id = (
             identity.owner_user_id
             if isinstance(identity, RequestIdentity)
             else "local-user"
         )
-        if owner_user_id == "local-user":
-            return thread_id
-        return LocalAttachmentStore.owner_thread_key(owner_user_id, thread_id)
+        return UserStorageLayout(self.runtime_root).thread(owner_user_id, thread_id)
 
     def _ensure_graph(self, thread: ThreadRuntime) -> tuple[Any, ApiGraphRunner]:
         with thread._lock:
@@ -821,7 +826,7 @@ class ReportAgentApiRuntime:
         self,
         *,
         thread_id: str,
-        attachment_thread_id: str,
+        attachment_thread_id: ThreadStorageScope,
         snapshot: Any,
         message: HumanMessage,
         manifests: list[dict[str, Any]],
@@ -983,7 +988,7 @@ class ReportAgentApiRuntime:
 
     def _rollback_available_manifests(
         self,
-        thread_id: str,
+        thread_id: ThreadStorageScope,
         manifests: list[dict[str, Any]],
     ) -> None:
         for manifest in manifests:
@@ -997,7 +1002,7 @@ class ReportAgentApiRuntime:
 
     def _commit_binding_manifests(
         self,
-        thread_id: str,
+        thread_id: ThreadStorageScope,
         manifests: list[dict[str, Any]],
     ) -> None:
         for manifest in manifests:
@@ -1013,7 +1018,7 @@ class ReportAgentApiRuntime:
         self,
         identity: RequestIdentity,
         thread_id: str,
-        attachment_thread_id: str,
+        attachment_thread_id: ThreadStorageScope,
         thread: ThreadRuntime,
         manifests: list[dict[str, Any]],
     ) -> None:

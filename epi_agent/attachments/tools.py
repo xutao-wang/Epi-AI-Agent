@@ -107,6 +107,12 @@ class _AttachmentTool:
                 },
             ) from exc
 
+    @staticmethod
+    def _storage_scope(context: ToolContext):
+        # Unit-only contexts intentionally omit thread_storage. Production
+        # graph contexts always provide the owner-authorized scope.
+        return context.thread_storage or context.thread_id
+
 
 class InspectAttachmentsTool(_AttachmentTool):
     spec = ToolSpec(
@@ -128,7 +134,7 @@ class InspectAttachmentsTool(_AttachmentTool):
         attachment_ids = list(arguments["attachment_ids"])
         result = self._invoke_service(
             lambda: self.service.inspect(
-                context.thread_id,
+                self._storage_scope(context),
                 attachment_ids,
             ),
             context,
@@ -154,7 +160,7 @@ class ReadDocumentTool(_AttachmentTool):
         attachment_id = str(arguments["attachment_id"])
         result = self._invoke_service(
             lambda: self.service.read_document(
-                context.thread_id,
+                self._storage_scope(context),
                 attachment_id,
             ),
             context,
@@ -180,7 +186,7 @@ class ParseStructuredAttachmentTool(_AttachmentTool):
         attachment_id = str(arguments["attachment_id"])
         result = self._invoke_service(
             lambda: self.service.parse_structured(
-                context.thread_id,
+                self._storage_scope(context),
                 attachment_id,
             ),
             context,
@@ -206,7 +212,7 @@ class InspectImageTool(_AttachmentTool):
         attachment_id = str(arguments["attachment_id"])
         result = self._invoke_service(
             lambda: self.service.inspect_image(
-                context.thread_id,
+                self._storage_scope(context),
                 attachment_id,
                 question=str(arguments["question"]),
             ),
@@ -237,7 +243,7 @@ class LoadTableTool(_AttachmentTool):
         annotation_ids = list(arguments.get("annotation_ids") or [])
         dataset = self._invoke_service(
             lambda: self.service.load_table(
-                context.thread_id,
+                self._storage_scope(context),
                 attachment_id,
                 sheet_name=arguments.get("sheet_name"),
                 annotation_ids=annotation_ids,

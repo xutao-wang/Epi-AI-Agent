@@ -39,6 +39,7 @@ from utils.attachment_readers import AttachmentReaderService
 from utils.dataset_artifacts import is_selectable_dataset_artifact
 from utils.model_runtime_profiles import ModelRuntimeProfile
 from utils.runtime_defaults import DEFAULT_EPI_AGENT_MAX_ITERATIONS
+from utils.user_storage import UserStorageLayout
 
 
 _MAX_CARD_COLUMNS = 100
@@ -420,14 +421,30 @@ def build_general_epi_agent_graph(
         artifact_store: StateArtifactStore,
     ) -> ToolContext:
         configurable = dict(config.get("configurable") or {})
+        owner_user_id = str(
+            configurable.get("owner_user_id") or "local-user"
+        ).strip()
+        conversation_thread_id = str(
+            configurable.get("conversation_thread_id")
+            or configurable.get("thread_id")
+            or ""
+        ).strip()
         active_study_id = str(
             state.get("active_study_id") or default_study_id or ""
         ).strip()
         return ToolContext(
             study=studies.get(active_study_id),
             artifact_store=artifact_store,
-            thread_id=str(configurable.get("thread_id") or ""),
+            thread_id=conversation_thread_id,
             policy=None,
+            thread_storage=(
+                UserStorageLayout(runtime_root).thread(
+                    owner_user_id,
+                    conversation_thread_id,
+                )
+                if runtime_root is not None and owner_user_id and conversation_thread_id
+                else None
+            ),
             available_study_ids=tuple(
                 study.study_id for study in studies.values
             ),

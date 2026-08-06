@@ -225,6 +225,16 @@ def _store(context: ToolContext) -> ArtifactStore:
     return store
 
 
+def _dataset_root(context: ToolContext) -> Path:
+    if context.thread_storage is None:
+        raise ToolExecutionError(
+            "THREAD_STORAGE_UNAVAILABLE",
+            "Internal configuration error: authorized thread storage is required for dataset persistence.",
+            recoverable=False,
+        )
+    return context.thread_storage.datasets
+
+
 def _save_observation(
     context: ToolContext,
     *,
@@ -3461,15 +3471,13 @@ def _persist_extraction_result(
         approved_selected_columns=approved_selected_columns,
         predecessor=predecessor_identity,
     )
-    runtime_root = db_rag_persistence.DEFAULT_RUNTIME_ROOT
+    runtime_root = _dataset_root(context)
     final_paths = generated_dataset_artifact_paths(
-        runtime_root=runtime_root,
-        thread_id=context.thread_id,
+        dataset_root=context.thread_storage.datasets,
         dataset_id=dataset_id,
     )
     staging_paths = generated_dataset_staging_paths(
-        runtime_root=runtime_root,
-        thread_id=context.thread_id,
+        dataset_root=context.thread_storage.datasets,
         dataset_id=dataset_id,
     )
     expected_final_paths = {

@@ -26,6 +26,7 @@ from utils.dataset_artifacts import (
     persist_dataset_artifact,
     portable_dataset_artifact,
 )
+from utils.user_storage import ThreadStorageScope
 
 
 _MAX_STRUCTURE_DEPTH = 6
@@ -71,7 +72,7 @@ def _bounded_text(text: str, limit: int) -> tuple[str, bool]:
 
 def _available_manifest(
     store: LocalAttachmentStore,
-    thread_id: str,
+    thread_id: ThreadStorageScope | str,
     attachment_id: str,
 ) -> dict[str, Any]:
     manifest = store.require(thread_id, attachment_id)
@@ -505,7 +506,7 @@ class AttachmentReaderService:
 
     def _available_manifest(
         self,
-        thread_id: str,
+        thread_id: ThreadStorageScope | str,
         attachment_id: str,
     ) -> dict[str, Any]:
         try:
@@ -557,7 +558,11 @@ class AttachmentReaderService:
             "status": "available",
         }
 
-    def _read_bytes(self, thread_id: str, attachment_id: str) -> bytes:
+    def _read_bytes(
+        self,
+        thread_id: ThreadStorageScope | str,
+        attachment_id: str,
+    ) -> bytes:
         try:
             return self.store.read_bytes(thread_id, attachment_id)
         except AttachmentError as exc:
@@ -584,7 +589,7 @@ class AttachmentReaderService:
 
     def inspect(
         self,
-        thread_id: str,
+        thread_id: ThreadStorageScope | str,
         attachment_ids: list[str],
     ) -> list[dict[str, Any]]:
         cards: list[dict[str, Any]] = []
@@ -598,7 +603,7 @@ class AttachmentReaderService:
 
     def inspect_table_candidate(
         self,
-        thread_id: str,
+        thread_id: ThreadStorageScope | str,
         attachment_id: str,
     ) -> dict[str, Any]:
         manifest = self._available_manifest(thread_id, attachment_id)
@@ -620,7 +625,7 @@ class AttachmentReaderService:
 
     def read_document(
         self,
-        thread_id: str,
+        thread_id: ThreadStorageScope | str,
         attachment_id: str,
     ) -> dict[str, Any]:
         manifest = self._available_manifest(thread_id, attachment_id)
@@ -664,7 +669,7 @@ class AttachmentReaderService:
 
     def parse_structured(
         self,
-        thread_id: str,
+        thread_id: ThreadStorageScope | str,
         attachment_id: str,
     ) -> dict[str, Any]:
         manifest = self._available_manifest(thread_id, attachment_id)
@@ -700,7 +705,7 @@ class AttachmentReaderService:
 
     def inspect_image(
         self,
-        thread_id: str,
+        thread_id: ThreadStorageScope | str,
         attachment_id: str,
         *,
         question: str = "",
@@ -751,7 +756,7 @@ class AttachmentReaderService:
 
     def load_table(
         self,
-        thread_id: str,
+        thread_id: ThreadStorageScope | str,
         attachment_id: str,
         *,
         sheet_name: str | None = None,
@@ -781,9 +786,19 @@ class AttachmentReaderService:
             ],
         ]
         dataset_id = f"uploaded-{uuid4().hex[:12]}"
+        dataset_root = (
+            thread_id.datasets
+            if isinstance(thread_id, ThreadStorageScope)
+            else self.runtime_root
+        )
+        dataset_thread_id = (
+            thread_id.thread_id
+            if isinstance(thread_id, ThreadStorageScope)
+            else thread_id
+        )
         persisted = persist_dataset_artifact(
-            runtime_root=self.runtime_root,
-            thread_id=thread_id,
+            runtime_root=dataset_root,
+            thread_id=dataset_thread_id,
             dataset_id=dataset_id,
             kind="uploaded",
             dataframe=dataframe,
@@ -799,5 +814,5 @@ class AttachmentReaderService:
         )
         return portable_dataset_artifact(
             persisted,
-            runtime_root=self.runtime_root,
+            runtime_root=dataset_root,
         )
