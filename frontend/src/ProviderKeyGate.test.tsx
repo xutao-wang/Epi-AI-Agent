@@ -134,6 +134,27 @@ describe("ProviderKeyGate", () => {
     expect(screen.getByRole("button", { name: "Sign out" })).toBeEnabled();
   });
 
+  it("cannot submit a provider key after sign-out deletion begins", async () => {
+    const pendingSignOut = deferred<void>();
+    const client = apiClient();
+    render(
+      <ProviderKeyGate apiClient={client} onSignOut={() => pendingSignOut.promise}>
+        <p>Ready app</p>
+      </ProviderKeyGate>,
+    );
+
+    const input = await screen.findByLabelText("OpenAI API key");
+    fireEvent.change(input, { target: { value: "race-test-key" } });
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+
+    expect(input).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Save key" })).toBeDisabled();
+    fireEvent.submit(input.closest("form")!);
+    expect(client.setProviderKey).not.toHaveBeenCalled();
+
+    pendingSignOut.resolve(undefined);
+  });
+
   it("does not misreport provider-key status request failures as a missing key", async () => {
     const onSignOut = vi
       .fn()

@@ -76,6 +76,13 @@ https://auth.example.test/logout?client_id=public-client-id&logout_uri=https%3A%
 Public-config tests first failed because the endpoint was absent and optional,
 then passed after the schema/environment contract was added.
 
+A final race review added a deferred sign-out RED/GREEN test. Before the fix,
+the provider-key input remained enabled while sign-out DELETE was pending and
+a form submit could start a competing PUT. The gate now clears/disables key
+entry and Save (and disables status retry), while `submitKey` independently
+rejects submissions for the entire sign-out window. The focused gate suite
+passes 8/8.
+
 ## Dedicated real feature smoke
 
 The executable smoke was invoked exactly once:
@@ -112,7 +119,7 @@ Frontend suite:
 ```text
 npm --prefix frontend test
 Test Files 23 passed (23)
-Tests      188 passed (188)
+Tests      189 passed (189)
 Duration   2.23s
 ```
 
@@ -131,7 +138,7 @@ npm --prefix frontend run build
 52 modules transformed
 dist/index.html                   0.40 kB | gzip:  0.27 kB
 dist/assets/index-CQJte51Q.css   34.96 kB | gzip:  6.14 kB
-dist/assets/index-CA1nw0GB.js   329.40 kB | gzip: 97.04 kB
+dist/assets/index-DooZFXU9.js   329.43 kB | gzip: 97.05 kB
 ```
 
 The manifest writer ran after staging current inputs and wrote the manifest,

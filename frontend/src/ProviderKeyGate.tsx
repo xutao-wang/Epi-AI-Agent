@@ -47,6 +47,9 @@ export default function ProviderKeyGate({ apiClient, children, onSignOut }: Prop
 
   async function submitKey(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (isSigningOut) {
+      return;
+    }
     const candidate = apiKey.trim();
     if (!candidate) {
       return;
@@ -74,6 +77,7 @@ export default function ProviderKeyGate({ apiClient, children, onSignOut }: Prop
   async function signOut() {
     setIsSigningOut(true);
     setSignOutError(false);
+    setApiKey("");
     try {
       await onSignOut();
     } catch {
@@ -102,7 +106,11 @@ export default function ProviderKeyGate({ apiClient, children, onSignOut }: Prop
             </p>
           ) : null}
           <div className="gate-actions">
-            <button onClick={() => void retryStatusCheck()} type="button">
+            <button
+              disabled={isSigningOut}
+              onClick={() => void retryStatusCheck()}
+              type="button"
+            >
               Try again
             </button>
             <button
@@ -131,7 +139,7 @@ export default function ProviderKeyGate({ apiClient, children, onSignOut }: Prop
           <label htmlFor="provider-api-key">OpenAI API key</label>
           <input
             autoComplete="off"
-            disabled={phase === "validating"}
+            disabled={phase === "validating" || isSigningOut}
             id="provider-api-key"
             onChange={(event) => setApiKey(event.target.value)}
             type="password"
@@ -148,7 +156,10 @@ export default function ProviderKeyGate({ apiClient, children, onSignOut }: Prop
             </p>
           ) : null}
           <div className="gate-actions">
-            <button disabled={!apiKey.trim() || phase === "validating"} type="submit">
+            <button
+              disabled={!apiKey.trim() || phase === "validating" || isSigningOut}
+              type="submit"
+            >
               {phase === "validating" ? "Validating…" : "Save key"}
             </button>
             <button
