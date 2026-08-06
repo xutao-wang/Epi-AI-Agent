@@ -249,7 +249,7 @@ export async function discardStagedAttachment(
   }
 }
 
-export function conversationAttachmentUrl(
+function attachmentUrl(
   apiBase = "",
   threadId: string,
   attachmentId: string,
@@ -338,7 +338,7 @@ export async function getAnalysisResult(
   return parseJsonResponse<CompletedAnalysisResult>(response);
 }
 
-export function datasetDownloadUrl(
+function datasetDownloadUrl(
   apiBase = "",
   threadId: string,
   datasetId: string,
@@ -349,7 +349,7 @@ export function datasetDownloadUrl(
   );
 }
 
-export function artifactUrl(apiBase = "", threadId: string, artifactId: string) {
+function artifactUrl(apiBase = "", threadId: string, artifactId: string) {
   return apiUrl(
     apiBase,
     `/api/threads/${pathParam(threadId)}/artifacts/${pathParam(artifactId)}`,
@@ -385,8 +385,51 @@ export async function getArtifactText(
   return response.text();
 }
 
-export function threadExportUrl(apiBase = "", threadId: string) {
+function threadExportUrl(apiBase = "", threadId: string) {
   return apiUrl(apiBase, `/api/threads/${pathParam(threadId)}/export.zip`);
+}
+
+async function fetchBlob(fetchImpl: FetchImpl, url: string): Promise<Blob> {
+  const response = await fetchImpl(url);
+  if (!response.ok) {
+    throw new ApiError(response.status, await responseDetail(response));
+  }
+  return response.blob();
+}
+
+async function fetchAttachmentBlob(
+  fetchImpl: FetchImpl,
+  apiBase: string,
+  threadId: string,
+  attachmentId: string,
+): Promise<Blob> {
+  return fetchBlob(fetchImpl, attachmentUrl(apiBase, threadId, attachmentId));
+}
+
+async function fetchArtifactBlob(
+  fetchImpl: FetchImpl,
+  apiBase: string,
+  threadId: string,
+  artifactId: string,
+): Promise<Blob> {
+  return fetchBlob(fetchImpl, artifactUrl(apiBase, threadId, artifactId));
+}
+
+async function fetchDatasetBlob(
+  fetchImpl: FetchImpl,
+  apiBase: string,
+  threadId: string,
+  datasetId: string,
+): Promise<Blob> {
+  return fetchBlob(fetchImpl, datasetDownloadUrl(apiBase, threadId, datasetId));
+}
+
+async function fetchThreadExportBlob(
+  fetchImpl: FetchImpl,
+  apiBase: string,
+  threadId: string,
+): Promise<Blob> {
+  return fetchBlob(fetchImpl, threadExportUrl(apiBase, threadId));
 }
 
 export function createApiClient({
@@ -459,8 +502,13 @@ export function createApiClient({
         attachmentId,
       );
     },
-    conversationAttachmentUrl(threadId: string, attachmentId: string) {
-      return conversationAttachmentUrl(apiBase, threadId, attachmentId);
+    fetchAttachmentBlob(threadId: string, attachmentId: string) {
+      return fetchAttachmentBlob(
+        localSessionFetch,
+        apiBase,
+        threadId,
+        attachmentId,
+      );
     },
     resumeInterrupt(
       threadId: string,
@@ -481,11 +529,11 @@ export function createApiClient({
     getAnalysisResult(threadId: string, analysisId: string) {
       return getAnalysisResult(localSessionFetch, apiBase, threadId, analysisId);
     },
-    datasetDownloadUrl(threadId: string, datasetId: string) {
-      return datasetDownloadUrl(apiBase, threadId, datasetId);
+    fetchArtifactBlob(threadId: string, artifactId: string) {
+      return fetchArtifactBlob(localSessionFetch, apiBase, threadId, artifactId);
     },
-    artifactUrl(threadId: string, artifactId: string) {
-      return artifactUrl(apiBase, threadId, artifactId);
+    fetchDatasetBlob(threadId: string, datasetId: string) {
+      return fetchDatasetBlob(localSessionFetch, apiBase, threadId, datasetId);
     },
     getTablePreview(threadId: string, artifactId: string, limit = 100) {
       return getTablePreview(localSessionFetch, apiBase, threadId, artifactId, limit);
@@ -493,8 +541,8 @@ export function createApiClient({
     getArtifactText(threadId: string, artifactId: string) {
       return getArtifactText(localSessionFetch, apiBase, threadId, artifactId);
     },
-    threadExportUrl(threadId: string) {
-      return threadExportUrl(apiBase, threadId);
+    fetchThreadExportBlob(threadId: string) {
+      return fetchThreadExportBlob(localSessionFetch, apiBase, threadId);
     },
   };
 }

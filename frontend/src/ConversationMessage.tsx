@@ -13,7 +13,7 @@ import type {
 import type { ReactNode } from "react";
 
 interface Props {
-  attachmentUrl: (attachmentId: string) => string;
+  fetchAttachmentBlob: (attachmentId: string) => Promise<Blob>;
   getDatasetPreview?: (
     attachmentId: string,
     limit: number,
@@ -327,7 +327,7 @@ function renderMarkdownText(text: string, keyPrefix: string) {
 }
 
 export default function ConversationMessage({
-  attachmentUrl,
+  fetchAttachmentBlob,
   getDatasetPreview,
   getDatasetSchema,
   getDatasetProvenance,
@@ -450,7 +450,7 @@ export default function ConversationMessage({
             {usedAttachments.map((attachment) => (
               <MessageAttachment
                 attachment={attachment}
-                attachmentUrl={attachmentUrl}
+                fetchAttachmentBlob={fetchAttachmentBlob}
                 getDatasetPreview={getDatasetPreview ?? unavailablePreview}
                 getDatasetSchema={getDatasetSchema ?? unavailablePreview}
                 getDatasetProvenance={getDatasetProvenance}
@@ -468,7 +468,7 @@ export default function ConversationMessage({
             {cardAttachments.map((attachment) => (
               <MessageAttachment
                 attachment={attachment}
-                attachmentUrl={attachmentUrl}
+                fetchAttachmentBlob={fetchAttachmentBlob}
                 getDatasetPreview={getDatasetPreview ?? unavailablePreview}
                 getDatasetSchema={getDatasetSchema ?? unavailablePreview}
                 getDatasetProvenance={getDatasetProvenance}

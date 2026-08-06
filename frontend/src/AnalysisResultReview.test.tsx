@@ -2,7 +2,7 @@ import "@testing-library/jest-dom/vitest";
 // @ts-expect-error Vitest resolves Node built-ins; the browser build excludes tests.
 import { readFileSync } from "node:fs";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import AnalysisResultReview from "./AnalysisResultReview";
 import type { ActiveInterrupt } from "./types";
 
@@ -57,11 +57,23 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+beforeEach(() => {
+  Object.defineProperty(URL, "createObjectURL", {
+    configurable: true,
+    value: vi.fn(() => "blob:analysis-artifact"),
+  });
+  Object.defineProperty(URL, "revokeObjectURL", {
+    configurable: true,
+    value: vi.fn(),
+  });
+});
+
 function renderReview(value = interrupt()) {
   const onResume = vi.fn();
   const apiClient = {
-    artifactUrl: (threadId: string, artifactId: string) =>
-      `http://api.test/api/threads/${threadId}/artifacts/${artifactId}`,
+    fetchArtifactBlob: vi.fn().mockImplementation(
+      () => new Promise<Blob>(() => undefined),
+    ),
     getTablePreview: vi.fn().mockImplementation(
       () => new Promise<never>(() => undefined),
     ),
@@ -216,8 +228,7 @@ describe("AnalysisResultReview", () => {
   it("shows result evidence and keeps technical details collapsed but available", async () => {
     const onResume = vi.fn();
     const apiClient = {
-      artifactUrl: (threadId: string, artifactId: string) =>
-        `http://api.test/api/threads/${threadId}/artifacts/${artifactId}`,
+      fetchArtifactBlob: vi.fn().mockResolvedValue(new Blob(["artifact"])),
       getTablePreview: vi.fn().mockResolvedValue({
         columns: ["group", "n"],
         rows: [{ group: "Good", n: "10" }],
@@ -255,11 +266,8 @@ describe("AnalysisResultReview", () => {
     fireEvent.click(screen.getByText("Show technical details"));
     expect(technicalDetails).toHaveAttribute("open");
     expect(
-      screen.getByRole("img", { name: "Pending Python analysis figure" }),
-    ).toHaveAttribute(
-      "src",
-      "http://api.test/api/threads/thread-1/artifacts/figure-1",
-    );
+      await screen.findByRole("img", { name: "Pending Python analysis figure" }),
+    ).toHaveAttribute("src", "blob:analysis-artifact");
     expect(screen.getByText(/permits publication/i)).toHaveTextContent(
       /does not automatically interpret/i,
     );

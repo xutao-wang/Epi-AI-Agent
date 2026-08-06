@@ -1,11 +1,30 @@
 import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import MessageAttachment from "./MessageAttachment";
 import type { ConversationAttachment } from "./types";
 
-const attachmentUrl = (attachmentId: string) =>
-  `http://api.test/api/threads/thread-1/attachments/${attachmentId}`;
+const fetchAttachmentBlob = vi.fn().mockResolvedValue(
+  new Blob(["attachment"], { type: "application/octet-stream" }),
+);
+
+beforeEach(() => {
+  fetchAttachmentBlob.mockReset().mockResolvedValue(
+    new Blob(["attachment"], { type: "application/octet-stream" }),
+  );
+  Object.defineProperty(URL, "createObjectURL", {
+    configurable: true,
+    value: vi.fn(() => "blob:attachment"),
+  });
+  Object.defineProperty(URL, "revokeObjectURL", {
+    configurable: true,
+    value: vi.fn(),
+  });
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 function renderAttachment(
   attachment: ConversationAttachment,
@@ -14,7 +33,7 @@ function renderAttachment(
   return render(
     <MessageAttachment
       attachment={attachment}
-      attachmentUrl={attachmentUrl}
+      fetchAttachmentBlob={fetchAttachmentBlob}
       getDatasetPreview={vi.fn()}
       getDatasetSchema={vi.fn()}
       {...overrides}
@@ -23,7 +42,7 @@ function renderAttachment(
 }
 
 describe("MessageAttachment", () => {
-  it("renders a user input file as a downloadable card", () => {
+  it("renders a user input file as an authenticated download", async () => {
     renderAttachment({
       id: "attachment-csv",
       kind: "tabular",
@@ -37,11 +56,9 @@ describe("MessageAttachment", () => {
 
     expect(screen.getByText("cohort.csv")).toBeInTheDocument();
     expect(
-      screen.getByRole("link", { name: "Download cohort.csv" }),
-    ).toHaveAttribute(
-      "href",
-      "http://api.test/api/threads/thread-1/attachments/attachment-csv",
-    );
+      await screen.findByRole("button", { name: "Download cohort.csv" }),
+    ).toBeInTheDocument();
+    expect(fetchAttachmentBlob).toHaveBeenCalledWith("attachment-csv");
   });
 
   it("renders a reused file as a link to its originating message", () => {
@@ -62,7 +79,7 @@ describe("MessageAttachment", () => {
     );
   });
 
-  it("renders an approved image output inline with download", () => {
+  it("renders an approved image output inline with authenticated download", async () => {
     renderAttachment({
       id: "figure-1",
       kind: "figure",
@@ -75,13 +92,10 @@ describe("MessageAttachment", () => {
     });
 
     expect(
-      screen.getByRole("img", { name: "Kaplan-Meier curve" }),
-    ).toHaveAttribute(
-      "src",
-      "http://api.test/api/threads/thread-1/attachments/figure-1",
-    );
+      await screen.findByRole("img", { name: "Kaplan-Meier curve" }),
+    ).toHaveAttribute("src", "blob:attachment");
     expect(
-      screen.getByRole("link", { name: "Download figure" }),
+      screen.getByRole("button", { name: "Download figure" }),
     ).toBeInTheDocument();
   });
 
@@ -119,10 +133,7 @@ describe("MessageAttachment", () => {
 
     expect(screen.queryByRole("button", { name: "Preview" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Schema" })).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Download" })).toHaveAttribute(
-      "href",
-      "http://api.test/api/threads/thread-1/attachments/subset-1",
-    );
+    expect(screen.getByText("Loading Download dataset…")).toBeInTheDocument();
 
     const detailsSummary = screen.getByText("Dataset details", {
       selector: "summary",

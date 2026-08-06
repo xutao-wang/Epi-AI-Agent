@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import AuthenticatedArtifact from "./AuthenticatedArtifact";
 import CodeBlock from "./CodeBlock";
 import type {
   ConversationAttachment,
@@ -10,7 +11,7 @@ import type {
 
 interface Props {
   attachment: ConversationAttachment;
-  attachmentUrl(attachmentId: string): string;
+  fetchAttachmentBlob(attachmentId: string): Promise<Blob>;
   getDatasetPreview(
     attachmentId: string,
     limit: number,
@@ -61,7 +62,7 @@ function formatCell(value: unknown): string {
 
 export default function MessageAttachment({
   attachment,
-  attachmentUrl,
+  fetchAttachmentBlob,
   getDatasetPreview,
   getDatasetSchema,
   getDatasetProvenance,
@@ -89,6 +90,11 @@ export default function MessageAttachment({
   const isAnalysis =
     attachment.relationship === "output" && ANALYSIS_KINDS.has(attachment.kind);
   const name = attachment.filename || attachment.label || attachment.id;
+  const downloadName = attachment.filename || "figure";
+  const loadAttachment = useCallback(
+    () => fetchAttachmentBlob(attachment.id),
+    [attachment.id, fetchAttachmentBlob],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -156,16 +162,23 @@ export default function MessageAttachment({
     );
   }
 
-  const href = isAnalysis ? "" : attachmentUrl(attachment.id);
   if (attachment.mime.startsWith("image/")) {
     return (
       <figure className="message-attachment message-attachment-image">
-        <img alt={attachment.label || name} src={href} />
+        <AuthenticatedArtifact
+          alt={attachment.label || name}
+          filename={downloadName}
+          load={loadAttachment}
+          mode="image"
+        />
         <figcaption>
           <span>{attachment.label || name}</span>
-          <a download href={href}>
-            Download {attachment.filename || "figure"}
-          </a>
+          <AuthenticatedArtifact
+            alt={`Download ${downloadName}`}
+            filename={downloadName}
+            load={loadAttachment}
+            mode="download"
+          />
         </figcaption>
       </figure>
     );
@@ -306,9 +319,12 @@ export default function MessageAttachment({
           .join(" · ")}
       </span>
       <div className="message-attachment-actions">
-        <a download href={href}>
-          {isDataset ? "Download" : `Download ${name}`}
-        </a>
+        <AuthenticatedArtifact
+          alt={isDataset ? "Download dataset" : `Download ${name}`}
+          filename={attachment.filename || name}
+          load={loadAttachment}
+          mode="download"
+        />
       </div>
       {error ? <p className="dataset-error">{error}</p> : null}
       {isDataset ? (

@@ -27,7 +27,6 @@ interface DatasetApiClient {
     threadId: string,
     datasetId: string,
   ): Promise<DatasetProvenance>;
-  datasetDownloadUrl(threadId: string, datasetId: string): string;
 }
 
 interface Props {

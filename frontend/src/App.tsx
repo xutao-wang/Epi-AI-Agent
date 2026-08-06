@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, createApiClient } from "./apiClient";
 import AttachmentComposer from "./AttachmentComposer";
 import AnalysisResultReview from "./AnalysisResultReview";
@@ -149,6 +149,15 @@ export default function App({
   const savedConversationsRequestRef = useRef(0);
   const pollGenerationRef = useRef(0);
   const [threadId, setThreadId] = useState<string | null>(null);
+  const fetchAttachmentBlob = useCallback(
+    (attachmentId: string) => {
+      if (!threadId) {
+        return Promise.reject(new Error("Thread is unavailable."));
+      }
+      return apiClient.fetchAttachmentBlob(threadId, attachmentId);
+    },
+    [apiClient, threadId],
+  );
   const [state, setState] = useState<ApiThreadState | null>(null);
   const [runtimeOptions, setRuntimeOptions] = useState<RuntimeOptions | null>(
     null,
@@ -870,14 +879,7 @@ export default function App({
               <ol className="message-list" aria-label="Conversation messages">
                 {visibleConversationMessages.map((conversationMessage) => (
                   <ConversationMessage
-                    attachmentUrl={(attachmentId) =>
-                      threadId
-                        ? apiClient.conversationAttachmentUrl(
-                            threadId,
-                            attachmentId,
-                          )
-                        : ""
-                    }
+                    fetchAttachmentBlob={fetchAttachmentBlob}
                     getDatasetPreview={(attachmentId, limit) => {
                       if (!threadId) {
                         return Promise.reject(

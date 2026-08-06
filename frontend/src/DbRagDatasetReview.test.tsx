@@ -55,7 +55,6 @@ function client() {
       sql_artifact: { id: "sql-1", kind: "validated_sql", version: 1 },
       sql_sha256: "hash-1",
     }),
-    datasetDownloadUrl: vi.fn(() => "/download/subset-1"),
   };
 }
 

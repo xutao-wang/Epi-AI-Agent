@@ -10,13 +10,12 @@ import { describe, expect, it, vi } from "vitest";
 import ConversationMessage from "./ConversationMessage";
 
 describe("ConversationMessage", () => {
-  const attachmentUrl = (attachmentId: string) =>
-    `http://api.test/api/threads/thread-1/attachments/${attachmentId}`;
+  const fetchAttachmentBlob = () => Promise.resolve(new Blob(["attachment"]));
 
   it("marks user and assistant messages with distinct role classes", () => {
     const { rerender } = render(
       <ConversationMessage
-        attachmentUrl={attachmentUrl}
+        fetchAttachmentBlob={fetchAttachmentBlob}
         message={{
           id: "user-1",
           role: "user",
@@ -31,7 +30,7 @@ describe("ConversationMessage", () => {
 
     rerender(
       <ConversationMessage
-        attachmentUrl={attachmentUrl}
+        fetchAttachmentBlob={fetchAttachmentBlob}
         message={{
           id: "assistant-1",
           role: "assistant",
@@ -49,7 +48,7 @@ describe("ConversationMessage", () => {
     (role) => {
       render(
         <ConversationMessage
-          attachmentUrl={attachmentUrl}
+          fetchAttachmentBlob={fetchAttachmentBlob}
           message={{ id: `${role}-bounded`, role, text: "Long output" }}
         />,
       );
@@ -65,7 +64,7 @@ describe("ConversationMessage", () => {
   it("renders markdown bullets and inline code in assistant text", () => {
     render(
       <ConversationMessage
-        attachmentUrl={attachmentUrl}
+        fetchAttachmentBlob={fetchAttachmentBlob}
         message={{
           id: "assistant-1",
           role: "assistant",
@@ -83,7 +82,7 @@ describe("ConversationMessage", () => {
   it("renders numbered population clarification choices on separate lines", () => {
     render(
       <ConversationMessage
-        attachmentUrl={attachmentUrl}
+        fetchAttachmentBlob={fetchAttachmentBlob}
         message={{
           id: "assistant-1",
           role: "assistant",
@@ -116,7 +115,7 @@ describe("ConversationMessage", () => {
   it("renders shared display-history markdown blocks", () => {
     render(
       <ConversationMessage
-        attachmentUrl={attachmentUrl}
+        fetchAttachmentBlob={fetchAttachmentBlob}
         message={{
           id: "assistant-1",
           role: "assistant",
@@ -146,7 +145,7 @@ describe("ConversationMessage", () => {
   it("renders escaped inline math-like text as readable prose", () => {
     render(
       <ConversationMessage
-        attachmentUrl={attachmentUrl}
+        fetchAttachmentBlob={fetchAttachmentBlob}
         message={{
           id: "assistant-1",
           role: "assistant",
@@ -176,7 +175,7 @@ describe("ConversationMessage", () => {
 
     render(
       <ConversationMessage
-        attachmentUrl={attachmentUrl}
+        fetchAttachmentBlob={fetchAttachmentBlob}
         message={{
           id: "user-1",
           role: "user",
@@ -215,7 +214,7 @@ describe("ConversationMessage", () => {
 
       render(
         <ConversationMessage
-          attachmentUrl={attachmentUrl}
+          fetchAttachmentBlob={fetchAttachmentBlob}
           message={{
             id: `${role}-1`,
             role,
@@ -248,7 +247,7 @@ describe("ConversationMessage", () => {
 
     render(
       <ConversationMessage
-        attachmentUrl={attachmentUrl}
+        fetchAttachmentBlob={fetchAttachmentBlob}
         message={{
           id: "assistant-1",
           role: "assistant",
@@ -279,7 +278,7 @@ describe("ConversationMessage", () => {
 
     render(
       <ConversationMessage
-        attachmentUrl={attachmentUrl}
+        fetchAttachmentBlob={fetchAttachmentBlob}
         message={{
           id: "assistant-1",
           role: "assistant",
@@ -306,7 +305,7 @@ describe("ConversationMessage", () => {
   it("renders DB-RAG dataset completion concisely with collapsed SQL details", () => {
     render(
       <ConversationMessage
-        attachmentUrl={attachmentUrl}
+        fetchAttachmentBlob={fetchAttachmentBlob}
         message={{
           id: "assistant-1",
           role: "assistant",
@@ -338,7 +337,7 @@ describe("ConversationMessage", () => {
   it("renders a collapsed clarification trace below a final assistant response", () => {
     render(
       <ConversationMessage
-        attachmentUrl={attachmentUrl}
+        fetchAttachmentBlob={fetchAttachmentBlob}
         message={{
           id: "assistant-final",
           role: "assistant",
@@ -364,10 +363,19 @@ describe("ConversationMessage", () => {
     expect(screen.getByText("Use the 12-month visit.")).toBeInTheDocument();
   });
 
-  it("renders an approved figure attachment with a download inside the message", () => {
+  it("renders an approved figure attachment with an authenticated download", async () => {
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: vi.fn(() => "blob:conversation-figure"),
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: vi.fn(),
+    });
+    const fetchAttachmentBlob = vi.fn().mockResolvedValue(new Blob(["figure"]));
     render(
       <ConversationMessage
-        attachmentUrl={attachmentUrl}
+        fetchAttachmentBlob={fetchAttachmentBlob}
         message={{
           id: "assistant-1",
           role: "assistant",
@@ -388,24 +396,18 @@ describe("ConversationMessage", () => {
       />,
     );
 
-    const figure = screen.getByRole("img", {
+    const figure = await screen.findByRole("img", {
       name: "Figure generated by approved final output.",
     });
-    expect(figure).toHaveAttribute(
-      "src",
-      "http://api.test/api/threads/thread-1/attachments/figure-1",
-    );
+    expect(figure).toHaveAttribute("src", "blob:conversation-figure");
     expect(figure.closest(".message-bubble")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Download figure" })).toHaveAttribute(
-      "href",
-      "http://api.test/api/threads/thread-1/attachments/figure-1",
-    );
+    expect(screen.getByRole("button", { name: "Download figure" })).toBeInTheDocument();
   });
 
   it("groups reused files and gives the originating message a stable target", () => {
     render(
       <ConversationMessage
-        attachmentUrl={attachmentUrl}
+        fetchAttachmentBlob={fetchAttachmentBlob}
         message={{
           id: "assistant-2",
           role: "assistant",

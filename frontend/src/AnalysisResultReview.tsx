@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import AuthenticatedArtifact from "./AuthenticatedArtifact";
 import CodeBlock from "./CodeBlock";
 import type {
   ActiveInterrupt,
@@ -14,7 +15,7 @@ type AnalysisReviewInterrupt = Extract<
 
 interface Props {
   apiClient: {
-    artifactUrl: (threadId: string, artifactId: string) => string;
+    fetchArtifactBlob: (threadId: string, artifactId: string) => Promise<Blob>;
     getTablePreview: (
       threadId: string,
       artifactId: string,
@@ -122,7 +123,10 @@ function AnalysisTable({
 }) {
   const [preview, setPreview] = useState<TablePreview | null>(null);
   const [previewUnavailable, setPreviewUnavailable] = useState(false);
-  const url = apiClient.artifactUrl(threadId, artifactId);
+  const loadArtifact = useCallback(
+    () => apiClient.fetchArtifactBlob(threadId, artifactId),
+    [apiClient, artifactId, threadId],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -159,8 +163,47 @@ function AnalysisTable({
       ) : (
         <p>{previewUnavailable ? "Table preview is unavailable." : "Loading table preview…"}</p>
       )}
-      <a download href={url}>Download table</a>
+      <AuthenticatedArtifact
+        alt="Download table"
+        filename={`${artifactId}.csv`}
+        load={loadArtifact}
+        mode="download"
+      />
     </article>
+  );
+}
+
+function AnalysisFigure({
+  apiClient,
+  artifactId,
+  threadId,
+}: {
+  apiClient: Props["apiClient"];
+  artifactId: string;
+  threadId: string;
+}) {
+  const loadArtifact = useCallback(
+    () => apiClient.fetchArtifactBlob(threadId, artifactId),
+    [apiClient, artifactId, threadId],
+  );
+
+  return (
+    <figure className="analysis-result-figure">
+      <AuthenticatedArtifact
+        alt="Pending Python analysis figure"
+        filename={`${artifactId}.png`}
+        load={loadArtifact}
+        mode="image"
+      />
+      <figcaption>
+        <AuthenticatedArtifact
+          alt="Download figure"
+          filename={`${artifactId}.png`}
+          load={loadArtifact}
+          mode="download"
+        />
+      </figcaption>
+    </figure>
   );
 }
 
@@ -300,15 +343,14 @@ export default function AnalysisResultReview({
 
       {view.figures.length ? (
         <ResultSection title="Figures">
-          {view.figures.map((figure) => {
-            const url = apiClient.artifactUrl(threadId, figure.id);
-            return (
-              <figure className="analysis-result-figure" key={`${figure.id}:${figure.version}`}>
-                <img alt="Pending Python analysis figure" src={url} />
-                <figcaption><a download href={url}>Download figure</a></figcaption>
-              </figure>
-            );
-          })}
+          {view.figures.map((figure) => (
+            <AnalysisFigure
+              apiClient={apiClient}
+              artifactId={figure.id}
+              key={`${figure.id}:${figure.version}`}
+              threadId={threadId}
+            />
+          ))}
         </ResultSection>
       ) : null}
 

@@ -1,8 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   ApiError,
-  artifactUrl,
-  conversationAttachmentUrl,
   createApiClient,
   createThread,
   deleteConversation,
@@ -20,7 +18,6 @@ import {
   resumeInterrupt,
   resetThread,
   submitMessage,
-  threadExportUrl,
   uploadAttachments,
 } from "./apiClient";
 import type {
@@ -124,6 +121,51 @@ describe("apiClient", () => {
     const request = new Request(fetchMock.mock.calls[0][0], fetchMock.mock.calls[0][1]);
     expect(request.headers.get("X-Epi-Session-ID")).toBe(LOCAL_SESSION_ID);
     expect(LOCAL_SESSION_ID).toBe("00000000-0000-4000-8000-000000000001");
+  });
+
+  it("fetches protected attachment blobs through the bound client", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response("image", { headers: { "Content-Type": "image/png" } }),
+    );
+    const client = createApiClient({
+      apiBase: "http://api.test",
+      fetchImpl: fetchMock,
+    });
+
+    await expect(client.fetchAttachmentBlob("thread-1", "attachment-1")).resolves.toMatchObject({
+      size: 5,
+      type: "image/png",
+    });
+
+    const request = new Request(fetchMock.mock.calls[0][0], fetchMock.mock.calls[0][1]);
+    expect(request.url).toBe("http://api.test/api/threads/thread-1/attachments/attachment-1");
+    expect(request.headers.get("X-Epi-Session-ID")).toBe(LOCAL_SESSION_ID);
+  });
+
+  it("fetches artifact, dataset, and thread-export blobs through the bound client", async () => {
+    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
+      Promise.resolve(new Response("file", { headers: { "Content-Type": "text/csv" } })),
+    );
+    const client = createApiClient({
+      apiBase: "http://api.test",
+      fetchImpl: fetchMock,
+    });
+
+    await Promise.all([
+      client.fetchArtifactBlob("thread-1", "artifact-1"),
+      client.fetchDatasetBlob("thread-1", "dataset-1"),
+      client.fetchThreadExportBlob("thread-1"),
+    ]);
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "http://api.test/api/threads/thread-1/artifacts/artifact-1",
+      "http://api.test/api/threads/thread-1/datasets/dataset-1/download",
+      "http://api.test/api/threads/thread-1/export.zip",
+    ]);
+    for (const [url, init] of fetchMock.mock.calls) {
+      const request = new Request(url, init);
+      expect(request.headers.get("X-Epi-Session-ID")).toBe(LOCAL_SESSION_ID);
+    }
   });
 
   it("lists saved conversations", async () => {
@@ -536,12 +578,6 @@ describe("apiClient", () => {
     });
   });
 
-  it("builds encoded thread export URLs", () => {
-    expect(threadExportUrl("http://api.test/", "thread with/slash")).toBe(
-      "http://api.test/api/threads/thread%20with%2Fslash/export.zip",
-    );
-  });
-
   it("uploads all selected message attachments under the files key", async () => {
     const result = {
       attachments: [],
@@ -568,7 +604,7 @@ describe("apiClient", () => {
     expect(init.body.getAll("files")).toEqual([csv, xml]);
   });
 
-  it("discards a staged attachment and builds its conversation URL", async () => {
+  it("discards a staged attachment", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(null, { status: 204 }),
     );
@@ -583,15 +619,6 @@ describe("apiClient", () => {
     expect(fetchMock).toHaveBeenCalledWith(
       "http://api.test/api/threads/thread%20with%2Fslash/attachments/attachment%20with%2Fslash",
       { method: "DELETE" },
-    );
-    expect(
-      conversationAttachmentUrl(
-        "http://api.test/",
-        "thread with/slash",
-        "attachment with/slash",
-      ),
-    ).toBe(
-      "http://api.test/api/threads/thread%20with%2Fslash/attachments/attachment%20with%2Fslash",
     );
   });
 
@@ -685,27 +712,6 @@ describe("apiClient", () => {
     expect(fetchMock).toHaveBeenCalledWith(
       "http://api.test/api/threads/thread-1/analysis-runs/analysis-1",
       { headers: expect.any(Headers) },
-    );
-  });
-
-  it("builds encoded dataset download URLs", () => {
-    const client = createApiClient({
-      apiBase: "http://api.test/",
-      fetchImpl: vi.fn(),
-    });
-
-    expect(
-      client.datasetDownloadUrl("thread with/slash", "subset with/slash"),
-    ).toBe(
-      "http://api.test/api/threads/thread%20with%2Fslash/datasets/subset%20with%2Fslash/download",
-    );
-  });
-
-  it("builds encoded artifact URLs", () => {
-    expect(
-      artifactUrl("http://api.test/", "thread with/slash", "figure with/slash"),
-    ).toBe(
-      "http://api.test/api/threads/thread%20with%2Fslash/artifacts/figure%20with%2Fslash",
     );
   });
 
