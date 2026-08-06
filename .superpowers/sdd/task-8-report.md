@@ -65,7 +65,7 @@ their fixes:
 - generic OIDC sign-out did not construct Cognito Hosted UI logout.
 
 The final focused results are `AuthGate` 6/6, `ProviderKeyGate` 7/7,
-`authClient` 5/5, and `App` 51/51. The logout test asserts:
+`authClient` 5/5, `apiClient` 36/36, and `App` 51/51. The logout test asserts:
 
 ```text
 DELETE /api/session/provider-key
@@ -112,8 +112,8 @@ Frontend suite:
 ```text
 npm --prefix frontend test
 Test Files 23 passed (23)
-Tests      187 passed (187)
-Duration   2.40s
+Tests      188 passed (188)
+Duration   2.23s
 ```
 
 Relevant backend/auth suite (rerun with permission for its loopback JWKS
@@ -131,7 +131,7 @@ npm --prefix frontend run build
 52 modules transformed
 dist/index.html                   0.40 kB | gzip:  0.27 kB
 dist/assets/index-CQJte51Q.css   34.96 kB | gzip:  6.14 kB
-dist/assets/index-_75Eq3LB.js   329.10 kB | gzip: 97.03 kB
+dist/assets/index-CA1nw0GB.js   329.40 kB | gzip: 97.04 kB
 ```
 
 The manifest writer ran after staging current inputs and wrote the manifest,
@@ -151,5 +151,9 @@ deliberately fake test/smoke strings.
 
 - The expanded browser smoke compiles but could not execute without Playwright;
   this remains explicit rather than being reported as passing.
+- Its Cognito-like phase is an offline compiled-frontend contract smoke with
+  intercepted API/OIDC boundaries, not a live Cognito or real hosted-backend
+  integration test; the latter would require external identity infrastructure
+  that this task explicitly prohibited creating.
 - The manifest writer's three pre-existing ignore-policy failures remain.
 - No live Cognito/AWS login was attempted, as required.

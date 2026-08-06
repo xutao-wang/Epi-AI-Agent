@@ -96,9 +96,24 @@ export default function ProviderKeyGate({ apiClient, children, onSignOut }: Prop
           <p role="alert">
             Provider key status could not be checked. Check your connection and try again.
           </p>
-          <button onClick={() => void retryStatusCheck()} type="button">
-            Try again
-          </button>
+          {signOutError ? (
+            <p role="alert">
+              Sign out could not be completed. Check your connection and try again.
+            </p>
+          ) : null}
+          <div className="gate-actions">
+            <button onClick={() => void retryStatusCheck()} type="button">
+              Try again
+            </button>
+            <button
+              className="gate-secondary-action"
+              disabled={isSigningOut}
+              onClick={() => void signOut()}
+              type="button"
+            >
+              {isSigningOut ? "Signing out…" : "Sign out"}
+            </button>
+          </div>
         </section>
       </main>
     );

@@ -1,5 +1,5 @@
 {
-  "built_at": "2026-08-06T20:53:26.794891+00:00",
+  "built_at": "2026-08-06T20:57:12.917419+00:00",
   "source_sha256": {
     "frontend/index.html": "45c166b8283673e1fef261b0b97872368389f8988e723780b21b548d10e1372e",
     "frontend/package-lock.json": "23253186864b6acb555626d0da169c7aefa12bbc98838e0bb341be240866c9b7",
@@ -34,13 +34,13 @@
     "frontend/src/MessageAttachment.tsx": "c55cd95fc5de8b20026c52acabcee2db965801039427f9e4e13fd7ea0667ad15",
     "frontend/src/ModelOutputLimit.test.tsx": "b58f1b641c0cf2b5808d0cea9b22ce10301e88718e804d6a40d0f1ca2d39401c",
     "frontend/src/ModelOutputLimit.tsx": "11772c85d484d46bdb6cf7e80ae2360a7578bce36dfaccb05ced574e8b76dfa7",
-    "frontend/src/ProviderKeyGate.test.tsx": "d82b5ae4a9a6f5c117234cb9e519f4ac8dc8b16144c8b35e4a679261ef3409d7",
-    "frontend/src/ProviderKeyGate.tsx": "71f06129114af0c4ca079153356ef70460b5db4ecd6cca8c79423d43add71ba6",
+    "frontend/src/ProviderKeyGate.test.tsx": "071556752041e9221fda6218eed842ec0ce25fe911a3db6371708e34c8f0f873",
+    "frontend/src/ProviderKeyGate.tsx": "1a656e84694467d6d442b507bfd454ca943e3e400f4e29b73e885cda95dd6bd9",
     "frontend/src/RuntimeSettingsPanel.test.tsx": "8622f60feec60057c8aff23a32860a30784c048a7c36c100cafe16328f0de8c7",
     "frontend/src/RuntimeSettingsPanel.tsx": "902bc7a9e69220fe8685d9c74032c3816b3307a2dcb88aced96bba95f9df4db1",
     "frontend/src/StructuredOutput.test.tsx": "ac2646de3aee749a7f47b9823a2b8616a779526fe19ee5d56bd27ddb6ba37e04",
     "frontend/src/StructuredOutput.tsx": "a08fdab1385a3c0e15cbdc2bc4298c50a9aa21e6a29db7182a19b43809aef46f",
-    "frontend/src/apiClient.test.ts": "5975f4071369c71404304daa68dcb72bf6b0fac5c180a6243cf82f65253bbdb0",
+    "frontend/src/apiClient.test.ts": "a4bc0a8e9bb7e53f293517cdbfddb5811dcf6daf9067e9c7f8a6d7c7dd70f284",
     "frontend/src/apiClient.ts": "30418c88f0c03f973883bed569e009750fa6c7035d13caa20b81521f08ee646c",
     "frontend/src/authClient.test.ts": "d810cbdbdb570bc66480e7fa9c3f419342b1652cbc1f184d2ba97a4438dc58f6",
     "frontend/src/authClient.ts": "27b247a0de7b19461c8bf731a7b88751f701bb8398e04e3fb46d20fe6164a0ed",

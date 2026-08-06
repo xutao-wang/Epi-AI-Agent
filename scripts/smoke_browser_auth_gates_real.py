@@ -126,6 +126,7 @@ def _runtime_options() -> dict[str, Any]:
 
 def _exercise_cognito_flow(
     *,
+    artifact_dir: Path,
     browser: Any,
     app_url: str,
     deadline: float,
@@ -344,6 +345,19 @@ def _exercise_cognito_flow(
         positions = [flow_events.index(item) for item in ordered]
         if positions != sorted(positions):
             raise AssertionError(f"Cognito flow occurred out of order: {flow_events!r}")
+    except BaseException:
+        try:
+            (artifact_dir / "failure-cognito-page.txt").write_text(
+                page.locator("body").inner_text(),
+                encoding="utf-8",
+            )
+            page.screenshot(
+                path=str(artifact_dir / "failure-cognito-screenshot.png"),
+                full_page=True,
+            )
+        except Exception:
+            pass
+        raise
     finally:
         context.close()
 
@@ -532,6 +546,7 @@ def run(args: argparse.Namespace) -> int:
                     full_page=True,
                 )
                 _exercise_cognito_flow(
+                    artifact_dir=artifact_dir,
                     browser=browser,
                     app_url=app_url,
                     deadline=deadline,

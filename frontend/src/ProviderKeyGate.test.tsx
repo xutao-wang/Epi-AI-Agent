@@ -135,11 +135,14 @@ describe("ProviderKeyGate", () => {
   });
 
   it("does not misreport provider-key status request failures as a missing key", async () => {
+    const onSignOut = vi
+      .fn()
+      .mockRejectedValue(new Error("secret-provider-delete-detail"));
     const client = apiClient({
       getProviderKeyStatus: vi.fn().mockRejectedValue(new Error("secret-status-detail")),
     });
     render(
-      <ProviderKeyGate apiClient={client} onSignOut={vi.fn()}>
+      <ProviderKeyGate apiClient={client} onSignOut={onSignOut}>
         <p>Ready app</p>
       </ProviderKeyGate>,
     );
@@ -149,5 +152,12 @@ describe("ProviderKeyGate", () => {
     );
     expect(screen.queryByLabelText("OpenAI API key")).not.toBeInTheDocument();
     expect(screen.getByRole("alert")).not.toHaveTextContent("secret-status-detail");
+
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+
+    expect(await screen.findByText(/Sign out could not be completed/)).not.toHaveTextContent(
+      "secret-provider-delete-detail",
+    );
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeEnabled();
   });
 });
