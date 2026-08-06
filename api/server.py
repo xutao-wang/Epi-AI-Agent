@@ -178,6 +178,14 @@ def create_app(
     provider_key_validator = provider_key_validator or OpenAIProviderKeyValidator()
     attachment_limits = runtime.attachment_limits
 
+    @app.middleware("http")
+    async def prune_expired_provider_credentials(
+        request: Request,
+        call_next,
+    ) -> Response:
+        credential_store.prune_expired()
+        return await call_next(request)
+
     def provider_key_for_work(
         identity: RequestIdentity,
         thread_id: str,

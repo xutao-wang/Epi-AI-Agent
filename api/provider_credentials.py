@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 import threading
 import time
@@ -44,10 +44,12 @@ class ProviderCredentialStore:
         idle_ttl_seconds: float = 43_200,
         monotonic_clock: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], float] = time.time,
+        on_expire: Callable[[str, str], None] | None = None,
     ) -> None:
         self._idle_ttl_seconds = idle_ttl_seconds
         self._monotonic_clock = monotonic_clock
         self._wall_clock = wall_clock
+        self._on_expire = on_expire
         self._entries: dict[tuple[str, str], _CredentialRecord] = {}
         self._lock = threading.RLock()
 
@@ -71,6 +73,7 @@ class ProviderCredentialStore:
             )
 
     def get(self, identity: RequestIdentity) -> str | None:
+        expired_key: tuple[str, str] | None = None
         with self._lock:
             key = self._key(identity)
             record = self._entries.get(key)
@@ -83,9 +86,14 @@ class ProviderCredentialStore:
                 wall_now=self._wall_clock(),
             ):
                 self._entries.pop(key, None)
-                return None
-            record.last_accessed_monotonic = monotonic_now
-            return record.api_key
+                expired_key = key
+                api_key = None
+            else:
+                record.last_accessed_monotonic = monotonic_now
+                api_key = record.api_key
+        if expired_key is not None:
+            self._notify_expired((expired_key,))
+        return api_key
 
     def has(self, identity: RequestIdentity) -> bool:
         return self.get(identity) is not None
@@ -109,7 +117,17 @@ class ProviderCredentialStore:
             ]
             for key in expired_keys:
                 self._entries.pop(key, None)
-            return len(expired_keys)
+        self._notify_expired(expired_keys)
+        return len(expired_keys)
+
+    def _notify_expired(
+        self,
+        expired_keys: Sequence[tuple[str, str]],
+    ) -> None:
+        if self._on_expire is None:
+            return
+        for owner_user_id, session_id in expired_keys:
+            self._on_expire(owner_user_id, session_id)
 
     def _is_expired(
         self,

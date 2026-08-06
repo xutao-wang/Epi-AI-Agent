@@ -133,6 +133,46 @@ def test_application_factory_cognito_mode_starts_without_credentials(
     assert application.state.report_agent_runtime.runtime_root == tmp_path / "runtime"
 
 
+def test_application_factory_binds_credential_expiry_to_runtime_release(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import api.app as app_module
+    from api.provider_credentials import ProviderCredentialStore
+
+    configured: dict[str, Any] = {}
+
+    def credential_store_factory(**kwargs: Any) -> ProviderCredentialStore:
+        configured.update(kwargs)
+        return ProviderCredentialStore(**kwargs)
+
+    monkeypatch.setattr(
+        app_module,
+        "ProviderCredentialStore",
+        credential_store_factory,
+    )
+    application = app_module.build_application(
+        environ={
+            "REPORT_AGENT_AUTH_MODE": "cognito",
+            "REPORT_AGENT_AWS_REGION": "us-east-1",
+            "REPORT_AGENT_COGNITO_USER_POOL_ID": "us-east-1_example",
+            "REPORT_AGENT_COGNITO_APP_CLIENT_ID": "client-123",
+            "REPORT_AGENT_COGNITO_LOGOUT_ENDPOINT": "https://auth.example.test/logout",
+            "REPORT_AGENT_AUTH_REDIRECT_URI": "https://example.test/callback",
+            "REPORT_AGENT_AUTH_POST_LOGOUT_REDIRECT_URI": "https://example.test/",
+            "REPORT_AGENT_RUNTIME_ROOT": str(tmp_path / "runtime"),
+            "REPORT_AGENT_STUDY_ROOT": str(tmp_path / "studies"),
+            "REPORT_AGENT_ALLOWED_MODELS": "gpt-5.4",
+            "OPENAI_MODEL": "gpt-5.4",
+            "REPORT_AGENT_TITLE_MODEL": "gpt-5.4",
+        }
+    )
+
+    callback = configured["on_expire"]
+    assert callback.__self__ is application.state.report_agent_runtime
+    assert callback.__func__ is type(application.state.report_agent_runtime).release_session
+
+
 class _FinalModel:
     def __init__(self) -> None:
         self.messages: list[Any] = []

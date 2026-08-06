@@ -81,13 +81,14 @@ def build_graph(
         checkpoint_path,
         check_same_thread=False,
     )
+    execution_root = storage.execution if storage is not None else root
     return build_general_epi_agent_graph(
         llm=llm,
         model_profile=model_profile,
         service=attachment_reader_service,
         studies=studies,
         default_study_id=default_study_id,
-        python_runtime=LocalPythonRuntime(runtime_root=root),
+        python_runtime=LocalPythonRuntime(runtime_root=execution_root),
         runtime_root=root,
         include_db_rag=readiness.available,
         checkpointer=SqliteSaver(connection),

@@ -22,6 +22,16 @@ python study_installer.py --study report-india-synthetic-0.2.0.tar.gz
 python run_fastapi.py
 ```
 
+The real compiled-browser smoke tests also require Playwright's pinned Python
+package from `requirements.txt` and its Chromium binary:
+
+```bash
+python -m playwright install chromium
+```
+
+If Chromium is not installed, browser smokes are unavailable and must not be
+reported as passing.
+
 On the first native start, the study installer separately asks where to keep
 study packages, and the launcher asks where to keep local runtime data. Set
 `REPORT_AGENT_STUDY_ROOT` and `REPORT_AGENT_RUNTIME_ROOT` to preselect those

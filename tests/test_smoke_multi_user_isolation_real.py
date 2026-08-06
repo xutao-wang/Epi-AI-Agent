@@ -5,6 +5,7 @@ import importlib.util
 import io
 import math
 from pathlib import Path
+import subprocess
 
 from cryptography.hazmat.primitives.asymmetric import rsa
 import jwt
@@ -209,3 +210,20 @@ def test_five_minute_bound_reserves_time_for_expired_operation_cleanup() -> None
         hard_deadline,
         monotonic=lambda: 1_290.0,
     ) == 10.0
+
+
+def test_browser_auth_smoke_declares_tracked_playwright_prerequisites() -> None:
+    root = SCRIPT_PATH.parents[1]
+    tracked = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", "scripts/e2e_process_harness.py"],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    requirements = (root / "requirements.txt").read_text(encoding="utf-8")
+    readme = (root / "README.md").read_text(encoding="utf-8")
+
+    assert tracked.returncode == 0
+    assert "playwright==" in requirements
+    assert "python -m playwright install chromium" in readme

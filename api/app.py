@@ -227,7 +227,9 @@ def build_application(*, environ: Mapping[str, str] | None = None) -> FastAPI:
         ),
     )
 
-    credential_store = ProviderCredentialStore()
+    credential_store = ProviderCredentialStore(
+        on_expire=report_runtime.release_session,
+    )
     if auth_config.mode == "local":
         token_verifier = LocalTokenVerifier()
         local_api_key = str(environ.get("OPENAI_API_KEY", "") or "").strip()

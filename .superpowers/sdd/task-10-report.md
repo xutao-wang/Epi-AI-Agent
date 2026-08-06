@@ -154,3 +154,46 @@ HTTP route smoke, while Task 8 owns the compiled-browser authentication smoke.
 The multi-user isolation smoke therefore retains the planned HTTP boundary;
 the future deployed Cognito/CloudFront project must run the real-pool browser
 acceptance smoke before launch.
+
+## Blocker remediation
+
+The hosted-foundation review blockers were reproduced before implementation.
+The first focused RED run reported `6 failed, 4 passed`: expiry removed provider
+credentials without releasing cached graphs, scoped graph construction gave the
+Python runtime the global root, and the browser smoke depended on an ignored
+helper plus an undeclared Playwright installation. A separate request-boundary
+RED test proved that rejected expired tokens never reached `credential_store.get`
+and therefore did not release the cached session.
+
+The production credential store now notifies `ReportAgentApiRuntime.release_session`
+when idle or token expiry removes a credential. `create_app` prunes expired
+credentials before authentication on every request, so even a request rejected
+with HTTP 401 releases expired cached graphs. Callbacks execute after the store
+lock is released. Focused verification is `11 passed`.
+
+Scoped graph construction now gives `LocalPythonRuntime` the exact
+owner/thread `storage.execution` directory. The regression executes a real
+synthetic dataframe request and records that its temporary directory is created
+under that exact scoped path.
+
+The Task 8 browser smoke helper is tracked, Playwright is pinned in
+`requirements.txt`, and the README documents `python -m playwright install
+chromium`. The browser smoke itself was not run because Chromium/Playwright are
+declared prerequisites, not silently assumed local tools. The paid OpenAI smoke
+also remains unexecuted for the authorization reason above.
+
+Final blocker verification:
+
+```text
+.venv/bin/python -m pytest tests/test_provider_credentials.py tests/test_api_server.py tests/test_api_runtime.py tests/test_no_study_startup.py tests/test_graph_studies.py tests/test_epi_python_runtime.py tests/test_smoke_multi_user_isolation_real.py -q
+204 passed in 15.67s
+
+npm --prefix frontend test
+23 files passed; 189 tests passed
+
+npm --prefix frontend run build
+52 modules transformed; production bundle built
+
+.venv/bin/python -m py_compile scripts/smoke_browser_auth_gates_real.py scripts/e2e_process_harness.py api/provider_credentials.py api/server.py graph/builder.py
+exit 0
+```

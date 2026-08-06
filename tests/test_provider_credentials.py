@@ -65,9 +65,11 @@ def test_deleting_a_session_leaves_the_same_users_other_session_intact() -> None
 
 def test_provider_credentials_expire_after_idle_ttl() -> None:
     monotonic_now = [100.0]
+    expired: list[tuple[str, str]] = []
     store = ProviderCredentialStore(
         idle_ttl_seconds=5,
         monotonic_clock=lambda: monotonic_now[0],
+        on_expire=lambda owner, session: expired.append((owner, session)),
     )
     request_identity = identity("user-a", "11111111-1111-4111-8111-111111111111")
     store.put(request_identity, "idle-key")
@@ -76,15 +78,18 @@ def test_provider_credentials_expire_after_idle_ttl() -> None:
 
     assert store.get(request_identity) is None
     assert store.has(request_identity) is False
+    assert expired == [("user-a", request_identity.session_id)]
 
 
 def test_cognito_bound_credentials_expire_with_token_before_idle_ttl() -> None:
     monotonic_now = [100.0]
     wall_now = [1_000.0]
+    expired: list[tuple[str, str]] = []
     store = ProviderCredentialStore(
         idle_ttl_seconds=60,
         monotonic_clock=lambda: monotonic_now[0],
         wall_clock=lambda: wall_now[0],
+        on_expire=lambda owner, session: expired.append((owner, session)),
     )
     request_identity = identity(
         "user-a",
@@ -96,15 +101,18 @@ def test_cognito_bound_credentials_expire_with_token_before_idle_ttl() -> None:
     wall_now[0] = 1_001
 
     assert store.get(request_identity) is None
+    assert expired == [("user-a", request_identity.session_id)]
 
 
 def test_prune_expired_redacts_keys_and_returns_deletion_count() -> None:
     monotonic_now = [100.0]
     wall_now = [1_000.0]
+    expired: list[tuple[str, str]] = []
     store = ProviderCredentialStore(
         idle_ttl_seconds=5,
         monotonic_clock=lambda: monotonic_now[0],
         wall_clock=lambda: wall_now[0],
+        on_expire=lambda owner, session: expired.append((owner, session)),
     )
     idle_identity = identity("idle", "11111111-1111-4111-8111-111111111111")
     token_identity = identity(
@@ -124,6 +132,10 @@ def test_prune_expired_redacts_keys_and_returns_deletion_count() -> None:
     assert "secret" not in repr(store)
     assert "secret" not in repr(store._entries[store._key(active_identity)])
     assert repr(store) == "ProviderCredentialStore(entries=1)"
+    assert expired == [
+        ("idle", idle_identity.session_id),
+        ("token", token_identity.session_id),
+    ]
 
 
 def test_store_only_keeps_normalized_nonempty_key_in_memory(

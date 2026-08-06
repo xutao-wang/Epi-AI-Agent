@@ -5,6 +5,7 @@ from pathlib import Path
 import zipfile
 
 from fastapi.testclient import TestClient
+from jwt.exceptions import InvalidTokenError
 
 from api.auth import AuthenticatedUser, LOCAL_SESSION_ID, RequestIdentity
 from api.provider_credentials import ProviderCredentialStore
@@ -358,6 +359,47 @@ class _RecordingProviderKeyValidator:
         self.calls.append((provider, api_key))
         if self.error is not None:
             raise self.error
+
+
+class _RejectingTokenVerifier:
+    def verify(self, _authorization: str | None) -> AuthenticatedUser:
+        raise InvalidTokenError("expired access token")
+
+
+def test_request_prunes_expired_credentials_before_authentication() -> None:
+    runtime = _FakeRuntime()
+    clocks = {"monotonic": 10.0, "wall": 100.0}
+    identity = RequestIdentity(
+        user=AuthenticatedUser(
+            owner_user_id="user-a",
+            token_expires_at_epoch=101,
+        ),
+        session_id="11111111-1111-4111-8111-111111111111",
+    )
+    store = ProviderCredentialStore(
+        monotonic_clock=lambda: clocks["monotonic"],
+        wall_clock=lambda: clocks["wall"],
+        on_expire=runtime.release_session,
+    )
+    store.put(identity, "expired-session-key")
+    clocks["wall"] = 101.0
+    client = TestClient(
+        create_app(
+            runtime=runtime,
+            credential_store=store,
+            token_verifier=_RejectingTokenVerifier(),
+        ),
+        headers={
+            "Authorization": "Bearer expired-token",
+            "X-Epi-Session-ID": identity.session_id,
+        },
+    )
+
+    response = client.get("/api/session/provider-key")
+
+    assert response.status_code == 401
+    assert runtime.released_sessions == [("user-a", identity.session_id)]
+    assert store.prune_expired() == 0
 
 
 def test_provider_key_routes_report_status_store_after_validation_and_clear_session() -> None:
