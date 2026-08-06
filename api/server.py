@@ -5,13 +5,15 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import FastAPI, File, HTTPException, Response, UploadFile
+from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from api.deployment import cors_allow_origin_regex
+from api.auth import LocalTokenVerifier, TokenVerifier, request_identity_dependency
 from api.runtime import (
+    ReportAgentApiRuntime,
     StaleInterruptError,
     ThreadAlreadyRunningError,
     ThreadAwaitingReviewError,
@@ -26,6 +28,7 @@ from api.schemas import (
     DatasetPreview,
     DatasetProvenance,
     DatasetSchemaResponse,
+    PublicAppConfig,
     ResetThreadResponse,
     RenameConversationRequest,
     ResumeInterruptRequest,
@@ -171,12 +174,21 @@ async def _read_bounded_attachment_uploads(
 
 
 def create_app(
+    runtime: ReportAgentApiRuntime,
     *,
-    runtime: Any,
-    static_dir: str | Path | None = None,
+    static_dir: Path | None = None,
     cors_origin_regex: str | None = None,
+    public_config: PublicAppConfig | None = None,
+    token_verifier: TokenVerifier | None = None,
 ) -> FastAPI:
     app = FastAPI(title="RePORT Agent API")
+    public_config = public_config or PublicAppConfig(
+        auth_mode="local",
+        provider_key_required=False,
+    )
+    require_identity = request_identity_dependency(
+        token_verifier or LocalTokenVerifier()
+    )
     attachment_limits = runtime.attachment_limits
     app.add_middleware(
         AttachmentRequestBodyLimitMiddleware,
@@ -197,13 +209,19 @@ def create_app(
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.get("/api/conversations", response_model=ConversationHistoryResponse)
+    @app.get("/api/public-config", response_model=PublicAppConfig)
+    def get_public_config() -> PublicAppConfig:
+        return public_config
+
+    api = APIRouter(dependencies=[Depends(require_identity)])
+
+    @api.get("/api/conversations", response_model=ConversationHistoryResponse)
     def list_conversations() -> ConversationHistoryResponse:
         return ConversationHistoryResponse(
             items=[item.__dict__ for item in runtime.list_conversations()]
         )
 
-    @app.patch("/api/conversations/{thread_id}")
+    @api.patch("/api/conversations/{thread_id}")
     def rename_conversation(
         thread_id: str,
         request: RenameConversationRequest,
@@ -213,14 +231,14 @@ def create_app(
             raise HTTPException(status_code=404, detail="Conversation not found")
         return record
 
-    @app.post("/api/conversations/{thread_id}/open")
+    @api.post("/api/conversations/{thread_id}/open")
     def open_conversation(thread_id: str):
         record = runtime.open_conversation(thread_id)
         if record is None:
             raise HTTPException(status_code=404, detail="Conversation not found")
         return record
 
-    @app.post("/api/conversations/{thread_id}/archive")
+    @api.post("/api/conversations/{thread_id}/archive")
     def archive_conversation(thread_id: str):
         try:
             record = runtime.archive_conversation(thread_id)
@@ -230,7 +248,7 @@ def create_app(
             raise HTTPException(status_code=404, detail="Conversation not found")
         return record
 
-    @app.post("/api/conversations/{thread_id}/restore")
+    @api.post("/api/conversations/{thread_id}/restore")
     def restore_conversation(thread_id: str):
         try:
             record = runtime.restore_conversation(thread_id)
@@ -240,7 +258,7 @@ def create_app(
             raise HTTPException(status_code=404, detail="Conversation not found")
         return record
 
-    @app.delete("/api/conversations/{thread_id}", status_code=204)
+    @api.delete("/api/conversations/{thread_id}", status_code=204)
     def delete_conversation(thread_id: str) -> Response:
         try:
             deleted = runtime.delete_conversation(thread_id)
@@ -250,7 +268,7 @@ def create_app(
             raise HTTPException(status_code=404, detail="Conversation not found")
         return Response(status_code=204)
 
-    @app.post("/api/threads")
+    @api.post("/api/threads")
     def create_thread(
         request: CreateThreadRequest | None = None,
     ) -> CreateThreadResponse:
@@ -260,19 +278,19 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    @app.get("/api/runtime")
+    @api.get("/api/runtime")
     def runtime_info() -> RuntimeInfo:
         return runtime.runtime_info()
 
-    @app.get("/api/runtime/options")
+    @api.get("/api/runtime/options")
     def runtime_options() -> RuntimeOptions:
         return runtime.runtime_options()
 
-    @app.get("/api/threads/{thread_id}/state")
+    @api.get("/api/threads/{thread_id}/state")
     def get_thread_state(thread_id: str) -> ApiThreadState:
         return runtime.state(thread_id)
 
-    @app.post(
+    @api.post(
         "/api/threads/{thread_id}/attachments",
         response_model=AttachmentUploadResult,
     )
@@ -289,7 +307,7 @@ def create_app(
         except AttachmentError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    @app.delete(
+    @api.delete(
         "/api/threads/{thread_id}/attachments/{attachment_id}",
         status_code=204,
     )
@@ -304,7 +322,7 @@ def create_app(
             raise HTTPException(status_code=status_code, detail=str(exc)) from exc
         return Response(status_code=204)
 
-    @app.get("/api/threads/{thread_id}/attachments/{attachment_id}")
+    @api.get("/api/threads/{thread_id}/attachments/{attachment_id}")
     def get_conversation_attachment(
         thread_id: str,
         attachment_id: str,
@@ -327,7 +345,7 @@ def create_app(
             },
         )
 
-    @app.get(
+    @api.get(
         "/api/threads/{thread_id}/datasets/{dataset_id}/preview",
         response_model=DatasetPreview,
     )
@@ -346,7 +364,7 @@ def create_app(
                 detail="Dataset file not found",
             ) from exc
 
-    @app.get(
+    @api.get(
         "/api/threads/{thread_id}/datasets/{dataset_id}/schema",
         response_model=DatasetSchemaResponse,
     )
@@ -361,7 +379,7 @@ def create_app(
                 detail="Dataset file not found",
             ) from exc
 
-    @app.get(
+    @api.get(
         "/api/threads/{thread_id}/datasets/{dataset_id}/provenance",
         response_model=DatasetProvenance,
     )
@@ -373,7 +391,7 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    @app.get(
+    @api.get(
         "/api/threads/{thread_id}/analysis-runs/{analysis_id}",
         response_model=CompletedAnalysisResult,
     )
@@ -385,7 +403,7 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    @app.get("/api/threads/{thread_id}/datasets/{dataset_id}/download")
+    @api.get("/api/threads/{thread_id}/datasets/{dataset_id}/download")
     def dataset_download(thread_id: str, dataset_id: str) -> Response:
         try:
             content = runtime.dataset_csv_bytes(thread_id, dataset_id)
@@ -404,7 +422,7 @@ def create_app(
             },
         )
 
-    @app.get("/api/threads/{thread_id}/artifacts/{artifact_id}")
+    @api.get("/api/threads/{thread_id}/artifacts/{artifact_id}")
     def file_artifact(thread_id: str, artifact_id: str) -> Response:
         try:
             artifact = runtime.file_artifact_bytes(thread_id, artifact_id)
@@ -426,7 +444,7 @@ def create_app(
             },
         )
 
-    @app.get(
+    @api.get(
         "/api/threads/{thread_id}/artifacts/{artifact_id}/table-preview",
         response_model=TablePreview,
     )
@@ -442,7 +460,7 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    @app.post("/api/threads/{thread_id}/messages")
+    @api.post("/api/threads/{thread_id}/messages")
     def submit_message(thread_id: str, request: SubmitMessageRequest) -> ApiThreadState:
         try:
             runtime.submit_message(
@@ -461,7 +479,7 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return runtime.state(thread_id)
 
-    @app.post("/api/threads/{thread_id}/interrupts/{interrupt_id}/resume")
+    @api.post("/api/threads/{thread_id}/interrupts/{interrupt_id}/resume")
     def resume_interrupt(
         thread_id: str,
         interrupt_id: str,
@@ -481,11 +499,11 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return runtime.state(thread_id)
 
-    @app.post("/api/threads/{thread_id}/reset")
+    @api.post("/api/threads/{thread_id}/reset")
     def reset_thread(thread_id: str) -> ResetThreadResponse:
         return ResetThreadResponse(thread_id=runtime.reset(thread_id))
 
-    @app.get("/api/threads/{thread_id}/export")
+    @api.get("/api/threads/{thread_id}/export")
     def export_thread(thread_id: str) -> Response:
         return Response(
             content=json.dumps(runtime.export_thread(thread_id), indent=2).encode("utf-8"),
@@ -495,7 +513,7 @@ def create_app(
             },
         )
 
-    @app.get("/api/threads/{thread_id}/export.zip")
+    @api.get("/api/threads/{thread_id}/export.zip")
     def export_thread_archive(thread_id: str) -> Response:
         return Response(
             content=runtime.export_thread_archive(thread_id),
@@ -505,6 +523,7 @@ def create_app(
             },
         )
 
+    app.include_router(api)
     _mount_static_frontend(app, static_dir)
 
     return app
