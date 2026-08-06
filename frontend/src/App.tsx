@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ApiError, createApiClient } from "./apiClient";
+import type { User } from "oidc-client-ts";
+import { ApiError, createApiClient, type ApiClient } from "./apiClient";
 import AttachmentComposer from "./AttachmentComposer";
 import AnalysisResultReview from "./AnalysisResultReview";
 import AppShell from "./AppShell";
@@ -27,6 +28,13 @@ import { AGENT_DECIDE_ANSWER } from "./types";
 import type { FormEvent, KeyboardEvent } from "react";
 
 interface Props {
+  apiClient: ApiClient;
+  authenticatedUser: User | null;
+  onSignOut: () => Promise<void>;
+  loadConversationHistory?: boolean;
+}
+
+interface TestProps {
   fetchImpl?: typeof fetch;
   apiBase?: string;
   loadConversationHistory?: boolean;
@@ -134,14 +142,11 @@ function ActivityMessage({ detail, steps, title }: ActivityMessageProps) {
 }
 
 export default function App({
-  fetchImpl,
-  apiBase = DEFAULT_API_BASE,
+  apiClient,
+  authenticatedUser,
+  onSignOut,
   loadConversationHistory = true,
 }: Props) {
-  const apiClient = useMemo(
-    () => createApiClient({ apiBase, fetchImpl }),
-    [apiBase, fetchImpl],
-  );
   const createThreadPromiseRef = useRef<Promise<string> | null>(null);
   const runtimeOptionsPromiseRef = useRef<ReturnType<
     typeof apiClient.getRuntimeOptions
@@ -184,6 +189,10 @@ export default function App({
     Record<string, ClarificationExchange>
   >({});
   const [isModelLockHintVisible, setIsModelLockHintVisible] = useState(false);
+  const authenticatedEmail =
+    typeof authenticatedUser?.profile.email === "string"
+      ? authenticatedUser.profile.email
+      : null;
 
   useEffect(() => {
     let isMounted = true;
@@ -845,6 +854,14 @@ export default function App({
     <AppShell
       sidebar={
         <div className="settings-panel">
+          {authenticatedUser ? (
+            <section className="authenticated-user-panel" aria-label="Signed-in user">
+              <p>{authenticatedEmail ? `Signed in as ${authenticatedEmail}` : "Signed in"}</p>
+              <button onClick={() => void onSignOut()} type="button">
+                Sign out
+              </button>
+            </section>
+          ) : null}
           <ConversationHistory
             activeThreadId={threadId}
             actionsDisabled={isBusy}
@@ -1045,6 +1062,25 @@ export default function App({
           </form>
         </>
       }
+    />
+  );
+}
+
+export function AppForTesting({
+  fetchImpl,
+  apiBase = DEFAULT_API_BASE,
+  loadConversationHistory = true,
+}: TestProps) {
+  const apiClient = useMemo(
+    () => createApiClient({ apiBase, fetchImpl }),
+    [apiBase, fetchImpl],
+  );
+  return (
+    <App
+      apiClient={apiClient}
+      authenticatedUser={null}
+      loadConversationHistory={loadConversationHistory}
+      onSignOut={async () => undefined}
     />
   );
 }

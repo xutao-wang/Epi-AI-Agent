@@ -109,6 +109,40 @@ const approvePayload: ResumeInterruptPayload = {
 };
 
 describe("apiClient", () => {
+  it("adds the access token and tab session to protected requests", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ items: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const client = createApiClient({
+      apiBase: "http://api.test",
+      fetchImpl: fetchMock,
+      getAccessToken: async () => "access-token",
+      sessionId: "11111111-1111-4111-8111-111111111111",
+    });
+
+    await client.listConversations();
+
+    const request = new Request(fetchMock.mock.calls[0][0], fetchMock.mock.calls[0][1]);
+    expect(request.headers.get("Authorization")).toBe("Bearer access-token");
+    expect(request.headers.get("X-Epi-Session-ID")).toBe(
+      "11111111-1111-4111-8111-111111111111",
+    );
+  });
+
+  it("omits the bearer token in local mode", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ items: [] }));
+    const client = createApiClient({ apiBase: "http://api.test", fetchImpl: fetchMock });
+
+    await client.listConversations();
+
+    const request = new Request(fetchMock.mock.calls[0][0], fetchMock.mock.calls[0][1]);
+    expect(request.headers.get("Authorization")).toBeNull();
+    expect(request.headers.get("X-Epi-Session-ID")).toBe(LOCAL_SESSION_ID);
+  });
+
   it("adds the fixed local session header to bound client requests", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ items: [] }));
     const client = createApiClient({

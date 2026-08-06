@@ -9,8 +9,13 @@ import {
   within,
 } from "@testing-library/react";
 import { StrictMode } from "react";
+import type { User } from "oidc-client-ts";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import App, { isPendingMessageAcknowledged } from "./App";
+import AuthenticatedApp, {
+  AppForTesting as App,
+  isPendingMessageAcknowledged,
+} from "./App";
+import { createApiClient } from "./apiClient";
 import type {
   ApiThreadState,
   ModelOption,
@@ -257,6 +262,32 @@ afterEach(() => {
 });
 
 describe("App", () => {
+  it("uses the injected authenticated user and sign-out handler", async () => {
+    const onSignOut = vi.fn().mockResolvedValue(undefined);
+    const apiClient = createApiClient({
+      apiBase: "http://api.test",
+      fetchImpl: vi.fn().mockResolvedValue(runtimeOptionsResponse()),
+    });
+    const user = {
+      access_token: "access-token",
+      expired: false,
+      profile: { sub: "user-1", email: "analyst@example.com" },
+    } as User;
+
+    render(
+      <AuthenticatedApp
+        apiClient={apiClient}
+        authenticatedUser={user}
+        loadConversationHistory={false}
+        onSignOut={onSignOut}
+      />,
+    );
+
+    expect(await screen.findByText("Signed in as analyst@example.com")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    expect(onSignOut).toHaveBeenCalledOnce();
+  });
+
   it("shows the updated initial prompt and example question without a ready status", async () => {
     render(<App apiBase="http://api.test" loadConversationHistory={false} />);
 
