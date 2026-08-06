@@ -328,6 +328,17 @@ class LocalAttachmentStore:
         )
 
     @staticmethod
+    def owner_thread_key(owner_user_id: str, thread_id: str) -> str:
+        if not isinstance(owner_user_id, str) or not owner_user_id.strip():
+            raise AttachmentError("INVALID_OWNER", "owner_user_id is required")
+        if not isinstance(thread_id, str) or not thread_id.strip():
+            raise AttachmentError("INVALID_THREAD_ID", "thread_id is required")
+        return (
+            f"{len(owner_user_id)}:{owner_user_id}"
+            f"{len(thread_id)}:{thread_id}"
+        )
+
+    @staticmethod
     def _thread_component(thread_id: str) -> str:
         if not isinstance(thread_id, str) or not thread_id.strip():
             raise AttachmentError("INVALID_THREAD_ID", "thread_id is required")

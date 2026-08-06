@@ -773,6 +773,18 @@ class ReportAgentApiRuntime:
             return ReportAgentApiRuntime._checkpoint_config(identity, thread_id)
         return graph_config(thread_id)
 
+    @staticmethod
+    def _attachment_scope(
+        identity: RequestIdentity | str,
+        thread_id: str,
+    ) -> str:
+        owner_user_id = (
+            identity.owner_user_id
+            if isinstance(identity, RequestIdentity)
+            else "local-user"
+        )
+        return LocalAttachmentStore.owner_thread_key(owner_user_id, thread_id)
+
     def _ensure_graph(self, thread: ThreadRuntime) -> tuple[Any, ApiGraphRunner]:
         with thread._lock:
             if thread.app is None:
@@ -807,6 +819,7 @@ class ReportAgentApiRuntime:
         self,
         *,
         thread_id: str,
+        attachment_thread_id: str,
         snapshot: Any,
         message: HumanMessage,
         manifests: list[dict[str, Any]],
@@ -817,7 +830,7 @@ class ReportAgentApiRuntime:
         try:
             for manifest in manifests:
                 binding_manifest = self.attachment_store.begin_binding(
-                    thread_id,
+                    attachment_thread_id,
                     str(manifest["id"]),
                 )
                 available_manifests.append(
@@ -832,7 +845,7 @@ class ReportAgentApiRuntime:
                     self.attachment_store.runtime_root,
                 )
                 profiles = reader.inspect(
-                    thread_id,
+                    attachment_thread_id,
                     [str(manifest["id"]) for manifest in available_manifests],
                 )
                 inspected_by_id = {
@@ -844,7 +857,7 @@ class ReportAgentApiRuntime:
                 available_manifests = [
                     {
                         **self.attachment_store.record_inspection(
-                            thread_id,
+                            attachment_thread_id,
                             str(manifest["id"]),
                             inspected_by_id[str(manifest["id"])],
                         ),
@@ -920,7 +933,7 @@ class ReportAgentApiRuntime:
                     continue
                 try:
                     stored_manifest = self.attachment_store.require(
-                        thread_id,
+                        attachment_thread_id,
                         attachment_id,
                     )
                 except AttachmentError:
@@ -961,7 +974,7 @@ class ReportAgentApiRuntime:
             }
         except Exception:
             self._rollback_available_manifests(
-                thread_id,
+                attachment_thread_id,
                 available_manifests,
             )
             raise
@@ -998,6 +1011,7 @@ class ReportAgentApiRuntime:
         self,
         identity: RequestIdentity,
         thread_id: str,
+        attachment_thread_id: str,
         thread: ThreadRuntime,
         manifests: list[dict[str, Any]],
     ) -> None:
@@ -1024,7 +1038,7 @@ class ReportAgentApiRuntime:
         except Exception:
             linked_input_ids = set()
         self._rollback_available_manifests(
-            thread_id,
+            attachment_thread_id,
             [
                 manifest
                 for manifest in manifests
@@ -1032,7 +1046,7 @@ class ReportAgentApiRuntime:
             ],
         )
         self._commit_binding_manifests(
-            thread_id,
+            attachment_thread_id,
             [
                 manifest
                 for manifest in manifests
@@ -1063,7 +1077,7 @@ class ReportAgentApiRuntime:
         if _has_blocking_interrupt(snapshot):
             raise ThreadAwaitingReviewError(thread_id)
         manifests = [
-            self.attachment_store.require(thread_id, attachment_id)
+            self.attachment_store.require(self._attachment_scope(identity, thread_id), attachment_id)
             for attachment_id in attachment_ids
         ]
         if any(manifest.get("status") != "staged" for manifest in manifests):
@@ -1085,6 +1099,7 @@ class ReportAgentApiRuntime:
             thread_id=thread_id,
             payload_factory=lambda: self._bind_message_payload(
                 thread_id=thread_id,
+                attachment_thread_id=self._attachment_scope(identity, thread_id),
                 snapshot=snapshot,
                 message=message,
                 manifests=manifests,
@@ -1097,12 +1112,13 @@ class ReportAgentApiRuntime:
                 self._rollback_unbound_available_manifests(
                     identity,
                     thread_id,
+                    self._attachment_scope(identity, thread_id),
                     thread,
                     manifests,
                 )
             ),
             on_initial_payload_success=lambda: self._commit_binding_manifests(
-                thread_id,
+                self._attachment_scope(identity, thread_id),
                 manifests,
             ),
         )
@@ -1203,7 +1219,7 @@ class ReportAgentApiRuntime:
             self._checkpoint_config(identity, thread_id)["configurable"]["thread_id"]
         )
         if self._attachment_store is not None:
-            self._attachment_store.delete_thread(thread_id)
+            self._attachment_store.delete_thread(self._attachment_scope(identity, thread_id))
         with self._lock:
             self._threads.pop((identity.owner_user_id, thread_id), None)
         assert self.history_store is not None
@@ -1240,7 +1256,7 @@ class ReportAgentApiRuntime:
         for filename, mime, content in uploads:
             try:
                 manifest = self.attachment_store.stage(
-                    thread_id,
+                    self._attachment_scope(identity, thread_id),
                     filename,
                     mime,
                     content,
@@ -1271,7 +1287,10 @@ class ReportAgentApiRuntime:
             thread_id = identity
         assert attachment_id is not None
         self._thread(identity, thread_id)
-        self.attachment_store.discard_staged(thread_id, attachment_id)
+        self.attachment_store.discard_staged(
+            self._attachment_scope(identity, thread_id),
+            attachment_id,
+        )
 
     def conversation_attachment_bytes(
         self,
@@ -1311,7 +1330,7 @@ class ReportAgentApiRuntime:
         if self._attachment_store is not None and attachment_id in input_ids:
             try:
                 manifest = self._attachment_store.require(
-                    thread_id,
+                    self._attachment_scope(identity, thread_id),
                     attachment_id,
                 )
             except AttachmentError:
@@ -1319,14 +1338,14 @@ class ReportAgentApiRuntime:
             if manifest is not None:
                 if manifest.get("status") == "binding":
                     manifest = self._attachment_store.commit_binding(
-                        thread_id,
+                        self._attachment_scope(identity, thread_id),
                         attachment_id,
                     )
                 if manifest.get("status") != "available":
                     raise KeyError(attachment_id)
                 try:
                     content = self._attachment_store.read_bytes(
-                        thread_id,
+                        self._attachment_scope(identity, thread_id),
                         attachment_id,
                     )
                 except AttachmentError as exc:
@@ -1770,6 +1789,7 @@ class ReportAgentApiRuntime:
             thread.settings.model_name,
             values,
             attachment_store=self._attachment_store,
+            attachment_thread_id=self._attachment_scope(identity, thread_id),
         )
 
 

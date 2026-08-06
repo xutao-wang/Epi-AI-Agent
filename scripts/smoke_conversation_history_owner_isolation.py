@@ -11,6 +11,7 @@ from tempfile import TemporaryDirectory
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from api.conversation_history import ConversationHistoryStore
+from utils.attachment_artifacts import LocalAttachmentStore
 
 
 def _create_legacy_history(db_path: Path) -> None:
@@ -60,6 +61,26 @@ def main() -> None:
         assert store.get("smoke-user-a", "shared-thread").title != "User B thread"
         assert store.archive("smoke-user-a", "shared-thread") is not None
         assert store.get("smoke-user-b", "shared-thread").archived_at is None
+
+        attachments = LocalAttachmentStore(Path(temporary_dir))
+        scope_a = attachments.owner_thread_key("smoke-user-a", "shared-thread")
+        scope_b = attachments.owner_thread_key("smoke-user-b", "shared-thread")
+        uploaded_a = attachments.stage(
+            scope_a,
+            "a.csv",
+            "text/csv",
+            b"id\n1\n",
+        )
+        uploaded_b = attachments.stage(
+            scope_b,
+            "b.csv",
+            "text/csv",
+            b"id\n2\n",
+        )
+        assert attachments.read_bytes(scope_a, uploaded_a["id"]) == b"id\n1\n"
+        assert attachments.read_bytes(scope_b, uploaded_b["id"]) == b"id\n2\n"
+        attachments.delete_thread(scope_b)
+        assert attachments.read_bytes(scope_a, uploaded_a["id"]) == b"id\n1\n"
 
         legacy_path = Path(temporary_dir) / "legacy.db"
         _create_legacy_history(legacy_path)

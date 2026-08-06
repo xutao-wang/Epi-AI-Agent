@@ -347,6 +347,7 @@ def build_thread_export(
     state,
     *,
     attachment_store: LocalAttachmentStore | None = None,
+    attachment_thread_id: str | None = None,
 ):
     state = dict(state or {})
     display_messages = build_display_history(state)
@@ -355,7 +356,7 @@ def build_thread_export(
     conversation_events = get_conversation_events(state)
     artifacts_manifest, artifact_files = _artifact_manifest_and_files(state)
     attachment_manifest, attachment_files = _visible_attachment_graph(
-        thread_id,
+        attachment_thread_id or thread_id,
         state,
         attachment_store,
     )

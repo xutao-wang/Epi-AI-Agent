@@ -1083,3 +1083,28 @@ def test_changed_routes_forward_request_identity_to_runtime() -> None:
 
     assert response.status_code == 200
     assert [identity.owner_user_id for identity in runtime.identities] == ["local-user"]
+
+
+def test_owner_mismatch_routes_return_the_same_non_disclosing_404() -> None:
+    class _MissingRuntime(_FakeRuntime):
+        def stage_attachments(self, *_args): raise KeyError("hidden")
+        def discard_staged_attachment(self, *_args): raise KeyError("hidden")
+        def submit_message(self, *_args): raise KeyError("hidden")
+        def resume_interrupt(self, *_args): raise KeyError("hidden")
+        def reset(self, *_args): raise KeyError("hidden")
+        def export_thread(self, *_args): raise KeyError("hidden")
+        def export_thread_archive(self, *_args): raise KeyError("hidden")
+
+    client = _client(_MissingRuntime())
+    responses = [
+        client.post("/api/threads/thread-a/attachments", files={"files": ("a.csv", b"id\n1\n", "text/csv")}),
+        client.delete("/api/threads/thread-a/attachments/attachment-0123456789abcdef0123456789abcdef"),
+        client.post("/api/threads/thread-a/messages", json={"text": "hello"}),
+        client.post("/api/threads/thread-a/interrupts/i/resume", json={"action": "approve", "selected_column_keys": ["x"]}),
+        client.post("/api/threads/thread-a/reset"),
+        client.get("/api/threads/thread-a/export"),
+        client.get("/api/threads/thread-a/export.zip"),
+    ]
+
+    assert all(response.status_code == 404 for response in responses)
+    assert all(response.json() == {"detail": "Conversation not found"} for response in responses)

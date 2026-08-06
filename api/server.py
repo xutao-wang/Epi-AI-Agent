@@ -422,6 +422,8 @@ def create_app(
                 runtime.attachment_limits,
             )
             return runtime.stage_attachments(identity, thread_id, uploads)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Conversation not found") from exc
         except AttachmentError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -436,6 +438,8 @@ def create_app(
     ) -> Response:
         try:
             runtime.discard_staged_attachment(identity, thread_id, attachment_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Conversation not found") from exc
         except AttachmentError as exc:
             status_code = 404 if exc.code == "ATTACHMENT_NOT_FOUND" else 400
             raise HTTPException(status_code=status_code, detail=str(exc)) from exc
@@ -618,6 +622,8 @@ def create_app(
                 request.model_name,
                 request.active_study_id,
             )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Conversation not found") from exc
         except (ThreadAlreadyRunningError, ThreadAwaitingReviewError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except AttachmentError as exc:
@@ -641,6 +647,8 @@ def create_app(
                 interrupt_id,
                 request.model_dump(exclude_defaults=True),
             )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Conversation not found") from exc
         except ThreadAlreadyRunningError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except InvalidInterruptDecisionError as exc:
@@ -654,15 +662,22 @@ def create_app(
         thread_id: str,
         identity: RequestIdentity = Depends(require_identity),
     ) -> ResetThreadResponse:
-        return ResetThreadResponse(thread_id=runtime.reset(identity, thread_id))
+        try:
+            return ResetThreadResponse(thread_id=runtime.reset(identity, thread_id))
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Conversation not found") from exc
 
     @api.get("/api/threads/{thread_id}/export")
     def export_thread(
         thread_id: str,
         identity: RequestIdentity = Depends(require_identity),
     ) -> Response:
+        try:
+            content = json.dumps(runtime.export_thread(identity, thread_id), indent=2).encode("utf-8")
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Conversation not found") from exc
         return Response(
-            content=json.dumps(runtime.export_thread(identity, thread_id), indent=2).encode("utf-8"),
+            content=content,
             media_type="application/json",
             headers={
                 "Content-Disposition": f'attachment; filename="{thread_id}-thread.json"',
@@ -674,8 +689,12 @@ def create_app(
         thread_id: str,
         identity: RequestIdentity = Depends(require_identity),
     ) -> Response:
+        try:
+            content = runtime.export_thread_archive(identity, thread_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Conversation not found") from exc
         return Response(
-            content=runtime.export_thread_archive(identity, thread_id),
+            content=content,
             media_type="application/zip",
             headers={
                 "Content-Disposition": f'attachment; filename="{thread_id}-thread.zip"',

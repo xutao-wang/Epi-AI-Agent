@@ -72,6 +72,10 @@ def _identity(owner_user_id: str) -> RequestIdentity:
 _LOCAL_IDENTITY = _identity("local-user")
 
 
+def _local_attachment_scope(thread_id: str) -> str:
+    return LocalAttachmentStore.owner_thread_key("local-user", thread_id)
+
+
 def test_runtime_capabilities_include_study_design() -> None:
     capabilities = RuntimeCapabilities(
         publication_knowledge=RuntimeCapability(
@@ -539,6 +543,40 @@ def test_runtime_keeps_same_thread_id_isolated_by_owner_before_graph_access(
         runtime.state(_identity("user-c"), "shared-thread")
 
 
+def test_runtime_scopes_same_thread_attachments_by_owner(tmp_path: Path) -> None:
+    history_store = ConversationHistoryStore(tmp_path / "history.db")
+    for owner in ("user-a", "user-b"):
+        history_store.create(owner, "shared-thread", model_name="gpt-5.4")
+    runtime = ReportAgentApiRuntime(
+        graph_factory=_RecordingGraphFactory(),
+        default_runtime_settings=_DEFAULT_RUNTIME_SETTINGS,
+        models=["gpt-5.4"],
+        runtime_root=tmp_path,
+        history_store=history_store,
+    )
+    user_a, user_b = _identity("user-a"), _identity("user-b")
+
+    attachment_a = runtime.stage_attachments(
+        user_a, "shared-thread", [("a.csv", "text/csv", b"id\n1\n")]
+    ).attachments[0]
+    attachment_b = runtime.stage_attachments(
+        user_b, "shared-thread", [("b.csv", "text/csv", b"id\n2\n")]
+    ).attachments[0]
+
+    assert runtime.attachment_store.require(
+        runtime._attachment_scope(user_a, "shared-thread"), attachment_a.id
+    )["filename"] == "a.csv"
+    assert runtime.attachment_store.require(
+        runtime._attachment_scope(user_b, "shared-thread"), attachment_b.id
+    )["filename"] == "b.csv"
+    with pytest.raises(KeyError):
+        runtime.conversation_attachment_bytes(user_b, "shared-thread", attachment_a.id)
+    assert runtime.delete_conversation(user_b, "shared-thread") is True
+    assert runtime.attachment_store.require(
+        runtime._attachment_scope(user_a, "shared-thread"), attachment_a.id
+    )["filename"] == "a.csv"
+
+
 def test_state_recovers_one_idle_checkpoint_with_pending_work() -> None:
     snapshot = SimpleNamespace(
         values={"messages": []},
@@ -587,7 +625,12 @@ def test_runtime_deletes_history_checkpoints_and_attachments(tmp_path: Path) -> 
         runtime_root=tmp_path,
         history_store=history_store,
     )
-    runtime.attachment_store.stage("thread-a", "cohort.csv", "text/csv", b"id\n1\n")
+    runtime.attachment_store.stage(
+        runtime._attachment_scope(_LOCAL_IDENTITY, "thread-a"),
+        "cohort.csv",
+        "text/csv",
+        b"id\n1\n",
+    )
     runtime._thread(_LOCAL_IDENTITY, "thread-a")
 
     assert runtime.delete_conversation(_LOCAL_IDENTITY, "thread-a") is True
@@ -1167,7 +1210,7 @@ def test_runtime_rejects_submit_for_unresolved_raw_interrupt(
     assert caught.value.thread_id == "thread-1"
     assert runner.background_calls == []
     assert runtime.attachment_store.require(
-        "thread-1",
+        _local_attachment_scope("thread-1"),
         staged.id,
     )["status"] == "staged"
 
@@ -1321,14 +1364,14 @@ def test_runtime_text_followup_rehydrates_prior_upload_profile(
 ) -> None:
     store = LocalAttachmentStore(tmp_path)
     attachment = store.stage(
-        "thread-1",
+        _local_attachment_scope("thread-1"),
         "cohort.csv",
         "text/csv",
         b"id,sex\nSUB-1,F\n",
     )
-    store.mark_available("thread-1", attachment["id"])
+    store.mark_available(_local_attachment_scope("thread-1"), attachment["id"])
     store.record_inspection(
-        "thread-1",
+        _local_attachment_scope("thread-1"),
         attachment["id"],
         {"id": attachment["id"], "columns": ["id", "sex"], "row_count": 1},
     )
@@ -1380,7 +1423,7 @@ def test_busy_submit_leaves_attachment_staged(tmp_path: Path) -> None:
         runtime.submit_message(_LOCAL_IDENTITY, "thread-1", "Read this", [staged.id])
 
     assert runtime.attachment_store.require(
-        "thread-1",
+        _local_attachment_scope("thread-1"),
         staged.id,
     )["status"] == "staged"
 
@@ -1405,7 +1448,7 @@ def test_snapshot_failure_leaves_attachment_staged(tmp_path: Path) -> None:
         runtime.submit_message(_LOCAL_IDENTITY, "thread-1", "Read this", [staged.id])
 
     assert runtime.attachment_store.require(
-        "thread-1",
+        _local_attachment_scope("thread-1"),
         staged.id,
     )["status"] == "staged"
 
@@ -1452,7 +1495,9 @@ def test_conversation_attachment_bytes_rejects_available_but_unlinked_upload(
         "thread-1",
         [("notes.txt", "text/plain", b"study notes")],
     ).attachments[0]
-    runtime.attachment_store.mark_available("thread-1", staged.id)
+    runtime.attachment_store.mark_available(
+        _local_attachment_scope("thread-1"), staged.id
+    )
 
     with pytest.raises(KeyError):
         runtime.conversation_attachment_bytes("thread-1", staged.id)
@@ -1478,7 +1523,7 @@ def test_failed_initial_invoke_rolls_attachment_back_to_staged(
         time.sleep(0.01)
 
     assert runtime.attachment_store.require(
-        "thread-1",
+        _local_attachment_scope("thread-1"),
         staged.id,
     )["status"] == "staged"
 
@@ -1522,7 +1567,7 @@ def test_failed_invoke_preserves_attachment_when_input_link_was_committed(
         time.sleep(0.01)
 
     assert runtime.attachment_store.require(
-        "thread-1",
+        _local_attachment_scope("thread-1"),
         staged.id,
     )["status"] == "available"
     assert runtime.conversation_attachment_bytes(
@@ -1668,12 +1713,14 @@ def test_runtime_export_thread_archive_includes_visible_message_attachments(
 ) -> None:
     attachment_store = LocalAttachmentStore(tmp_path)
     staged = attachment_store.stage(
-        "thread-1",
+        _local_attachment_scope("thread-1"),
         "cohort.csv",
         "text/csv",
         b"subject_id,age\nSUB-1,42\n",
     )
-    uploaded = attachment_store.mark_available("thread-1", staged["id"])
+    uploaded = attachment_store.mark_available(
+        _local_attachment_scope("thread-1"), staged["id"]
+    )
     dataset = persist_dataset_artifact(
         runtime_root=tmp_path,
         thread_id="thread-1",
