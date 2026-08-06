@@ -783,6 +783,8 @@ class ReportAgentApiRuntime:
             if isinstance(identity, RequestIdentity)
             else "local-user"
         )
+        if owner_user_id == "local-user":
+            return thread_id
         return LocalAttachmentStore.owner_thread_key(owner_user_id, thread_id)
 
     def _ensure_graph(self, thread: ThreadRuntime) -> tuple[Any, ApiGraphRunner]:

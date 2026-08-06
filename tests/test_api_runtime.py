@@ -47,7 +47,7 @@ from graph.conversation_events import (
     build_clarification_exchange_event,
     build_user_event,
 )
-from utils.attachment_artifacts import LocalAttachmentStore
+from utils.attachment_artifacts import AttachmentError, LocalAttachmentStore
 from utils.dataset_artifacts import persist_dataset_artifact
 
 
@@ -73,7 +73,7 @@ _LOCAL_IDENTITY = _identity("local-user")
 
 
 def _local_attachment_scope(thread_id: str) -> str:
-    return LocalAttachmentStore.owner_thread_key("local-user", thread_id)
+    return thread_id
 
 
 def test_runtime_capabilities_include_study_design() -> None:
@@ -638,6 +638,53 @@ def test_runtime_deletes_history_checkpoints_and_attachments(tmp_path: Path) -> 
     assert "thread-a" not in runtime._threads
     assert graph.checkpointer.deleted_threads == ["thread-a"]
     assert not any(runtime.attachment_store.root.iterdir())
+
+
+def test_runtime_reads_and_deletes_legacy_local_attachment_scope(
+    tmp_path: Path,
+) -> None:
+    history_store = ConversationHistoryStore(tmp_path / "history.db")
+    history_store.create("local-user", "thread-a", model_name="gpt-5.4")
+    graph = _RuntimeFakeGraph(SimpleNamespace(values={}, next=(), interrupts=[]))
+    runtime = ReportAgentApiRuntime(
+        graph_factory=lambda _settings: graph,
+        default_runtime_settings=_DEFAULT_RUNTIME_SETTINGS,
+        models=["gpt-5.4"],
+        runtime_root=tmp_path,
+        history_store=history_store,
+    )
+    staged = runtime.attachment_store.stage(
+        "thread-a",
+        "legacy.csv",
+        "text/csv",
+        b"id\n1\n",
+    )
+    available = runtime.attachment_store.mark_available("thread-a", staged["id"])
+    graph.snapshot = SimpleNamespace(
+        values={
+            "artifacts": {
+                "attachments": {available["id"]: available},
+                "conversation_events": [
+                    build_attachment_event(
+                        actor="api",
+                        user_turn_hash="legacy-turn",
+                        artifact_id=available["id"],
+                        relationship="input",
+                        parent_event_id="user-legacy",
+                    )
+                ],
+            }
+        },
+        next=(),
+        interrupts=[],
+    )
+
+    assert runtime.conversation_attachment_bytes(
+        _LOCAL_IDENTITY, "thread-a", available["id"]
+    ).content == b"id\n1\n"
+    assert runtime.delete_conversation(_LOCAL_IDENTITY, "thread-a") is True
+    with pytest.raises(AttachmentError, match="attachment was not found"):
+        runtime.attachment_store.require("thread-a", available["id"])
 
 
 def test_runtime_rejects_archive_while_conversation_is_running(tmp_path: Path) -> None:
