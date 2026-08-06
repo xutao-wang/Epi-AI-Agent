@@ -451,6 +451,8 @@ class LocalAttachmentStore:
             "status": "staged",
             "created_at": datetime.now(UTC).isoformat(),
         }
+        if isinstance(scope, ThreadStorageScope):
+            manifest["owner_user_id"] = scope.owner_user_id
         self._atomic_write(content_path, content)
         self._atomic_write_json(
             self._manifest_path(scope, attachment_id),
@@ -694,7 +696,16 @@ class LocalAttachmentStore:
                     created_at = created_at.replace(tzinfo=UTC)
                 attachment_id = str(manifest.get("id") or "")
                 thread_id = str(manifest.get("thread_id") or "")
-                expected_path = self._manifest_path(thread_id, attachment_id)
+                owner_user_id = str(manifest.get("owner_user_id") or "").strip()
+                storage_scope: ThreadStorageScope | str = (
+                    UserStorageLayout(self.runtime_root).thread(
+                        owner_user_id,
+                        thread_id,
+                    )
+                    if owner_user_id
+                    else thread_id
+                )
+                expected_path = self._manifest_path(storage_scope, attachment_id)
             except (
                 AttachmentError,
                 FileNotFoundError,
@@ -711,9 +722,9 @@ class LocalAttachmentStore:
             ):
                 continue
             if status == "binding":
-                self.rollback_binding(thread_id, attachment_id)
+                self.rollback_binding(storage_scope, attachment_id)
                 removed += 1
                 continue
-            self.discard_staged(thread_id, attachment_id)
+            self.discard_staged(storage_scope, attachment_id)
             removed += 1
         return removed

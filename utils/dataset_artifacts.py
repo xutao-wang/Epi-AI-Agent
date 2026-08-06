@@ -13,6 +13,7 @@ from typing import Any
 
 import pandas as pd
 import pyarrow.parquet as parquet
+from utils.user_storage import ThreadStorageScope
 
 
 _PERSISTENCE_JOURNAL_DIRECTORY = ".persistence_attempts"
@@ -95,6 +96,12 @@ _DATASET_SCHEMA_COLUMN_KEYS = {
 }
 
 
+def _storage_root(value: str | Path | ThreadStorageScope) -> Path:
+    if isinstance(value, ThreadStorageScope):
+        return value.datasets
+    return Path(value).expanduser().resolve()
+
+
 def _safe_path_component(value: str, *, label: str) -> str:
     component = str(value or "").strip()
     if (
@@ -150,7 +157,7 @@ def _validate_attachment_provenance(
 def generated_dataset_artifact_paths(
     *,
     dataset_root: str | Path | None = None,
-    runtime_root: str | Path | None = None,
+    runtime_root: str | Path | ThreadStorageScope | None = None,
     thread_id: str | None = None,
     dataset_id: str,
 ) -> dict[str, Path]:
@@ -159,11 +166,10 @@ def generated_dataset_artifact_paths(
     else:
         if runtime_root is None:
             raise ValueError("runtime_root is required when dataset_root is omitted")
-        configured_root = Path(runtime_root).expanduser().resolve()
-        if configured_root.name == "datasets":
-            # Runtime passes the already-authorized thread dataset directory.
-            thread_root = configured_root
+        if isinstance(runtime_root, ThreadStorageScope):
+            thread_root = runtime_root.datasets
         else:
+            configured_root = _storage_root(runtime_root)
             safe_thread_id = _safe_path_component(thread_id or "", label="thread_id")
             thread_root = (configured_root / safe_thread_id).resolve()
             if thread_root.parent != configured_root:
@@ -180,7 +186,7 @@ def generated_dataset_artifact_paths(
 def generated_dataset_staging_paths(
     *,
     dataset_root: str | Path | None = None,
-    runtime_root: str | Path | None = None,
+    runtime_root: str | Path | ThreadStorageScope | None = None,
     thread_id: str | None = None,
     dataset_id: str,
 ) -> dict[str, Path]:
@@ -201,12 +207,13 @@ def generated_dataset_staging_paths(
 
 def generated_dataset_persistence_journal_path(
     *,
-    runtime_root: str | Path | None,
+    dataset_root: str | Path | None = None,
+    runtime_root: str | Path | ThreadStorageScope | None = None,
     dataset_id: str,
 ) -> Path:
-    if runtime_root is None:
+    if dataset_root is None and runtime_root is None:
         raise ValueError("runtime_root is required for dataset persistence")
-    configured_root = Path(runtime_root).expanduser().resolve()
+    configured_root = _storage_root(dataset_root or runtime_root)
     safe_dataset_id = _safe_path_component(dataset_id, label="dataset_id")
     journal_root = (configured_root / _PERSISTENCE_JOURNAL_DIRECTORY).resolve()
     if journal_root.parent != configured_root:
@@ -227,7 +234,8 @@ def _normalized_path_map(paths: dict[str, Any]) -> dict[str, Path]:
 def _validate_dataset_persistence_journal(
     attempt: dict[str, Any],
     *,
-    runtime_root: str | Path | None,
+    dataset_root: str | Path | None = None,
+    runtime_root: str | Path | ThreadStorageScope | None = None,
     thread_id: str,
     dataset_id: str,
 ) -> dict[str, Any]:
@@ -236,11 +244,13 @@ def _validate_dataset_persistence_journal(
     lineage = dict(record.get("lineage") or {})
     replacement = record.get("replacement")
     expected_final = generated_dataset_artifact_paths(
+        dataset_root=dataset_root,
         runtime_root=runtime_root,
         thread_id=thread_id,
         dataset_id=dataset_id,
     )
     expected_staging = generated_dataset_staging_paths(
+        dataset_root=dataset_root,
         runtime_root=runtime_root,
         thread_id=thread_id,
         dataset_id=dataset_id,
@@ -395,11 +405,13 @@ def write_dataset_persistence_journal(
 
 def load_dataset_persistence_journal(
     *,
-    runtime_root: str | Path | None,
+    dataset_root: str | Path | None = None,
+    runtime_root: str | Path | ThreadStorageScope | None = None,
     thread_id: str,
     dataset_id: str,
 ) -> dict[str, Any] | None:
     journal_path = generated_dataset_persistence_journal_path(
+        dataset_root=dataset_root,
         runtime_root=runtime_root,
         dataset_id=dataset_id,
     )
@@ -420,6 +432,7 @@ def load_dataset_persistence_journal(
         raise ValueError("Persistence journal is malformed")
     return _validate_dataset_persistence_journal(
         content,
+        dataset_root=dataset_root,
         runtime_root=runtime_root,
         thread_id=thread_id,
         dataset_id=dataset_id,
@@ -866,7 +879,7 @@ def portable_dataset_artifact(
     *,
     runtime_root: str | Path,
 ) -> dict[str, Any]:
-    configured_root = Path(runtime_root).expanduser().resolve()
+    configured_root = _storage_root(runtime_root)
     portable = dict(artifact)
     for path_key, storage_key in (
         ("path", "storage_key"),
@@ -901,7 +914,7 @@ def _dataset_storage_path(
         raise ValueError(
             f"runtime_root is required to resolve dataset {storage_key}"
         )
-    configured_root = Path(runtime_root).expanduser().resolve()
+    configured_root = _storage_root(runtime_root)
     resolved = (configured_root / key).resolve()
     if resolved == configured_root or configured_root not in resolved.parents:
         raise ValueError(f"dataset {storage_key} escapes the configured runtime root")

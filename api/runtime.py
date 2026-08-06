@@ -792,6 +792,15 @@ class ReportAgentApiRuntime:
         )
         return UserStorageLayout(self.runtime_root).thread(owner_user_id, thread_id)
 
+    def _dataset_storage_scope(
+        self,
+        identity: RequestIdentity | str,
+        thread_id: str,
+    ) -> ThreadStorageScope | str | Path | None:
+        if self.runtime_root is None:
+            return None
+        return self._attachment_scope(identity, thread_id)
+
     def _ensure_graph(self, thread: ThreadRuntime) -> tuple[Any, ApiGraphRunner]:
         with thread._lock:
             if thread.app is None:
@@ -1385,7 +1394,7 @@ class ReportAgentApiRuntime:
         if dataset.get("status") == "active":
             dataframe, _schema = load_dataset_artifact(
                 dataset,
-                runtime_root=self.runtime_root,
+                runtime_root=self._dataset_storage_scope(identity, thread_id),
             )
             return FileArtifactBytes(
                 content=dataframe.to_csv(index=False).encode("utf-8"),
@@ -1551,7 +1560,7 @@ class ReportAgentApiRuntime:
         )
         df, _schema = load_dataset_artifact(
             artifact,
-            runtime_root=self.runtime_root,
+            runtime_root=self._dataset_storage_scope(identity, thread_id),
         )
         row_limit = min(max(limit, 0), 500)
         preview_df = df.head(row_limit).astype(object)
@@ -1583,7 +1592,7 @@ class ReportAgentApiRuntime:
         )
         _df, schema = load_dataset_artifact(
             artifact,
-            runtime_root=self.runtime_root,
+            runtime_root=self._dataset_storage_scope(identity, thread_id),
         )
         return DatasetSchemaResponse(dataset_id=dataset_id, schema_=dict(schema or {}))
 
@@ -1704,7 +1713,7 @@ class ReportAgentApiRuntime:
         artifact = self._dataset_artifact(identity, thread_id, dataset_id)
         df, _schema = load_dataset_artifact(
             artifact,
-            runtime_root=self.runtime_root,
+            runtime_root=self._dataset_storage_scope(identity, thread_id),
         )
         return df.to_csv(index=False).encode("utf-8")
 

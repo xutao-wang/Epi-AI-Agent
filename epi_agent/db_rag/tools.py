@@ -225,14 +225,14 @@ def _store(context: ToolContext) -> ArtifactStore:
     return store
 
 
-def _dataset_root(context: ToolContext) -> Path:
+def _dataset_root(context: ToolContext):
     if context.thread_storage is None:
         raise ToolExecutionError(
             "THREAD_STORAGE_UNAVAILABLE",
             "Internal configuration error: authorized thread storage is required for dataset persistence.",
             recoverable=False,
         )
-    return context.thread_storage.datasets
+    return context.thread_storage
 
 
 def _save_observation(
@@ -3696,6 +3696,7 @@ def _persist_extraction_result(
                 stage_only=True,
                 artifact_version=1,
                 artifact_status="pending_review",
+                runtime_root=runtime_root,
             )
         )
     except FileExistsError as error:

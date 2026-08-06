@@ -135,7 +135,7 @@ class RunCustomPythonTool:
         stored, dataframe = resolve_dataset(
             arguments,
             context,
-            runtime_root=self._runtime_root,
+            runtime_root=context.thread_storage or self._runtime_root,
         )
         source_attachment_ids = {
             str(attachment_id)

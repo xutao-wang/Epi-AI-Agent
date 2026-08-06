@@ -83,3 +83,35 @@ script must be force-added intentionally. Dataset compatibility retains the
 existing explicit `runtime_root` plus `thread_id` test API while production
 DB-RAG uses the authorized `scope.datasets` root; no process-global dataset
 default remains.
+
+## Review-fix evidence
+
+- DB-RAG now passes the authorized `ThreadStorageScope` into
+  `persist_sql_subset_artifact`; staging, promotion, journalling, and replay
+  resolve its `datasets` directory without a global root.
+- Dataset artifact resolution accepts `ThreadStorageScope`, and runtime
+  preview, schema, CSV download, attachment-derived datasets, and custom
+  Python resolve through that scope in production.
+- Scoped attachment cleanup records the owner needed to reconstruct the exact
+  scope; a new staged-TTL regression test proves deletion succeeds.
+- `generated_dataset_artifact_paths` has no directory-name inference. Scoped
+  callers use `dataset_root=`; legacy tests use explicit `runtime_root` plus
+  `thread_id`.
+
+Review verification:
+
+```bash
+.venv/bin/python -m pytest tests/test_user_storage.py tests/test_attachment_artifacts.py tests/test_dataset_artifacts.py tests/test_attachment_tools.py tests/test_db_rag_agent_tools.py tests/test_db_rag_agent_sql.py tests/test_api_runtime.py -q
+```
+
+Output:
+
+```text
+269 passed in 3.61s
+```
+
+`pytest -q --maxfail=20` was also run. Its remaining early failures are API
+requests with `400 {"detail":"Invalid session ID"}` (reproduced directly
+against the route without the required session header), plus sandbox-limited
+socket-dependent tests. The scoped artifact and DB-RAG SQL regressions were
+eliminated by the focused 269-test run above.

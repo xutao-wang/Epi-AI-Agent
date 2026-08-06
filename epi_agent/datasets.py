@@ -26,7 +26,7 @@ def resolve_dataset(
     arguments: BaseModel | dict[str, Any],
     context: ToolContext,
     *,
-    runtime_root: str | Path | None,
+    runtime_root: str | Path | object | None,
 ) -> tuple[StoredArtifact, pd.DataFrame]:
     payload = _argument_mapping(arguments)
     reference = ArtifactRef(

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from utils.user_storage import UserStorageLayout
 from utils.attachment_artifacts import AttachmentError, LocalAttachmentStore
+from utils.dataset_artifacts import generated_dataset_artifact_paths
 
 
 def test_user_storage_hashes_owner_and_keeps_safe_thread_id(tmp_path: Path) -> None:
@@ -50,3 +53,27 @@ def test_attachment_store_cannot_cross_owner_scope(tmp_path: Path) -> None:
     )
     with pytest.raises(AttachmentError, match="was not found"):
         store.read_bytes(bob, staged["id"])
+
+
+def test_scoped_staged_attachment_cleanup_uses_owner_and_thread(tmp_path: Path) -> None:
+    scope = UserStorageLayout(tmp_path).thread("alice", "thread-1")
+    store = LocalAttachmentStore(tmp_path)
+    staged = store.stage(scope, "notes.txt", "text/plain", b"notes")
+    manifest_path = store._manifest_path(scope, staged["id"])
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["created_at"] = (datetime.now(UTC) - timedelta(days=2)).isoformat()
+    store._atomic_write_json(manifest_path, manifest)
+
+    assert store.cleanup_expired_staged(older_than_seconds=60) == 1
+    with pytest.raises(AttachmentError):
+        store.require(scope, staged["id"])
+
+
+def test_scoped_dataset_paths_require_explicit_dataset_root(tmp_path: Path) -> None:
+    scope = UserStorageLayout(tmp_path).thread("alice", "thread-1")
+    paths = generated_dataset_artifact_paths(
+        dataset_root=scope.datasets,
+        dataset_id="dataset-1",
+    )
+
+    assert paths["path"] == scope.datasets / "dataset-1.parquet"
