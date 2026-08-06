@@ -8,8 +8,13 @@ from pathlib import Path
 DEFAULT_CORS_ALLOW_ORIGIN_REGEX = r"^http://(127\.0\.0\.1|localhost):\d+$"
 
 
-def required_secret_names() -> tuple[str, ...]:
-    return ("OPENAI_API_KEY",)
+def required_secret_names(auth_mode: str = "local") -> tuple[str, ...]:
+    normalized = str(auth_mode or "").strip().lower()
+    if normalized == "local":
+        return ("OPENAI_API_KEY",)
+    if normalized == "cognito":
+        return ()
+    raise ValueError("auth_mode must be 'local' or 'cognito'")
 
 
 def native_static_dir(project_root: str | Path) -> Path:

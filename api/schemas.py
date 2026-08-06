@@ -8,6 +8,19 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 RunState = Literal["idle", "running", "interrupted", "done", "error", "timeout"]
 
 
+class CognitoPublicConfig(BaseModel):
+    authority: str
+    client_id: str
+    redirect_uri: str
+    post_logout_redirect_uri: str
+
+
+class PublicAppConfig(BaseModel):
+    auth_mode: Literal["local", "cognito"]
+    provider_key_required: bool
+    cognito: CognitoPublicConfig | None = None
+
+
 class RunStatus(BaseModel):
     state: RunState
     steps: int = 0
