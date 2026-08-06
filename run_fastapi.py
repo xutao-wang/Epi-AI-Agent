@@ -8,14 +8,13 @@ import sys
 import tempfile
 from collections.abc import Callable, MutableMapping, Sequence
 from pathlib import Path
-from typing import Callable
-
 from api.deployment import (
     native_checkpoint_db_path,
     native_runtime_root,
     native_static_dir,
     native_study_root,
 )
+from api.public_config import ApplicationConfigurationError, application_auth_config
 from utils.env_loader import load_app_environment, persist_local_env_values
 from utils.provider_startup import ProviderCredentialError, verify_active_provider
 
@@ -86,6 +85,22 @@ def ensure_active_provider_credential(
         persist(project_root, {"OPENAI_API_KEY": entered_key})
         output_fn("OpenAI API key verified and saved to .env.")
         return
+
+
+def prepare_provider_credentials(
+    environ: MutableMapping[str, str],
+    *,
+    verifier: Callable[..., None] = ensure_active_provider_credential,
+) -> None:
+    mode = str(environ.get("REPORT_AGENT_AUTH_MODE", "local")).strip().lower()
+    if mode == "local":
+        verifier(environ=environ)
+        return
+    if mode == "cognito":
+        return
+    raise StartupConfigurationError(
+        "REPORT_AGENT_AUTH_MODE must be 'local' or 'cognito'."
+    )
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -182,6 +197,7 @@ def prepare_environment(
         "REPORT_AGENT_CHECKPOINT_DB_PATH",
         str(native_checkpoint_db_path(root)),
     )
+    environ.setdefault("REPORT_AGENT_AUTH_MODE", "local")
 
 
 def validate_startup(
@@ -196,11 +212,25 @@ def validate_startup(
             f"Python 3.12 is required; this interpreter is Python {found}."
         )
 
-    if not environ.get("OPENAI_API_KEY", "").strip():
+    try:
+        auth_config = application_auth_config(environ)
+    except ApplicationConfigurationError as exc:
+        raise StartupConfigurationError(str(exc)) from exc
+
+    if auth_config.mode == "local" and not environ.get("OPENAI_API_KEY", "").strip():
         raise StartupConfigurationError(
             "OPENAI_API_KEY is missing. Copy .env.example to .env and add "
             "your OpenAI API key."
         )
+
+    if auth_config.mode == "cognito":
+        for name in ("WEB_CONCURRENCY", "REPORT_AGENT_WEB_CONCURRENCY"):
+            worker_count = str(environ.get(name, "1") or "").strip()
+            if worker_count != "1":
+                raise StartupConfigurationError(
+                    "Cognito mode requires exactly one worker because provider "
+                    "credentials and jobs remain in process memory."
+                )
 
     configured_static = environ.get("REPORT_AGENT_STATIC_DIR", "").strip()
     static_root = (
@@ -224,7 +254,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         load_app_environment(PROJECT_ROOT)
         configure_native_runtime()
         prepare_environment()
-        ensure_active_provider_credential()
+        prepare_provider_credentials(
+            os.environ,
+            verifier=lambda **_kwargs: ensure_active_provider_credential(),
+        )
         validate_startup()
     except StartupConfigurationError as exc:
         print(f"Startup configuration error: {exc}", file=sys.stderr)

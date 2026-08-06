@@ -22,13 +22,56 @@ python study_installer.py --study report-india-synthetic-0.2.0.tar.gz
 python run_fastapi.py
 ```
 
-On the first native start, choose where to keep study data and local runtime data. These folders hold conversations,
-uploads, generated datasets, and results; it is intentionally not committed.
+On the first native start, the study installer separately asks where to keep
+study packages, and the launcher asks where to keep local runtime data. Set
+`REPORT_AGENT_STUDY_ROOT` and `REPORT_AGENT_RUNTIME_ROOT` to preselect those
+locations. The runtime folder holds conversations, uploads, generated datasets,
+and results; it is intentionally not committed.
 
 You will then be asked to enter your OpenAI API key, so have it ready. Once it
 is verified, the app prints the following local address:
 
 <http://127.0.0.1:8000/>
+
+This remains a native Python startup: Docker is not required. Local mode uses
+the fixed local browser identity and session so conversations created by prior
+local versions remain available. The verified key stays in the local `.env`
+file and is never returned by an API response.
+
+## Invitation-only hosted mode
+
+The application also has a Cognito/BYOK mode for a future hosted working demo.
+Set the following values in the server environment, leave `OPENAI_API_KEY`
+unset on the server, and keep exactly one Uvicorn worker:
+
+```bash
+REPORT_AGENT_AUTH_MODE=cognito
+REPORT_AGENT_AWS_REGION=us-east-1
+REPORT_AGENT_COGNITO_USER_POOL_ID=us-east-1_example
+REPORT_AGENT_COGNITO_APP_CLIENT_ID=client-id
+REPORT_AGENT_COGNITO_LOGOUT_ENDPOINT=https://example.auth.us-east-1.amazoncognito.com/logout
+REPORT_AGENT_AUTH_REDIRECT_URI=https://demo.example/auth/callback
+REPORT_AGENT_AUTH_POST_LOGOUT_REDIRECT_URI=https://demo.example/
+REPORT_AGENT_WEB_CONCURRENCY=1
+REPORT_AGENT_RUNTIME_ROOT=/path/to/private/runtime
+REPORT_AGENT_CHECKPOINT_DB_PATH=/path/to/private/runtime/agent_memory_fastapi.db
+REPORT_AGENT_STUDY_ROOT=/path/to/private/study-data
+python run_fastapi.py --host 127.0.0.1 --port 8000
+```
+
+Each invited user signs in and enters their own OpenAI key in the browser. The
+key is validated against OpenAI and held only in process memory for that user
+and browser session. It disappears on logout, server restart, token expiry, or
+after 12 hours without use, and must then be entered again. Conversations,
+checkpoints, uploads, and generated artifacts persist across restarts in
+owner-specific storage; provider keys do not.
+
+The hosted working demo is invitation-only and accepts synthetic or fully
+de-identified data only. This repository does not create AWS resources or make
+a public URL available. Cognito provisioning, the application service,
+CloudFront, and deployment validation are deferred to the next AWS delivery
+project. See [docs/working-demo.md](docs/working-demo.md) for the operating
+boundary and acceptance smoke.
 
 ## Included demo data
 
