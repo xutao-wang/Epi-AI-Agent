@@ -1415,7 +1415,7 @@ class ReportAgentApiRuntime:
             artifact,
             runtime_root=self.runtime_root,
         )
-        return DatasetSchemaResponse(dataset_id=dataset_id, schema=dict(schema or {}))
+        return DatasetSchemaResponse(dataset_id=dataset_id, schema_=dict(schema or {}))
 
     def dataset_provenance(
         self,

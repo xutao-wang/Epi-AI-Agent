@@ -363,8 +363,10 @@ class DatasetPreview(BaseModel):
 
 
 class DatasetSchemaResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     dataset_id: str
-    schema: dict[str, Any] = Field(default_factory=dict)
+    schema_: dict[str, Any] = Field(default_factory=dict, alias="schema")
 
 
 class ApiThreadState(BaseModel):
