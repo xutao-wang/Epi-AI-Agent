@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import csv
 from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
 from dataclasses import dataclass, field
 import hashlib
 import io
@@ -15,6 +16,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
+from langgraph.graph.state import CompiledStateGraph
 import httpx
 from openai import (
     APIConnectionError,
@@ -27,7 +29,7 @@ from openai import (
 import pandas as pd
 from pydantic import TypeAdapter, ValidationError
 
-from api.auth import RequestIdentity
+from api.auth import AuthenticatedUser, LOCAL_SESSION_ID, RequestIdentity
 from api.schemas import (
     ActiveInterrupt,
     ApiThreadState,
@@ -163,8 +165,7 @@ def _run_failure(exc: Exception) -> tuple[str, str]:
     ):
         return _public_failure(
             "OPENAI_AUTHENTICATION_FAILED",
-            "OpenAI rejected the configured API key. Update OPENAI_API_KEY and "
-            "restart the server.",
+            "OpenAI rejected the session API key. Enter a valid key and retry.",
         )
     if isinstance(exc, PermissionDeniedError) or (
         isinstance(exc, APIStatusError) and exc.status_code == 403
@@ -613,15 +614,34 @@ def _initial_graph_state(
 @dataclass
 class ThreadRuntime:
     settings: RuntimeSettings
+    thread_id: str = ""
     app: Any | None = None
     runner: ApiGraphRunner | None = None
     locked: bool = False
+    credential_session_id: str | None = None
+    release_when_idle: bool = False
     _lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+@dataclass(frozen=True)
+class GraphBuildContext:
+    owner_user_id: str
+    session_id: str
+    thread_id: str
+    provider_api_key: str
+    storage: ThreadStorageScope
+
+
+GraphFactory = Callable[[RuntimeSettings, GraphBuildContext], CompiledStateGraph]
+TitleGeneratorFactory = Callable[
+    [RuntimeSettings, str],
+    OpenAIConversationTitleGenerator,
+]
 
 
 @dataclass
 class ReportAgentApiRuntime:
-    graph_factory: Any
+    graph_factory: GraphFactory
     default_runtime_settings: dict[str, Any]
     models: list[str]
     runtime_root: str | Path | None = None
@@ -643,6 +663,7 @@ class ReportAgentApiRuntime:
     )
     history_store: ConversationHistoryStore | None = None
     title_generator: OpenAIConversationTitleGenerator | None = None
+    title_generator_factory: TitleGeneratorFactory | None = None
     _threads: dict[tuple[str, str], ThreadRuntime] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _attachment_store: LocalAttachmentStore | None = field(
@@ -685,14 +706,78 @@ class ReportAgentApiRuntime:
             owner_user_id = "local-user"
             runtime_settings = identity if isinstance(identity, dict) else runtime_settings
         thread_id = new_thread_id()
-        thread = ThreadRuntime(settings=self._normalize_settings(runtime_settings))
+        thread = ThreadRuntime(
+            settings=self._normalize_settings(runtime_settings),
+            thread_id=thread_id,
+        )
+        if self.history_store is not None:
+            self.history_store.create(
+                owner_user_id,
+                thread_id,
+                model_name=thread.settings.model_name,
+            )
         with self._lock:
             self._threads[(owner_user_id, thread_id)] = thread
         return thread_id
 
     def release_session(self, owner_user_id: str, session_id: str) -> None:
-        """Reserve the release seam for session-bound runtime work in Task 6."""
-        return None
+        pending: list[tuple[tuple[str, str], ThreadRuntime]] = []
+        with self._lock:
+            matches = [
+                (key, thread)
+                for key, thread in self._threads.items()
+                if key[0] == owner_user_id
+                and thread.credential_session_id == session_id
+            ]
+            for key, thread in matches:
+                with thread._lock:
+                    if self._thread_is_running(key[1], thread):
+                        thread.release_when_idle = True
+                        pending.append((key, thread))
+                    else:
+                        self._clear_graph(thread)
+                        self._threads.pop(key, None)
+        for key, thread in pending:
+            threading.Thread(
+                target=self._evict_released_graph_when_idle,
+                args=(key, thread, session_id),
+                daemon=True,
+                name="released-provider-session",
+            ).start()
+
+    @staticmethod
+    def _thread_is_running(thread_id: str, thread: ThreadRuntime) -> bool:
+        if thread.runner is None:
+            return False
+        try:
+            return thread.runner.status(thread_id).get("state") == "running"
+        except Exception:
+            return False
+
+    @staticmethod
+    def _clear_graph(thread: ThreadRuntime) -> None:
+        thread.app = None
+        thread.runner = None
+        thread.credential_session_id = None
+        thread.release_when_idle = False
+
+    def _evict_released_graph_when_idle(
+        self,
+        key: tuple[str, str],
+        thread: ThreadRuntime,
+        session_id: str,
+    ) -> None:
+        while self._thread_is_running(key[1], thread):
+            time.sleep(0.01)
+        with self._lock:
+            with thread._lock:
+                if (
+                    self._threads.get(key) is thread
+                    and thread.credential_session_id == session_id
+                    and thread.release_when_idle
+                ):
+                    self._clear_graph(thread)
+                    self._threads.pop(key, None)
 
     def _normalize_settings(
         self,
@@ -736,34 +821,47 @@ class ReportAgentApiRuntime:
             raise ValueError("timeout_seconds must be greater than 0")
         return normalized
 
+    def _require_owned_thread(
+        self,
+        identity: RequestIdentity,
+        thread_id: str,
+    ) -> ThreadRuntime:
+        record = (
+            self.history_store.get(identity.owner_user_id, thread_id)
+            if self.history_store is not None
+            else None
+        )
+        if self.history_store is not None and record is None:
+            raise KeyError(thread_id)
+        key = (identity.owner_user_id, thread_id)
+        with self._lock:
+            thread = self._threads.get(key)
+            if thread is None:
+                settings = {"model_name": record.model_name} if record else None
+                thread = ThreadRuntime(
+                    settings=self._normalize_settings(settings),
+                    thread_id=thread_id,
+                    locked=record is not None,
+                )
+                self._threads[key] = thread
+            return thread
+
     def _thread(
         self,
         identity: RequestIdentity | str,
         thread_id: str | None = None,
     ) -> ThreadRuntime:
         if isinstance(identity, RequestIdentity):
-            owner_user_id = identity.owner_user_id
             if thread_id is None:
                 raise TypeError("thread_id is required")
-        else:
-            if self.history_store is not None:
-                raise KeyError(identity)
-            owner_user_id = "local-user"
-            thread_id = identity
-        key = (owner_user_id, thread_id)
-        with self._lock:
-            thread = self._threads.get(key)
-            if thread is None:
-                record = self.history_store.get(owner_user_id, thread_id) if self.history_store else None
-                if self.history_store is not None and record is None:
-                    raise KeyError(thread_id)
-                settings = {"model_name": record.model_name} if record else None
-                thread = ThreadRuntime(
-                    settings=self._normalize_settings(settings),
-                    locked=record is not None,
-                )
-                self._threads[key] = thread
-            return thread
+            return self._require_owned_thread(identity, thread_id)
+        if self.history_store is not None:
+            raise KeyError(identity)
+        local_identity = RequestIdentity(
+            user=AuthenticatedUser(owner_user_id="local-user"),
+            session_id=LOCAL_SESSION_ID,
+        )
+        return self._require_owned_thread(local_identity, identity)
 
     @staticmethod
     def _checkpoint_config(identity: RequestIdentity, thread_id: str) -> dict[str, Any]:
@@ -801,13 +899,56 @@ class ReportAgentApiRuntime:
             return None
         return self._attachment_scope(identity, thread_id)
 
-    def _ensure_graph(self, thread: ThreadRuntime) -> tuple[Any, ApiGraphRunner]:
+    def _graph_storage(
+        self,
+        identity: RequestIdentity,
+        thread_id: str,
+    ) -> ThreadStorageScope:
+        return UserStorageLayout(self.runtime_root or Path.cwd()).thread(
+            identity.owner_user_id,
+            thread_id,
+        )
+
+    def _ensure_graph(
+        self,
+        identity: RequestIdentity,
+        thread: ThreadRuntime,
+        provider_api_key: str,
+    ) -> None:
+        resolved_key = str(provider_api_key or "").strip()
+        if not resolved_key:
+            raise ValueError("provider_api_key is required")
         with thread._lock:
+            if thread.app is not None and (
+                thread.credential_session_id != identity.session_id
+                or thread.release_when_idle
+            ):
+                if self._thread_is_running(
+                    thread.thread_id,
+                    thread,
+                ):
+                    raise ThreadAlreadyRunningError(thread.thread_id)
+                self._clear_graph(thread)
             if thread.app is None:
-                thread.app = self.graph_factory(thread.settings)
+                thread_id = thread.thread_id
+                context = GraphBuildContext(
+                    owner_user_id=identity.owner_user_id,
+                    session_id=identity.session_id,
+                    thread_id=thread_id,
+                    provider_api_key=resolved_key,
+                    storage=self._graph_storage(identity, thread_id),
+                )
+                thread.app = self.graph_factory(thread.settings, context)
                 thread.runner = ApiGraphRunner(thread.app)
+                thread.credential_session_id = identity.session_id
+                thread.release_when_idle = False
             assert thread.runner is not None
-            return thread.app, thread.runner
+
+    @staticmethod
+    def _bound_graph(thread: ThreadRuntime) -> tuple[Any, ApiGraphRunner]:
+        if thread.app is None or thread.runner is None:
+            raise KeyError(thread.thread_id)
+        return thread.app, thread.runner
 
     def runtime_info(self) -> RuntimeInfo:
         return RuntimeInfo(**self._normalize_settings().model_dump())
@@ -1033,7 +1174,7 @@ class ReportAgentApiRuntime:
     ) -> None:
         linked_input_ids: set[str] = set()
         try:
-            app, _runner = self._ensure_graph(thread)
+            app, _runner = self._bound_graph(thread)
             snapshot = app.get_state(
                 self._checkpoint_config(identity, thread_id),
                 subgraphs=True,
@@ -1078,14 +1219,17 @@ class ReportAgentApiRuntime:
         attachment_ids: list[str] | None = None,
         model_name: str | None = None,
         active_study_id: str | None = None,
+        *,
+        provider_api_key: str,
     ) -> None:
         attachment_ids = list(attachment_ids or [])
-        thread = self._thread(identity, thread_id)
+        thread = self._require_owned_thread(identity, thread_id)
         if model_name:
             if thread.locked:
                 raise ValueError("The model is locked for this conversation.")
             thread.settings = self._normalize_settings({"model_name": model_name})
-        app, runner = self._ensure_graph(thread)
+        self._ensure_graph(identity, thread, provider_api_key)
+        app, runner = self._bound_graph(thread)
         snapshot = app.get_state(
             self._checkpoint_config(identity, thread_id),
             subgraphs=True,
@@ -1141,23 +1285,25 @@ class ReportAgentApiRuntime:
         if not started:
             raise ThreadAlreadyRunningError(thread_id)
         if self.history_store is not None:
-            existing_record = self.history_store.get(identity.owner_user_id, thread_id)
-            record = self.history_store.create(
-                identity.owner_user_id,
-                thread_id,
-                model_name=thread.settings.model_name,
+            record = self.history_store.get(identity.owner_user_id, thread_id)
+            assert record is not None
+            title_generator = (
+                self.title_generator_factory(thread.settings, provider_api_key)
+                if self.title_generator_factory is not None
+                else self.title_generator
             )
             if (
-                existing_record is None
+                not thread.locked
                 and text.strip()
                 and record.title == "Untitled conversation"
-                and self.title_generator is not None
+                and title_generator is not None
             ):
                 self._title_executor.submit(
                     self._generate_title,
                     identity.owner_user_id,
                     thread_id,
                     text,
+                    title_generator,
                 )
         thread.locked = True
 
@@ -1166,14 +1312,14 @@ class ReportAgentApiRuntime:
         owner_user_id: str,
         thread_id: str,
         text: str,
+        title_generator: OpenAIConversationTitleGenerator,
     ) -> None:
         try:
             assert self.history_store is not None
-            assert self.title_generator is not None
             self.history_store.set_automatic_title(
                 owner_user_id,
                 thread_id,
-                self.title_generator.generate(text),
+                title_generator.generate(text),
             )
         except Exception:
             return
@@ -1230,10 +1376,11 @@ class ReportAgentApiRuntime:
         if not self._assert_conversation_mutable(identity, thread_id):
             return False
         thread = self._thread(identity, thread_id)
-        app, _runner = self._ensure_graph(thread)
-        app.checkpointer.delete_thread(
-            self._checkpoint_config(identity, thread_id)["configurable"]["thread_id"]
-        )
+        if thread.app is not None:
+            app, _runner = self._bound_graph(thread)
+            app.checkpointer.delete_thread(
+                self._checkpoint_config(identity, thread_id)["configurable"]["thread_id"]
+            )
         if self._attachment_store is not None:
             self._attachment_store.delete_thread(self._attachment_scope(identity, thread_id))
         with self._lock:
@@ -1319,7 +1466,7 @@ class ReportAgentApiRuntime:
             thread_id = identity
         assert attachment_id is not None
         thread = self._thread(identity, thread_id)
-        app, _runner = self._ensure_graph(thread)
+        app, _runner = self._bound_graph(thread)
         snapshot = app.get_state(
             self._config_for(identity, thread_id),
             subgraphs=True,
@@ -1409,10 +1556,13 @@ class ReportAgentApiRuntime:
         thread_id: str,
         interrupt_id: str,
         payload: dict[str, Any],
+        *,
+        provider_api_key: str,
     ) -> None:
-        thread = self._thread(identity, thread_id)
+        thread = self._require_owned_thread(identity, thread_id)
         thread.locked = True
-        app, runner = self._ensure_graph(thread)
+        self._ensure_graph(identity, thread, provider_api_key)
+        app, runner = self._bound_graph(thread)
         snapshot = app.get_state(self._checkpoint_config(identity, thread_id), subgraphs=True)
         values = _projection_values(snapshot)
         active_interrupt = _active_interrupt(snapshot, values)
@@ -1440,6 +1590,8 @@ class ReportAgentApiRuntime:
         self,
         identity: RequestIdentity | str,
         thread_id: str | None = None,
+        *,
+        provider_api_key: str | None = None,
     ) -> ApiThreadState:
         if isinstance(identity, RequestIdentity):
             if thread_id is None:
@@ -1447,13 +1599,25 @@ class ReportAgentApiRuntime:
         else:
             thread_id = identity
         thread = self._thread(identity, thread_id)
-        app, runner = self._ensure_graph(thread)
+        if provider_api_key is not None:
+            if not isinstance(identity, RequestIdentity):
+                raise TypeError("identity must be a RequestIdentity")
+            self._ensure_graph(identity, thread, provider_api_key)
+        if thread.app is None or thread.runner is None:
+            return project_thread_state(
+                thread_id=thread_id,
+                snapshot=None,
+                run_status=_idle_status(),
+                runtime_settings=thread.settings,
+                runtime_settings_locked=thread.locked,
+            )
+        app, runner = self._bound_graph(thread)
         snapshot = app.get_state(
             self._config_for(identity, thread_id),
             subgraphs=True,
         )
         run_status = runner.status(thread_id)
-        if _should_recover_snapshot(snapshot, run_status):
+        if provider_api_key is not None and _should_recover_snapshot(snapshot, run_status):
             runner.start_background(
                 thread_id=thread_id,
                 initial_payload=None,
@@ -1480,7 +1644,7 @@ class ReportAgentApiRuntime:
         allow_current_pending_review: bool = False,
     ) -> dict[str, Any]:
         thread = self._thread(identity, thread_id)
-        app, _runner = self._ensure_graph(thread)
+        app, _runner = self._bound_graph(thread)
         snapshot = app.get_state(self._config_for(identity, thread_id), subgraphs=True)
         values = _projection_values(snapshot)
         datasets = dict(dict(values.get("artifacts") or {}).get("datasets") or {})
@@ -1515,7 +1679,7 @@ class ReportAgentApiRuntime:
         artifact_id: str,
     ) -> dict[str, Any]:
         thread = self._thread(identity, thread_id)
-        app, _runner = self._ensure_graph(thread)
+        app, _runner = self._bound_graph(thread)
         snapshot = app.get_state(self._config_for(identity, thread_id), subgraphs=True)
         values = _projection_values(snapshot)
         files = dict(dict(values.get("artifacts") or {}).get("files") or {})
@@ -1796,7 +1960,7 @@ class ReportAgentApiRuntime:
         else:
             thread_id = identity
         thread = self._thread(identity, thread_id)
-        app, _runner = self._ensure_graph(thread)
+        app, _runner = self._bound_graph(thread)
         snapshot = app.get_state(self._config_for(identity, thread_id), subgraphs=True)
         values = dict(getattr(snapshot, "values", None) or {})
         return build_thread_export(

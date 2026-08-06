@@ -262,6 +262,22 @@ class OpenAIConversationTitleGenerator:
     def __init__(self, model: object) -> None:
         self._model = model
 
+    @classmethod
+    def from_credentials(
+        cls,
+        *,
+        model_name: str,
+        api_key: str,
+    ) -> "OpenAIConversationTitleGenerator":
+        from llm_vllm import build_openai_llm
+
+        return cls(
+            build_openai_llm(
+                model_name=model_name,
+                api_key=api_key,
+            )
+        )
+
     def generate(self, first_message: str) -> str:
         response = self._model.invoke(
             [

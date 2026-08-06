@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1016,7 +1017,10 @@ def main(argv: list[str] | None = None) -> int:
 
     arguments = parse_args(argv)
     load_app_environment(PROJECT_ROOT)
-    model = build_db_rag_openai_llm(arguments.model)
+    model = build_db_rag_openai_llm(
+        arguments.model,
+        api_key=str(os.getenv("OPENAI_API_KEY", "") or ""),
+    )
     if model is None:
         raise ValueError("Publication-index extraction model is required.")
     manifest = ingest_publication_indexes(

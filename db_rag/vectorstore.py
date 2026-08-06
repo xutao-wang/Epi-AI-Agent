@@ -21,8 +21,7 @@ class OpenAIEmbeddingFunction:
     _MAX_EMPTY_DATA_RETRIES = 1
     _QUERY_CACHE_SIZE = 64
 
-    def __init__(self, model: str):
-        load_app_environment()
+    def __init__(self, model: str, *, api_key: str):
         resolved_model = str(model or "").strip()
         if resolved_model != EMBEDDING_MODEL:
             raise ValueError(
@@ -37,6 +36,7 @@ class OpenAIEmbeddingFunction:
         self.config_model = resolved_model
         self.model = resolved_model.split("/", 1)[1]
         self.client = OpenAI(
+            api_key=api_key,
             max_retries=0,
             timeout=resolve_db_rag_request_timeout_seconds(),
         )
@@ -134,6 +134,7 @@ def build_chroma(
     column_chunks: list[dict[str, object]],
     *,
     model: str,
+    api_key: str,
     chroma_dir: Path,
     knowledge_chunks: list[Any] | None = None,
 ) -> None:
@@ -154,7 +155,7 @@ def build_chroma(
             client.delete_collection(collection_name)
         except Exception:
             pass
-    embedding_function = OpenAIEmbeddingFunction(model=model)
+    embedding_function = OpenAIEmbeddingFunction(model=model, api_key=api_key)
     table_collection = client.create_collection(
         "table_summaries",
         embedding_function=embedding_function,
@@ -195,6 +196,7 @@ def build_chroma(
 def replace_study_knowledge(
     *,
     model: str,
+    api_key: str,
     chroma_dir: Path,
     knowledge_chunks: list[Any],
 ) -> None:
@@ -206,7 +208,7 @@ def replace_study_knowledge(
         client.delete_collection("study_knowledge")
     except Exception:
         pass
-    embedding_function = OpenAIEmbeddingFunction(model=model)
+    embedding_function = OpenAIEmbeddingFunction(model=model, api_key=api_key)
     collection = client.create_collection(
         "study_knowledge",
         embedding_function=embedding_function,

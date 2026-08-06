@@ -17,6 +17,13 @@ from epi_agent.protocol import ToolContext, ToolExecutionError
 from epi_agent.studies import StudyBundle, StudyRegistry
 from epi_agent.tool_packs.publication import build_publication_tool_registry
 from graph.state import MetaKeys
+from api.auth import (
+    AuthenticatedUser,
+    CognitoTokenVerifier,
+    LOCAL_SESSION_ID,
+    LocalTokenVerifier,
+    RequestIdentity,
+)
 from utils.attachment_artifacts import LocalAttachmentStore
 from utils.attachment_readers import AttachmentReaderService
 from utils.model_runtime_profiles import model_runtime_profile
@@ -60,6 +67,69 @@ def test_startup_claims_legacy_history_only_in_local_mode(tmp_path: Path) -> Non
     cognito_store = _history_store_for_auth_mode(cognito_path, auth_mode="cognito")
     assert cognito_store.list("local-user") == []
     assert cognito_store.claim_unowned("other-user") == 1
+
+
+def test_application_factory_seeds_only_the_fixed_local_session(
+    tmp_path: Path,
+) -> None:
+    from api.app import build_application
+
+    application = build_application(
+        environ={
+            "REPORT_AGENT_AUTH_MODE": "local",
+            "REPORT_AGENT_RUNTIME_ROOT": str(tmp_path / "runtime"),
+            "REPORT_AGENT_STUDY_ROOT": str(tmp_path / "studies"),
+            "REPORT_AGENT_ALLOWED_MODELS": "gpt-5.4",
+            "OPENAI_MODEL": "gpt-5.4",
+            "REPORT_AGENT_TITLE_MODEL": "gpt-5.4",
+            "OPENAI_API_KEY": "local-session-key",
+        }
+    )
+    identity = RequestIdentity(
+        user=AuthenticatedUser(owner_user_id="local-user"),
+        session_id=LOCAL_SESSION_ID,
+    )
+
+    assert isinstance(application.state.token_verifier, LocalTokenVerifier)
+    assert application.state.provider_credential_store.get(identity) == (
+        "local-session-key"
+    )
+    thread_id = application.state.report_agent_runtime.create_thread(identity)
+    assert application.state.report_agent_runtime._threads[
+        ("local-user", thread_id)
+    ].app is None
+
+
+def test_application_factory_cognito_mode_starts_without_credentials(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from api.app import build_application
+
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-seed-cognito")
+    application = build_application(
+        environ={
+            "REPORT_AGENT_AUTH_MODE": "cognito",
+            "REPORT_AGENT_AWS_REGION": "us-east-1",
+            "REPORT_AGENT_COGNITO_USER_POOL_ID": "us-east-1_example",
+            "REPORT_AGENT_COGNITO_APP_CLIENT_ID": "client-123",
+            "REPORT_AGENT_AUTH_REDIRECT_URI": "https://example.test/callback",
+            "REPORT_AGENT_AUTH_POST_LOGOUT_REDIRECT_URI": "https://example.test/",
+            "REPORT_AGENT_RUNTIME_ROOT": str(tmp_path / "runtime"),
+            "REPORT_AGENT_STUDY_ROOT": str(tmp_path / "studies"),
+            "REPORT_AGENT_ALLOWED_MODELS": "gpt-5.4",
+            "OPENAI_MODEL": "gpt-5.4",
+            "REPORT_AGENT_TITLE_MODEL": "gpt-5.4",
+        }
+    )
+    identity = RequestIdentity(
+        user=AuthenticatedUser(owner_user_id="user-a"),
+        session_id="11111111-1111-4111-8111-111111111111",
+    )
+
+    assert isinstance(application.state.token_verifier, CognitoTokenVerifier)
+    assert application.state.provider_credential_store.get(identity) is None
+    assert application.state.report_agent_runtime.runtime_root == tmp_path / "runtime"
 
 
 class _FinalModel:

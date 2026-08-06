@@ -118,6 +118,7 @@ def generate_dataset_name(
     goal_text: str,
     source_question: str = "",
     columns: list[dict[str, Any]] | None = None,
+    api_key: str | None = None,
     resolve_model=resolve_db_rag_dataset_naming_model,
 ) -> str:
     fallback = _fallback_name(
@@ -129,8 +130,8 @@ def generate_dataset_name(
     if not model:
         return fallback
 
-    api_key = str(os.getenv("DB_RAG_DATASET_NAMING_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip()
-    if not api_key:
+    resolved_api_key = str(api_key or "").strip()
+    if not resolved_api_key:
         return fallback
 
     openai_client = _resolve_openai_client()
@@ -149,7 +150,7 @@ def generate_dataset_name(
             }
         )
 
-    client_kwargs: dict[str, Any] = {"api_key": api_key}
+    client_kwargs: dict[str, Any] = {"api_key": resolved_api_key}
     base_url = str(os.getenv("DB_RAG_DATASET_NAMING_BASE_URL", "") or "").strip()
     if base_url:
         client_kwargs["base_url"] = base_url

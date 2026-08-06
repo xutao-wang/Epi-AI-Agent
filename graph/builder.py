@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.graph.state import CompiledStateGraph
 
 from db_rag.readiness import DbRagReadiness, resolve_db_rag_readiness
 from epi_agent.agent import build_general_epi_agent_graph
@@ -17,6 +18,7 @@ from utils.attachment_readers import (
 )
 from utils.runtime_defaults import DEFAULT_EPI_AGENT_MAX_ITERATIONS
 from utils.model_runtime_profiles import ModelRuntimeProfile
+from utils.user_storage import ThreadStorageScope, UserStorageLayout
 
 
 def _build_attachment_reader_service(
@@ -37,15 +39,23 @@ def build_graph(
     model_profile: ModelRuntimeProfile,
     db_path: str | Path,
     runtime_root: str | Path,
+    storage: ThreadStorageScope | None = None,
     studies: StudyRegistry,
     default_study_id: str | None,
     db_rag_readiness: DbRagReadiness | None = None,
     db_rag_embedding_model: str | None = None,
     max_iterations: int = DEFAULT_EPI_AGENT_MAX_ITERATIONS,
-):
+) -> CompiledStateGraph:
     """Compile the single checkpointed EpiAgent used by FastAPI."""
 
     root = Path(runtime_root).expanduser().resolve()
+    if storage is not None:
+        expected_storage = UserStorageLayout(root).thread(
+            storage.owner_user_id,
+            storage.thread_id,
+        )
+        if storage.root != expected_storage.root:
+            raise ValueError("storage does not belong to runtime_root")
     attachment_reader_service = _build_attachment_reader_service(llm, root)
     selected_study = studies.get(default_study_id) if default_study_id else None
     paths = getattr(selected_study, "db_rag_paths", None)

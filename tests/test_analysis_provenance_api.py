@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.auth import LOCAL_SESSION_ID
-from api.runtime import ReportAgentApiRuntime
+from api.runtime import ApiGraphRunner, ReportAgentApiRuntime
 from api.server import create_app
 from epi_agent.analysis_artifacts import AnalysisRun, ArtifactIdentity, save_analysis_run
 from epi_agent.artifacts import StateArtifactStore
@@ -39,12 +39,16 @@ def _runtime(
     runtime_root: str | None = None,
 ) -> ReportAgentApiRuntime:
     graph = SnapshotGraph({"artifacts": store.snapshot()})
-    return ReportAgentApiRuntime(
-        graph_factory=lambda _settings: graph,
+    runtime = ReportAgentApiRuntime(
+        graph_factory=lambda _settings, _context: graph,
         default_runtime_settings=DEFAULT_SETTINGS,
         models=["gpt-5.4"],
         runtime_root=runtime_root,
     )
+    thread = runtime._thread("thread-1")
+    thread.app = graph
+    thread.runner = ApiGraphRunner(graph)
+    return runtime
 
 
 def _store(*, analysis_status: str = "active") -> StateArtifactStore:

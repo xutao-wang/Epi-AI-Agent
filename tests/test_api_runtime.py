@@ -62,10 +62,13 @@ _DEFAULT_RUNTIME_SETTINGS = {
 }
 
 
-def _identity(owner_user_id: str) -> RequestIdentity:
+def _identity(
+    owner_user_id: str,
+    session_id: str = "11111111-1111-4111-8111-111111111111",
+) -> RequestIdentity:
     return RequestIdentity(
         user=AuthenticatedUser(owner_user_id=owner_user_id),
-        session_id="11111111-1111-4111-8111-111111111111",
+        session_id=session_id,
     )
 
 
@@ -319,9 +322,21 @@ class _RecordingGraphFactory:
         self.calls: list[dict] = []
         self.snapshot = snapshot or SimpleNamespace(values={}, next=(), interrupts=[])
 
-    def __call__(self, settings):
+    def __call__(self, settings, _context):
         self.calls.append(settings.model_dump())
         return _RuntimeFakeGraph(self.snapshot)
+
+
+class _ContextRecordingGraphFactory:
+    def __init__(self, graphs: list[Any] | None = None) -> None:
+        self.calls: list[tuple[dict[str, Any], Any]] = []
+        self.graphs = list(graphs or [])
+
+    def __call__(self, settings, context):
+        self.calls.append((settings.model_dump(), context))
+        if self.graphs:
+            return self.graphs.pop(0)
+        return _RuntimeFakeGraph(SimpleNamespace(values={}, next=(), interrupts=[]))
 
 
 class _SlowGraphFactory:
@@ -332,7 +347,7 @@ class _SlowGraphFactory:
         self.release = threading.Event()
         self._lock = threading.Lock()
 
-    def __call__(self, settings):
+    def __call__(self, settings, _context):
         with self._lock:
             self.calls.append(settings.model_dump())
             self.entered.set()
@@ -432,16 +447,16 @@ def _runtime(
     if runtime_settings:
         settings.update(runtime_settings)
     runtime = ReportAgentApiRuntime(
-        graph_factory=lambda _settings: graph,
+        graph_factory=lambda _settings, _context: graph,
         default_runtime_settings=settings,
         models=models or ["gpt-5.4", "gpt-5.6-luna"],
         runtime_root=runtime_root,
         **({"capabilities": capabilities} if capabilities is not None else {}),
     )
-    if runner is not None:
-        thread = runtime._thread("thread-1")
-        thread.app = graph
-        thread.runner = runner
+    thread = runtime._thread("thread-1")
+    thread.app = graph
+    thread.runner = runner or ApiGraphRunner(graph)
+    thread.credential_session_id = _LOCAL_IDENTITY.session_id
     return runtime
 
 
@@ -517,7 +532,7 @@ def test_runtime_keeps_same_thread_id_isolated_by_owner_before_graph_access(
     ]
 
     runtime = ReportAgentApiRuntime(
-        graph_factory=lambda _settings: graphs.pop(0),
+        graph_factory=lambda _settings, _context: graphs.pop(0),
         default_runtime_settings=_DEFAULT_RUNTIME_SETTINGS,
         models=["gpt-5.4"],
         history_store=history_store,
@@ -525,8 +540,8 @@ def test_runtime_keeps_same_thread_id_isolated_by_owner_before_graph_access(
     user_a = _identity("user-a")
     user_b = _identity("user-b")
 
-    runtime.state(user_a, "shared-thread")
-    runtime.state(user_b, "shared-thread")
+    runtime.state(user_a, "shared-thread", provider_api_key="key-a")
+    runtime.state(user_b, "shared-thread", provider_api_key="key-b")
 
     assert set(runtime._threads) == {
         ("user-a", "shared-thread"),
@@ -605,8 +620,12 @@ def test_state_recovers_one_idle_checkpoint_with_pending_work() -> None:
     runner = RecoveryRunner()
     runtime = _runtime(graph, runner=runner)
 
-    first = runtime.state("thread-1")
-    second = runtime.state("thread-1")
+    first = runtime.state(
+        _LOCAL_IDENTITY, "thread-1", provider_api_key="test-key"
+    )
+    second = runtime.state(
+        _LOCAL_IDENTITY, "thread-1", provider_api_key="test-key"
+    )
 
     assert first.run.state == "running"
     assert second.run.state == "running"
@@ -619,7 +638,7 @@ def test_runtime_deletes_history_checkpoints_and_attachments(tmp_path: Path) -> 
     history_store.create("local-user", "thread-a", model_name="gpt-5.4")
     graph = _RuntimeFakeGraph(SimpleNamespace(values={}, next=(), interrupts=[]))
     runtime = ReportAgentApiRuntime(
-        graph_factory=lambda _settings: graph,
+        graph_factory=lambda _settings, _context: graph,
         default_runtime_settings=_DEFAULT_RUNTIME_SETTINGS,
         models=["gpt-5.4"],
         runtime_root=tmp_path,
@@ -632,6 +651,7 @@ def test_runtime_deletes_history_checkpoints_and_attachments(tmp_path: Path) -> 
         b"id\n1\n",
     )
     runtime._thread(_LOCAL_IDENTITY, "thread-a")
+    runtime.state(_LOCAL_IDENTITY, "thread-a", provider_api_key="test-key")
 
     assert runtime.delete_conversation(_LOCAL_IDENTITY, "thread-a") is True
     assert history_store.get("local-user", "thread-a") is None
@@ -647,7 +667,7 @@ def test_runtime_reads_and_deletes_legacy_local_attachment_scope(
     history_store.create("local-user", "thread-a", model_name="gpt-5.4")
     graph = _RuntimeFakeGraph(SimpleNamespace(values={}, next=(), interrupts=[]))
     runtime = ReportAgentApiRuntime(
-        graph_factory=lambda _settings: graph,
+        graph_factory=lambda _settings, _context: graph,
         default_runtime_settings=_DEFAULT_RUNTIME_SETTINGS,
         models=["gpt-5.4"],
         runtime_root=tmp_path,
@@ -678,6 +698,7 @@ def test_runtime_reads_and_deletes_legacy_local_attachment_scope(
         next=(),
         interrupts=[],
     )
+    runtime.state(_LOCAL_IDENTITY, "thread-a", provider_api_key="test-key")
 
     assert runtime.conversation_attachment_bytes(
         _LOCAL_IDENTITY, "thread-a", available["id"]
@@ -692,7 +713,7 @@ def test_runtime_rejects_archive_while_conversation_is_running(tmp_path: Path) -
     history_store.create("local-user", "thread-a", model_name="gpt-5.4")
     graph = _RuntimeFakeGraph(SimpleNamespace(values={}, next=(), interrupts=[]))
     runtime = ReportAgentApiRuntime(
-        graph_factory=lambda _settings: graph,
+        graph_factory=lambda _settings, _context: graph,
         default_runtime_settings=_DEFAULT_RUNTIME_SETTINGS,
         models=["gpt-5.4"],
         history_store=history_store,
@@ -793,9 +814,16 @@ def test_runtime_locks_settings_after_submit_and_resume() -> None:
     resumed = runtime._thread(resumed_thread)
     resumed.app = _RuntimeFakeGraph(_plan_review_snapshot())
     resumed.runner = _RecordingRunner()
+    resumed.credential_session_id = _LOCAL_IDENTITY.session_id
 
-    runtime.submit_message(_LOCAL_IDENTITY, submitted_thread, "Create a diabetes cohort")
-    runtime.resume_interrupt(_LOCAL_IDENTITY, resumed_thread, "interrupt-1", {"action": "approve"})
+    runtime.submit_message(
+        _LOCAL_IDENTITY, submitted_thread, "Create a diabetes cohort",
+        provider_api_key="test-key",
+    )
+    runtime.resume_interrupt(
+        _LOCAL_IDENTITY, resumed_thread, "interrupt-1", {"action": "approve"},
+        provider_api_key="test-key",
+    )
 
     assert runtime.state(submitted_thread).runtime_settings_locked is True
     assert runtime.state(resumed_thread).runtime_settings_locked is True
@@ -823,6 +851,7 @@ def test_runtime_generates_first_title_without_blocking_submit(tmp_path: Path) -
     release_title = threading.Event()
     submit_finished = threading.Event()
     submit_errors: list[BaseException] = []
+    title_factory_keys: list[str] = []
 
     class _BlockingTitleGenerator:
         def generate(self, _text: str) -> str:
@@ -835,13 +864,18 @@ def test_runtime_generates_first_title_without_blocking_submit(tmp_path: Path) -
         default_runtime_settings=_DEFAULT_RUNTIME_SETTINGS,
         models=["gpt-5.4"],
         history_store=history_store,
-        title_generator=_BlockingTitleGenerator(),
+        title_generator_factory=lambda _settings, api_key: (
+            title_factory_keys.append(api_key) or _BlockingTitleGenerator()
+        ),
     )
     thread_id = runtime.create_thread()
 
     def submit() -> None:
         try:
-            runtime.submit_message(_LOCAL_IDENTITY, thread_id, "Test the connection")
+            runtime.submit_message(
+                _LOCAL_IDENTITY, thread_id, "Test the connection",
+                provider_api_key="test-key",
+            )
         except BaseException as exc:
             submit_errors.append(exc)
         finally:
@@ -860,6 +894,7 @@ def test_runtime_generates_first_title_without_blocking_submit(tmp_path: Path) -
         worker.join(timeout=2)
 
     assert submit_errors == []
+    assert title_factory_keys == ["test-key"]
     _wait_for_history_title(history_store, thread_id, "Connection test")
 
 
@@ -885,12 +920,16 @@ def test_runtime_title_failure_is_isolated_and_not_retried_on_followup(
     )
     thread_id = runtime.create_thread()
 
-    runtime.submit_message(_LOCAL_IDENTITY, thread_id, "First message")
+    runtime.submit_message(
+        _LOCAL_IDENTITY, thread_id, "First message", provider_api_key="test-key"
+    )
     assert title_attempted.wait(timeout=1)
     deadline = time.time() + 2
     while runtime.state(_LOCAL_IDENTITY, thread_id).run.state == "running" and time.time() < deadline:
         time.sleep(0.01)
-    runtime.submit_message(_LOCAL_IDENTITY, thread_id, "Follow-up message")
+    runtime.submit_message(
+        _LOCAL_IDENTITY, thread_id, "Follow-up message", provider_api_key="test-key"
+    )
     time.sleep(0.05)
 
     record = history_store.get("local-user", thread_id)
@@ -933,7 +972,10 @@ def test_runtime_late_automatic_title_preserves_manual_rename(tmp_path: Path) ->
     )
     thread_id = runtime.create_thread()
 
-    runtime.submit_message(_LOCAL_IDENTITY, thread_id, "Analyze cohort retention")
+    runtime.submit_message(
+        _LOCAL_IDENTITY, thread_id, "Analyze cohort retention",
+        provider_api_key="test-key",
+    )
     assert title_started.wait(timeout=1)
     runtime.rename_conversation(_LOCAL_IDENTITY, thread_id, "My manual title")
     release_title.set()
@@ -961,7 +1003,9 @@ def test_runtime_concurrent_first_submit_builds_one_graph_and_rejects_duplicate(
     def submit(text: str) -> None:
         start.wait(timeout=5)
         try:
-            runtime.submit_message(_LOCAL_IDENTITY, thread_id, text)
+            runtime.submit_message(
+                _LOCAL_IDENTITY, thread_id, text, provider_api_key="test-key"
+            )
         except ThreadAlreadyRunningError:
             result = "already-running"
         else:
@@ -999,7 +1043,10 @@ def test_runtime_graph_factory_receives_selected_settings() -> None:
     )
     thread_id = runtime.create_thread({"model_name": "gpt-5.6-luna", "max_steps": 6})
 
-    runtime.submit_message(_LOCAL_IDENTITY, thread_id, "Create a diabetes cohort")
+    runtime.submit_message(
+        _LOCAL_IDENTITY, thread_id, "Create a diabetes cohort",
+        provider_api_key="test-key",
+    )
 
     assert graph_factory.calls == [
         {
@@ -1010,12 +1057,167 @@ def test_runtime_graph_factory_receives_selected_settings() -> None:
     ]
 
 
+def test_runtime_builds_graph_with_owner_session_key_and_storage_context(
+    tmp_path: Path,
+) -> None:
+    history = ConversationHistoryStore(tmp_path / "history.db")
+    factory = _ContextRecordingGraphFactory()
+    identity = _identity("user-a")
+    runtime = ReportAgentApiRuntime(
+        graph_factory=factory,
+        default_runtime_settings=_DEFAULT_RUNTIME_SETTINGS,
+        models=["gpt-5.4"],
+        runtime_root=tmp_path / "runtime",
+        history_store=history,
+    )
+    thread_id = runtime.create_thread(identity)
+
+    assert factory.calls == []
+    runtime.submit_message(
+        identity,
+        thread_id,
+        "Create a cohort",
+        provider_api_key="session-key",
+    )
+
+    assert len(factory.calls) == 1
+    _settings, context = factory.calls[0]
+    assert context.owner_user_id == "user-a"
+    assert context.session_id == identity.session_id
+    assert context.thread_id == thread_id
+    assert context.provider_api_key == "session-key"
+    assert context.storage.owner_user_id == "user-a"
+    assert context.storage.thread_id == thread_id
+    cached = runtime._threads[("user-a", thread_id)]
+    assert cached.credential_session_id == identity.session_id
+    assert not hasattr(cached, "provider_api_key")
+    assert "session-key" not in repr(cached)
+
+
+def test_runtime_same_thread_id_cache_is_owner_scoped(tmp_path: Path) -> None:
+    history = ConversationHistoryStore(tmp_path / "history.db")
+    history.create("user-a", "shared-thread", model_name="gpt-5.4")
+    history.create("user-b", "shared-thread", model_name="gpt-5.4")
+    factory = _ContextRecordingGraphFactory()
+    runtime = ReportAgentApiRuntime(
+        graph_factory=factory,
+        default_runtime_settings=_DEFAULT_RUNTIME_SETTINGS,
+        models=["gpt-5.4"],
+        runtime_root=tmp_path / "runtime",
+        history_store=history,
+    )
+
+    runtime.state(_identity("user-a"), "shared-thread", provider_api_key="key-a")
+    runtime.state(_identity("user-b"), "shared-thread", provider_api_key="key-b")
+
+    assert set(runtime._threads) == {
+        ("user-a", "shared-thread"),
+        ("user-b", "shared-thread"),
+    }
+    assert [call[1].owner_user_id for call in factory.calls] == ["user-a", "user-b"]
+    with pytest.raises(KeyError):
+        runtime.state(_identity("user-c"), "shared-thread", provider_api_key="key-c")
+
+
+def test_runtime_switching_session_rebuilds_an_idle_graph(tmp_path: Path) -> None:
+    history = ConversationHistoryStore(tmp_path / "history.db")
+    history.create("user-a", "thread-a", model_name="gpt-5.4")
+    factory = _ContextRecordingGraphFactory()
+    runtime = ReportAgentApiRuntime(
+        graph_factory=factory,
+        default_runtime_settings=_DEFAULT_RUNTIME_SETTINGS,
+        models=["gpt-5.4"],
+        runtime_root=tmp_path / "runtime",
+        history_store=history,
+    )
+    first = _identity("user-a", "11111111-1111-4111-8111-111111111111")
+    second = _identity("user-a", "22222222-2222-4222-8222-222222222222")
+
+    runtime.state(first, "thread-a", provider_api_key="first-key")
+    first_graph = runtime._threads[("user-a", "thread-a")].app
+    runtime.state(second, "thread-a", provider_api_key="second-key")
+
+    cached = runtime._threads[("user-a", "thread-a")]
+    assert cached.app is not first_graph
+    assert cached.credential_session_id == second.session_id
+    assert [call[1].provider_api_key for call in factory.calls] == [
+        "first-key",
+        "second-key",
+    ]
+
+
+def test_release_session_evicts_only_its_idle_graphs(tmp_path: Path) -> None:
+    history = ConversationHistoryStore(tmp_path / "history.db")
+    history.create("user-a", "thread-a", model_name="gpt-5.4")
+    history.create("user-a", "thread-b", model_name="gpt-5.4")
+    factory = _ContextRecordingGraphFactory()
+    runtime = ReportAgentApiRuntime(
+        graph_factory=factory,
+        default_runtime_settings=_DEFAULT_RUNTIME_SETTINGS,
+        models=["gpt-5.4"],
+        runtime_root=tmp_path / "runtime",
+        history_store=history,
+    )
+    first = _identity("user-a", "11111111-1111-4111-8111-111111111111")
+    second = _identity("user-a", "22222222-2222-4222-8222-222222222222")
+    runtime.state(first, "thread-a", provider_api_key="first-key")
+    runtime.state(second, "thread-b", provider_api_key="second-key")
+
+    runtime.release_session("user-a", first.session_id)
+
+    assert ("user-a", "thread-a") not in runtime._threads
+    assert ("user-a", "thread-b") in runtime._threads
+
+
+def test_release_session_allows_bound_run_to_finish_then_evicts_graph(
+    tmp_path: Path,
+) -> None:
+    history = ConversationHistoryStore(tmp_path / "history.db")
+    graph = _BlockingGraph()
+    factory = _ContextRecordingGraphFactory([graph])
+    identity = _identity("user-a")
+    runtime = ReportAgentApiRuntime(
+        graph_factory=factory,
+        default_runtime_settings=_DEFAULT_RUNTIME_SETTINGS,
+        models=["gpt-5.4"],
+        runtime_root=tmp_path / "runtime",
+        history_store=history,
+    )
+    thread_id = runtime.create_thread(identity)
+    runtime.submit_message(
+        identity,
+        thread_id,
+        "Create a cohort",
+        provider_api_key="session-key",
+    )
+    assert graph.invoke_started.wait(timeout=1)
+
+    runtime.release_session("user-a", identity.session_id)
+    assert runtime._threads[("user-a", thread_id)].app is graph
+    graph.release_invoke.set()
+
+    deadline = time.time() + 2
+    while ("user-a", thread_id) in runtime._threads and time.time() < deadline:
+        time.sleep(0.01)
+    assert ("user-a", thread_id) not in runtime._threads
+    with pytest.raises(ValueError, match="provider_api_key"):
+        runtime.submit_message(
+            identity,
+            thread_id,
+            "Continue",
+            provider_api_key="",
+        )
+
+
 def test_runtime_initial_submit_bootstraps_root_epi_agent_state() -> None:
     graph = _RuntimeFakeGraph(SimpleNamespace(values={}))
     runner = _RecordingRunner()
     runtime = _runtime(graph, runner=runner, max_steps=7, timeout_seconds=11)
 
-    runtime.submit_message(_LOCAL_IDENTITY, "thread-1", "Create a diabetes cohort")
+    runtime.submit_message(
+        _LOCAL_IDENTITY, "thread-1", "Create a diabetes cohort",
+        provider_api_key="test-key",
+    )
 
     assert graph.get_state_calls == [{"configurable": {"thread_id": "thread-1"}}]
     assert runner.calls == []
@@ -1062,6 +1264,7 @@ def test_runtime_initial_submit_carries_explicit_active_study_into_graph_state()
         "thread-1",
         "Use the second installed study.",
         active_study_id="study-two",
+        provider_api_key="test-key",
     )
 
     payload = runner.background_calls[0]["initial_payload"]
@@ -1080,7 +1283,9 @@ def test_runtime_later_submit_sends_message_and_event_log_delta() -> None:
     runner = _RecordingRunner()
     runtime = _runtime(graph, runner=runner, max_steps=3, timeout_seconds=5)
 
-    runtime.submit_message(_LOCAL_IDENTITY, "thread-1", "Add HbA1c")
+    runtime.submit_message(
+        _LOCAL_IDENTITY, "thread-1", "Add HbA1c", provider_api_key="test-key"
+    )
 
     assert graph.get_state_calls == [{"configurable": {"thread_id": "thread-1"}}]
     assert runner.calls == []
@@ -1158,7 +1363,10 @@ def test_runtime_resume_interrupt_sends_command_resume_payload() -> None:
     runtime = _runtime(graph, runner=runner, max_steps=4, timeout_seconds=9)
     payload = {"action": "approve", "selected_column_keys": ["age"]}
 
-    runtime.resume_interrupt(_LOCAL_IDENTITY, "thread-1", "interrupt-1", payload)
+    runtime.resume_interrupt(
+        _LOCAL_IDENTITY, "thread-1", "interrupt-1", payload,
+        provider_api_key="test-key",
+    )
 
     assert runner.calls == []
     assert len(runner.background_calls) == 1
@@ -1181,6 +1389,7 @@ def test_runtime_resume_model_output_limit_sends_exact_continue() -> None:
         "thread-1",
         "interrupt-output",
         {"action": "continue"},
+        provider_api_key="test-key",
     )
 
     assert len(runner.background_calls) == 1
@@ -1212,7 +1421,10 @@ def test_runtime_duplicate_submit_raises_thread_already_running() -> None:
     runtime = _runtime(graph, runner=runner, max_steps=4, timeout_seconds=9)
 
     with pytest.raises(ThreadAlreadyRunningError) as exc:
-        runtime.submit_message(_LOCAL_IDENTITY, "thread-1", "Create a diabetes cohort")
+        runtime.submit_message(
+            _LOCAL_IDENTITY, "thread-1", "Create a diabetes cohort",
+            provider_api_key="test-key",
+        )
 
     assert exc.value.thread_id == "thread-1"
     assert runner.background_calls == []
@@ -1252,6 +1464,7 @@ def test_runtime_rejects_submit_for_unresolved_raw_interrupt(
             "thread-1",
             "Where is my analysis?",
             [staged.id],
+            provider_api_key="test-key",
         )
 
     assert caught.value.thread_id == "thread-1"
@@ -1268,7 +1481,10 @@ def test_runtime_duplicate_resume_raises_thread_already_running() -> None:
     runtime = _runtime(graph, runner=runner, max_steps=4, timeout_seconds=9)
 
     with pytest.raises(ThreadAlreadyRunningError) as exc:
-        runtime.resume_interrupt(_LOCAL_IDENTITY, "thread-1", "interrupt-1", {"action": "approve"})
+        runtime.resume_interrupt(
+            _LOCAL_IDENTITY, "thread-1", "interrupt-1", {"action": "approve"},
+            provider_api_key="test-key",
+        )
 
     assert exc.value.thread_id == "thread-1"
     assert len(runner.background_calls) == 1
@@ -1348,7 +1564,10 @@ def test_runtime_submit_binds_exact_attachments_to_the_user_event(
     )
     attachment_ids = [item.id for item in staged.attachments]
 
-    runtime.submit_message(_LOCAL_IDENTITY, "thread-1", "Analyze uploaded data", attachment_ids)
+    runtime.submit_message(
+        _LOCAL_IDENTITY, "thread-1", "Analyze uploaded data", attachment_ids,
+        provider_api_key="test-key",
+    )
 
     payload = runner.background_calls[0]["initial_payload"]
     assert isinstance(payload, dict)
@@ -1389,7 +1608,10 @@ def test_runtime_submit_inspects_newly_bound_attachment_before_graph_execution(
         [("cohort.csv", "text/csv", b"id,sex\nSUB-1,F\n")],
     ).attachments[0]
 
-    runtime.submit_message(_LOCAL_IDENTITY, "thread-1", "Use this cohort.", [attachment.id])
+    runtime.submit_message(
+        _LOCAL_IDENTITY, "thread-1", "Use this cohort.", [attachment.id],
+        provider_api_key="test-key",
+    )
 
     payload = runner.background_calls[0]["initial_payload"]
     assert payload["artifacts"]["attachments"][attachment.id]["inspection"] == {
@@ -1444,7 +1666,10 @@ def test_runtime_text_followup_rehydrates_prior_upload_profile(
     runner = _RecordingRunner()
     runtime = _runtime(graph, runner=runner, runtime_root=tmp_path)
 
-    runtime.submit_message(_LOCAL_IDENTITY, "thread-1", "Analyze my earlier upload.")
+    runtime.submit_message(
+        _LOCAL_IDENTITY, "thread-1", "Analyze my earlier upload.",
+        provider_api_key="test-key",
+    )
 
     payload = runner.background_calls[0]["initial_payload"]
     assert payload["authorized_attachment_ids"] == [attachment["id"]]
@@ -1467,7 +1692,10 @@ def test_busy_submit_leaves_attachment_staged(tmp_path: Path) -> None:
     ).attachments[0]
 
     with pytest.raises(ThreadAlreadyRunningError):
-        runtime.submit_message(_LOCAL_IDENTITY, "thread-1", "Read this", [staged.id])
+        runtime.submit_message(
+            _LOCAL_IDENTITY, "thread-1", "Read this", [staged.id],
+            provider_api_key="test-key",
+        )
 
     assert runtime.attachment_store.require(
         _local_attachment_scope("thread-1"),
@@ -1492,7 +1720,10 @@ def test_snapshot_failure_leaves_attachment_staged(tmp_path: Path) -> None:
     ).attachments[0]
 
     with pytest.raises(RuntimeError, match="checkpoint unavailable"):
-        runtime.submit_message(_LOCAL_IDENTITY, "thread-1", "Read this", [staged.id])
+        runtime.submit_message(
+            _LOCAL_IDENTITY, "thread-1", "Read this", [staged.id],
+            provider_api_key="test-key",
+        )
 
     assert runtime.attachment_store.require(
         _local_attachment_scope("thread-1"),
@@ -1512,7 +1743,9 @@ def test_conversation_attachment_bytes_is_thread_scoped(tmp_path: Path) -> None:
         "thread-1",
         [("notes.txt", "text/plain", b"study notes")],
     ).attachments[0]
-    runtime.submit_message(_LOCAL_IDENTITY, "thread-1", "", [staged.id])
+    runtime.submit_message(
+        _LOCAL_IDENTITY, "thread-1", "", [staged.id], provider_api_key="test-key"
+    )
     graph.snapshot = SimpleNamespace(
         values=runner.background_calls[0]["initial_payload"],
         next=(),
@@ -1563,7 +1796,10 @@ def test_failed_initial_invoke_rolls_attachment_back_to_staged(
         [("notes.txt", "text/plain", b"study notes")],
     ).attachments[0]
 
-    runtime.submit_message(_LOCAL_IDENTITY, "thread-1", "Read this", [staged.id])
+    runtime.submit_message(
+        _LOCAL_IDENTITY, "thread-1", "Read this", [staged.id],
+        provider_api_key="test-key",
+    )
     deadline = time.time() + 2
     while runtime._thread("thread-1").runner.status("thread-1")["state"] == "running":
         assert time.time() < deadline
@@ -1607,7 +1843,10 @@ def test_failed_invoke_preserves_attachment_when_input_link_was_committed(
         [("notes.txt", "text/plain", b"study notes")],
     ).attachments[0]
 
-    runtime.submit_message(_LOCAL_IDENTITY, "thread-1", "Read this", [staged.id])
+    runtime.submit_message(
+        _LOCAL_IDENTITY, "thread-1", "Read this", [staged.id],
+        provider_api_key="test-key",
+    )
     deadline = time.time() + 2
     while runtime._thread("thread-1").runner.status("thread-1")["state"] == "running":
         assert time.time() < deadline
@@ -2970,8 +3209,8 @@ def test_runner_projects_structured_openai_quota_failure() -> None:
                 body={},
             ),
             "OPENAI_AUTHENTICATION_FAILED",
-            "OpenAI rejected the configured API key. Update OPENAI_API_KEY and "
-            "restart the server. Error: OPENAI_AUTHENTICATION_FAILED",
+            "OpenAI rejected the session API key. Enter a valid key and retry. "
+            "Error: OPENAI_AUTHENTICATION_FAILED",
         ),
         (
             PermissionDeniedError(

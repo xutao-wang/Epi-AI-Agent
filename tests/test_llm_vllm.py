@@ -1,0 +1,57 @@
+from __future__ import annotations
+
+import os
+import sys
+from types import SimpleNamespace
+
+import llm_vllm
+from db_rag import vectorstore
+from db_rag.service import model_routing
+
+
+def test_build_openai_llm_passes_key_without_mutating_environment(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    captured: dict[str, object] = {}
+
+    class FakeChatOpenAI:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(llm_vllm, "ChatOpenAI", FakeChatOpenAI)
+    llm_vllm.build_openai_llm(model_name="gpt-test", api_key="session-key")
+
+    assert str(captured["api_key"]) == "**********"
+    assert captured["api_key"].get_secret_value() == "session-key"
+    assert "OPENAI_API_KEY" not in os.environ
+
+
+def test_db_rag_model_factory_requires_and_forwards_explicit_key(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        model_routing,
+        "build_openai_llm",
+        lambda **kwargs: captured.update(kwargs) or "model",
+    )
+
+    assert model_routing.build_db_rag_openai_llm(
+        "gpt-test",
+        api_key="session-key",
+    ) == "model"
+    assert captured == {"model_name": "gpt-test", "api_key": "session-key"}
+
+
+def test_embedding_client_receives_explicit_key(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeOpenAI))
+
+    vectorstore.OpenAIEmbeddingFunction(
+        model="OpenAI/text-embedding-3-large",
+        api_key="session-key",
+    )
+
+    assert captured["api_key"] == "session-key"
