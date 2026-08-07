@@ -59,3 +59,16 @@ For rollback deploy a previously verified release. For a domain change, update
 DNS and certificate configuration through a reviewed change set. Cost inventory:
 EC2 runtime, EIP, root/data EBS, 14-day snapshots, S3 objects/requests,
 CloudWatch logs/alarms, SNS, Cognito, Route 53 hosted-zone and DNS-query charges.
+
+## Exact reviewed actions
+
+```sh
+python scripts/aws_phase2a.py execute-bootstrap CHANGE_SET_ARN --confirm-account 641379499556
+python scripts/aws_phase2a.py execute-change-set CHANGE_SET_ARN --confirm-account 641379499556
+python scripts/aws_phase2a.py upload-release dist/aws/epi-agent-SHA.tar.gz releases/SHA.tar.gz
+python scripts/aws_phase2a.py upload-study study.tar.gz studies/STUDY.tar.gz
+python scripts/aws_phase2a.py deploy-release releases/SHA.tar.gz SHA256 RELEASE_SHA epiagent.org ops@example.org
+```
+
+Replace only the uppercase placeholders after reviewing the matching change set
+or immutable release metadata; never paste a provider key into a command.
