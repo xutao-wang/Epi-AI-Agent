@@ -147,6 +147,7 @@ export default function App({
     typeof apiClient.getRuntimeOptions
   > | null>(null);
   const savedConversationsRequestRef = useRef(0);
+  const savedConversationsMutationRef = useRef(0);
   const pollGenerationRef = useRef(0);
   const [threadId, setThreadId] = useState<string | null>(null);
   const [state, setState] = useState<ApiThreadState | null>(null);
@@ -302,9 +303,13 @@ export default function App({
   async function refreshSavedConversations(): Promise<ConversationSummary[] | null> {
     const requestId = savedConversationsRequestRef.current + 1;
     savedConversationsRequestRef.current = requestId;
+    const mutationId = savedConversationsMutationRef.current;
     try {
       const response = await apiClient.listConversations();
-      if (requestId !== savedConversationsRequestRef.current) {
+      if (
+        requestId !== savedConversationsRequestRef.current ||
+        mutationId !== savedConversationsMutationRef.current
+      ) {
         return null;
       }
       const items = response.items ?? [];
@@ -314,6 +319,10 @@ export default function App({
       // A history refresh must not block the active analysis workflow.
       return null;
     }
+  }
+
+  function invalidateSavedConversationRequests() {
+    savedConversationsMutationRef.current += 1;
   }
 
   async function openConversation(nextThreadId: string) {
@@ -351,6 +360,7 @@ export default function App({
 
   async function archiveConversation(threadIdToArchive: string) {
     try {
+      invalidateSavedConversationRequests();
       const archived = await apiClient.archiveConversation(threadIdToArchive);
       setSavedConversations((current) =>
         current.map((item) =>
@@ -369,6 +379,7 @@ export default function App({
 
   async function restoreConversation(threadIdToRestore: string) {
     try {
+      invalidateSavedConversationRequests();
       const restored = await apiClient.restoreConversation(threadIdToRestore);
       setSavedConversations((current) =>
         current.map((item) =>
@@ -385,6 +396,10 @@ export default function App({
 
   async function deleteConversation(threadIdToDelete: string) {
     try {
+      invalidateSavedConversationRequests();
+      setTitlePollingThreadId((current) =>
+        current === threadIdToDelete ? null : current,
+      );
       await apiClient.deleteConversation(threadIdToDelete);
       setSavedConversations((current) =>
         current.filter((item) => item.thread_id !== threadIdToDelete),

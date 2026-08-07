@@ -11,6 +11,7 @@ from utils.llm_response import coerce_text_content
 
 
 _UNTITLED = "Untitled conversation"
+_ATTACHMENT_ONLY_TITLE = "Attached data analysis"
 _MAX_TITLE_LENGTH = 120
 
 
@@ -41,7 +42,9 @@ class ConversationHistoryStore:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     last_opened_at TEXT,
-                    archived_at TEXT
+                    archived_at TEXT,
+                    lifecycle TEXT NOT NULL DEFAULT 'ready'
+                        CHECK(lifecycle IN ('pending', 'ready'))
                 )
                 """
             )
@@ -60,6 +63,12 @@ class ConversationHistoryStore:
                 connection.execute(
                     "UPDATE conversation_history SET last_opened_at = updated_at "
                     "WHERE last_opened_at IS NULL"
+                )
+            if "lifecycle" not in columns:
+                connection.execute(
+                    "ALTER TABLE conversation_history ADD COLUMN lifecycle "
+                    "TEXT NOT NULL DEFAULT 'ready' "
+                    "CHECK(lifecycle IN ('pending', 'ready'))"
                 )
 
     def _connect(self) -> sqlite3.Connection:
@@ -82,6 +91,16 @@ class ConversationHistoryStore:
             raise ValueError("title is required")
         return normalized[:_MAX_TITLE_LENGTH]
 
+    @staticmethod
+    def fallback_title(first_message: str) -> str:
+        normalized = " ".join(str(first_message or "").split())
+        if not normalized:
+            return _ATTACHMENT_ONLY_TITLE
+        try:
+            return ConversationHistoryStore._title(normalized)
+        except ValueError:
+            return _ATTACHMENT_ONLY_TITLE
+
     def create(self, thread_id: str, *, model_name: str) -> ConversationSummary:
         now = self._now()
         with self._connect() as connection:
@@ -97,6 +116,43 @@ class ConversationHistoryStore:
         assert record is not None
         return record
 
+    def create_pending(
+        self,
+        thread_id: str,
+        *,
+        model_name: str,
+    ) -> tuple[ConversationSummary, bool]:
+        now = self._now()
+        with self._connect() as connection:
+            result = connection.execute(
+                "INSERT OR IGNORE INTO conversation_history "
+                "(thread_id, title, title_source, model_name, lifecycle, "
+                "created_at, updated_at, last_opened_at) "
+                "VALUES (?, ?, 'automatic', ?, 'pending', ?, ?, ?)",
+                (thread_id, _UNTITLED, model_name, now, now, now),
+            )
+        record = self.get(thread_id)
+        assert record is not None
+        return record, result.rowcount == 1
+
+    def promote_pending(self, thread_id: str) -> bool:
+        with self._connect() as connection:
+            result = connection.execute(
+                "UPDATE conversation_history SET lifecycle = 'ready', updated_at = ? "
+                "WHERE thread_id = ? AND lifecycle = 'pending'",
+                (self._now(), thread_id),
+            )
+        return result.rowcount == 1
+
+    def delete_pending(self, thread_id: str) -> bool:
+        with self._connect() as connection:
+            result = connection.execute(
+                "DELETE FROM conversation_history "
+                "WHERE thread_id = ? AND lifecycle = 'pending'",
+                (thread_id,),
+            )
+        return result.rowcount == 1
+
     def get(self, thread_id: str) -> ConversationSummary | None:
         with self._connect() as connection:
             row = connection.execute(
@@ -110,7 +166,8 @@ class ConversationHistoryStore:
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT thread_id, title, title_source, model_name, created_at, updated_at, last_opened_at, archived_at "
-                "FROM conversation_history ORDER BY updated_at DESC, created_at DESC"
+                "FROM conversation_history WHERE lifecycle = 'ready' "
+                "ORDER BY updated_at DESC, created_at DESC"
             ).fetchall()
         return [ConversationSummary(*row) for row in rows]
 
@@ -169,6 +226,19 @@ class ConversationHistoryStore:
                 "UPDATE conversation_history SET title = ?, updated_at = ? "
                 "WHERE thread_id = ? AND title_source = 'automatic'",
                 (self._title(title), self._now(), thread_id),
+            )
+        return self.get(thread_id)
+
+    def set_initial_automatic_title(
+        self,
+        thread_id: str,
+        title: str,
+    ) -> ConversationSummary | None:
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE conversation_history SET title = ?, updated_at = ? "
+                "WHERE thread_id = ? AND title = ? AND title_source = 'automatic'",
+                (self._title(title), self._now(), thread_id, _UNTITLED),
             )
         return self.get(thread_id)
 

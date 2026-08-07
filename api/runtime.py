@@ -230,9 +230,37 @@ class StaleInterruptError(RuntimeError):
         super().__init__(f"Interrupt {interrupt_id} is no longer active")
 
 
+class InitialTurnCheckpointError(RuntimeError):
+    pass
+
+
 def _has_blocking_interrupt(snapshot: Any) -> bool:
     interrupts = list(getattr(snapshot, "interrupts", None) or [])
     return bool(interrupts)
+
+
+def _checkpoint_contains_user_turn(
+    snapshot: Any,
+    *,
+    message_id: str,
+    turn_hash: str,
+) -> bool:
+    values = _projection_values(snapshot)
+    if any(
+        isinstance(message, HumanMessage) and str(message.id or "") == message_id
+        for message in list(values.get("messages") or [])
+    ):
+        return True
+    meta = dict(values.get("meta") or {})
+    if str(meta.get(MetaKeys.LAST_USER_MESSAGE_HASH) or "") == turn_hash:
+        return True
+    events = list(dict(values.get("artifacts") or {}).get("conversation_events") or [])
+    return any(
+        isinstance(event, dict)
+        and event.get("type") == "user"
+        and str(event.get("user_turn_hash") or "") == turn_hash
+        for event in events
+    )
 
 
 def _projection_values(snapshot: Any) -> dict[str, Any]:
@@ -978,6 +1006,38 @@ class ReportAgentApiRuntime:
             ],
         )
 
+    def _reject_initial_turn(
+        self,
+        thread_id: str,
+        thread: ThreadRuntime,
+        manifests: list[dict[str, Any]],
+    ) -> None:
+        self._rollback_unbound_available_manifests(thread_id, thread, manifests)
+        if self.history_store is not None:
+            self.history_store.delete_pending(thread_id)
+
+    def _accept_initial_turn(
+        self,
+        thread_id: str,
+        thread: ThreadRuntime,
+        *,
+        message_id: str,
+        turn_hash: str,
+        manifests: list[dict[str, Any]],
+    ) -> None:
+        app, _runner = self._ensure_graph(thread)
+        snapshot = app.get_state(graph_config(thread_id), subgraphs=True)
+        if not _checkpoint_contains_user_turn(
+            snapshot,
+            message_id=message_id,
+            turn_hash=turn_hash,
+        ):
+            self._reject_initial_turn(thread_id, thread, manifests)
+            raise InitialTurnCheckpointError("Initial turn was not durably checkpointed")
+        self._commit_binding_manifests(thread_id, manifests)
+        if self.history_store is not None:
+            self.history_store.promote_pending(thread_id)
+
     def submit_message(
         self,
         thread_id: str,
@@ -1018,56 +1078,74 @@ class ReportAgentApiRuntime:
             id=f"user-{uuid.uuid4().hex}",
             additional_kwargs={"attachment_ids": attachment_ids},
         )
-        started = runner.start_background_from_factory(
-            thread_id=thread_id,
-            payload_factory=lambda: self._bind_message_payload(
-                thread_id=thread_id,
-                snapshot=snapshot,
-                message=message,
-                manifests=manifests,
-                active_study_id=active_study_id,
-            ),
-            max_steps=thread.settings.max_steps or 1,
-            timeout_seconds=thread.settings.timeout_seconds or 1,
-            on_initial_payload_error=lambda: (
-                self._rollback_unbound_available_manifests(
-                    thread_id,
-                    thread,
-                    manifests,
-                )
-            ),
-            on_initial_payload_success=lambda: self._commit_binding_manifests(
-                thread_id,
-                manifests,
-            ),
-        )
-        if not started:
-            raise ThreadAlreadyRunningError(thread_id)
-        if self.history_store is not None:
-            existing_record = self.history_store.get(thread_id)
-            record = self.history_store.create(
+        created_pending = False
+        if self.history_store is not None and self.history_store.get(thread_id) is None:
+            _record, created_pending = self.history_store.create_pending(
                 thread_id,
                 model_name=thread.settings.model_name,
             )
+        try:
+            started = runner.start_background_from_factory(
+                thread_id=thread_id,
+                payload_factory=lambda: self._bind_message_payload(
+                    thread_id=thread_id,
+                    snapshot=snapshot,
+                    message=message,
+                    manifests=manifests,
+                    active_study_id=active_study_id,
+                ),
+                max_steps=thread.settings.max_steps or 1,
+                timeout_seconds=thread.settings.timeout_seconds or 1,
+                on_initial_payload_error=lambda: self._reject_initial_turn(
+                    thread_id,
+                    thread,
+                    manifests,
+                ),
+                on_initial_payload_success=lambda: self._accept_initial_turn(
+                    thread_id,
+                    thread,
+                    message_id=str(message.id),
+                    turn_hash=self._message_turn_hash(message),
+                    manifests=manifests,
+                ),
+            )
+        except Exception:
+            if created_pending and self.history_store is not None:
+                self.history_store.delete_pending(thread_id)
+            raise
+        if not started:
+            if created_pending and self.history_store is not None:
+                self.history_store.delete_pending(thread_id)
+            raise ThreadAlreadyRunningError(thread_id)
+        if self.history_store is not None:
+            record = self.history_store.get(thread_id)
             if (
-                existing_record is None
-                and text.strip()
+                record is not None
                 and record.title == "Untitled conversation"
-                and self.title_generator is not None
             ):
-                self._title_executor.submit(self._generate_title, thread_id, text)
+                if not text.strip() and attachment_ids:
+                    self.history_store.set_initial_automatic_title(
+                        thread_id,
+                        ConversationHistoryStore.fallback_title(text),
+                    )
+                elif text.strip():
+                    self._title_executor.submit(self._generate_title, thread_id, text)
         thread.locked = True
 
     def _generate_title(self, thread_id: str, text: str) -> None:
         try:
             assert self.history_store is not None
-            assert self.title_generator is not None
-            self.history_store.set_automatic_title(
-                thread_id,
-                self.title_generator.generate(text),
-            )
+            if self.title_generator is None:
+                title = ConversationHistoryStore.fallback_title(text)
+            else:
+                title = self.title_generator.generate(text)
+            self.history_store.set_initial_automatic_title(thread_id, title)
         except Exception:
-            return
+            if self.history_store is not None:
+                self.history_store.set_initial_automatic_title(
+                    thread_id,
+                    ConversationHistoryStore.fallback_title(text),
+                )
 
     def list_conversations(self):
         return self.history_store.list() if self.history_store else []
