@@ -1,0 +1,7 @@
+[
+  {"ParameterKey":"DomainName","ParameterValue":"epiagent.org"},
+  {"ParameterKey":"HostedZoneId","ParameterValue":"Z02132461LVJ2PFOYFXFU"},
+  {"ParameterKey":"InstanceType","ParameterValue":"t3.large"},
+  {"ParameterKey":"RootVolumeGiB","ParameterValue":"30"},
+  {"ParameterKey":"DataVolumeGiB","ParameterValue":"50"}
+]

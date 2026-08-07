@@ -1,0 +1,350 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Network, retained storage, identity, and DNS for Epi Agent Phase 2A.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Existing DNS configuration
+        Parameters:
+          - DomainName
+          - HostedZoneId
+      - Label:
+          default: Application host configuration
+        Parameters:
+          - InstanceType
+          - RootVolumeGiB
+          - CertificateEmail
+      - Label:
+          default: Retained data configuration
+        Parameters:
+          - DataVolumeGiB
+          - DataSnapshotId
+
+Parameters:
+  DomainName:
+    Type: String
+    Description: Existing apex domain name for the Epi Agent application.
+    AllowedPattern: '^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))+$'
+  HostedZoneId:
+    Type: String
+    Description: Existing Route 53 public hosted-zone ID for DomainName.
+    AllowedPattern: '^Z[A-Z0-9]+$'
+  InstanceType:
+    Type: String
+    Default: t3.large
+    Description: Instance type reserved for the Phase 2A application host.
+  RootVolumeGiB:
+    Type: Number
+    Default: 30
+    MinValue: 8
+    Description: Root-volume size reserved for the Phase 2A application host.
+  DataVolumeGiB:
+    Type: Number
+    Default: 50
+    MinValue: 50
+    Description: Size of the retained application data EBS volume.
+  CertificateEmail:
+    Type: String
+    Description: Operator email address for the application's TLS certificate lifecycle.
+    AllowedPattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
+  DataSnapshotId:
+    Type: String
+    Default: ''
+    Description: Optional EBS snapshot ID from which to restore the data volume.
+    AllowedPattern: '^$|^snap-[a-f0-9]+$'
+
+Conditions:
+  HasDataSnapshot:
+    Fn::Not:
+      - Fn::Equals:
+          - Ref: DataSnapshotId
+          - ''
+
+Resources:
+  ApplicationVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.42.0.0/24
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: epi-agent-phase2a
+        - Key: Project
+          Value: epi-agent
+        - Key: Environment
+          Value: phase2a
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: epi-agent-phase2a
+        - Key: Project
+          Value: epi-agent
+        - Key: Environment
+          Value: phase2a
+
+  VpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref ApplicationVpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref ApplicationVpc
+      CidrBlock: 10.42.0.0/26
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: epi-agent-phase2a-public
+        - Key: Project
+          Value: epi-agent
+        - Key: Environment
+          Value: phase2a
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref ApplicationVpc
+      Tags:
+        - Key: Name
+          Value: epi-agent-phase2a-public
+        - Key: Project
+          Value: epi-agent
+        - Key: Environment
+          Value: phase2a
+
+  DefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet
+
+  S3GatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref ApplicationVpc
+      VpcEndpointType: Gateway
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
+      RouteTableIds:
+        - !Ref PublicRouteTable
+
+  ApplicationSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Public HTTP(S) ingress and required outbound application traffic.
+      VpcId: !Ref ApplicationVpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - Description: HTTPS for AWS services and package repositories.
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - Description: DNS over TCP.
+          IpProtocol: tcp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 0.0.0.0/0
+        - Description: DNS over UDP.
+          IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: epi-agent-phase2a-application
+        - Key: Project
+          Value: epi-agent
+        - Key: Environment
+          Value: phase2a
+
+  ApplicationDataVolume:
+    Type: AWS::EC2::Volume
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      AvailabilityZone: !GetAtt PublicSubnet.AvailabilityZone
+      Encrypted: true
+      Size: !Ref DataVolumeGiB
+      VolumeType: gp3
+      SnapshotId:
+        Fn::If:
+          - HasDataSnapshot
+          - Ref: DataSnapshotId
+          - Ref: AWS::NoValue
+      Tags:
+        - Key: Name
+          Value: epi-agent-phase2a-data
+        - Key: Project
+          Value: epi-agent
+        - Key: Environment
+          Value: phase2a
+        - Key: Backup
+          Value: daily
+
+  ApplicationBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Project
+          Value: epi-agent
+        - Key: Environment
+          Value: phase2a
+
+  ApplicationBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ApplicationBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt ApplicationBucket.Arn
+              - !Sub ${ApplicationBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
+  ApplicationUserPool:
+    Type: AWS::Cognito::UserPool
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      UserPoolName: epi-agent-phase2a
+      UserPoolTier: ESSENTIALS
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 14
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          TemporaryPasswordValidityDays: 7
+      UserPoolTags:
+        Project: epi-agent
+        Environment: phase2a
+
+  ApplicationUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref ApplicationUserPool
+      ClientName: epi-agent-phase2a-public-app
+      GenerateSecret: false
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - openid
+        - email
+      SupportedIdentityProviders:
+        - COGNITO
+      CallbackURLs:
+        - https://epiagent.org/auth/callback
+      LogoutURLs:
+        - https://epiagent.org/
+
+  ApplicationUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub epi-agent-phase2a-${AWS::AccountId}
+      UserPoolId: !Ref ApplicationUserPool
+
+  ApplicationElasticIp:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: epi-agent-phase2a
+        - Key: Project
+          Value: epi-agent
+        - Key: Environment
+          Value: phase2a
+        # This non-secret contact tag identifies the operator responsible for
+        # the TLS certificate attached to the EIP-backed application endpoint.
+        - Key: CertificateContactEmail
+          Value: !Ref CertificateEmail
+
+  ApplicationDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: A
+      TTL: '300'
+      ResourceRecords:
+        - !Ref ApplicationElasticIp
+
+Outputs:
+  ApplicationBucketName:
+    Description: Name of the private, versioned application bucket.
+    Value: !Ref ApplicationBucket
+  UserPoolId:
+    Description: Cognito user-pool ID.
+    Value: !Ref ApplicationUserPool
+  UserPoolClientId:
+    Description: Cognito public application client ID.
+    Value: !Ref ApplicationUserPoolClient
+  UserPoolDomain:
+    Description: Cognito hosted UI domain prefix.
+    Value: !Ref ApplicationUserPoolDomain
+  ElasticIpAddress:
+    Description: Reserved public IPv4 address for the application host.
+    Value: !Ref ApplicationElasticIp
+  ApplicationUrl:
+    Description: Canonical application URL.
+    Value: !Sub https://${DomainName}
+  RequestedInstanceType:
+    Description: Instance type for the application-host component.
+    Value: !Ref InstanceType
+  RequestedRootVolumeGiB:
+    Description: Root-volume size for the application-host component.
+    Value: !Ref RootVolumeGiB
