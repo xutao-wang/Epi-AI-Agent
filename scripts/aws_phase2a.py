@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Account-guarded operator commands for the Epi Agent Phase 2A stack."""
 from __future__ import annotations
-import argparse, hashlib, json, subprocess, sys
+import argparse, hashlib, json, re, subprocess, sys
 from pathlib import Path
 from typing import Protocol, Sequence
 
@@ -43,11 +43,27 @@ def plan(r:Runner,stack:str,template:str)->dict:
    if result["Status"]=="FAILED": raise OperatorError("change set creation failed")
    return result
  raise OperatorError("change set did not reach a terminal status")
+def plan_bootstrap(r:Runner,template:str)->dict:
+ require_expected_identity(r); name=change_name(BOOTSTRAP_STACK)
+ run_json(r,aws("cloudformation","create-change-set","--stack-name",BOOTSTRAP_STACK,"--change-set-name",name,"--change-set-type","CREATE","--template-body",f"file://{template}"))
+ for _ in range(12):
+  result=run_json(r,aws("cloudformation","describe-change-set","--stack-name",BOOTSTRAP_STACK,"--change-set-name",name))
+  if result.get("Status") in {"CREATE_COMPLETE","FAILED"}:
+   print(json.dumps(result,sort_keys=True))
+   if result["Status"]=="FAILED": raise OperatorError("change set creation failed")
+   return result
+ raise OperatorError("change set did not reach a terminal status")
 def execute(r:Runner,arn:str,confirm:str,stack:str=APPLICATION_STACK)->None:
  if confirm!=EXPECTED_ACCOUNT: raise OperatorError("confirm the expected account exactly")
  require_expected_identity(r); d=run_json(r,stack_args(r,"describe-change-set","--change-set-name",arn))
  if d.get("ChangeSetArn")!=arn or d.get("StackName")!=stack or d.get("Status")!="CREATE_COMPLETE": raise OperatorError("refusing unexpected change set")
  p=r.run(stack_args(r,"execute-change-set","--change-set-name",arn));
+ if p.returncode: raise OperatorError(p.stderr)
+def execute_bootstrap(r:Runner,arn:str,confirm:str)->None:
+ if confirm!=EXPECTED_ACCOUNT: raise OperatorError("confirm the expected account exactly")
+ require_expected_identity(r); d=run_json(r,aws("cloudformation","describe-change-set","--change-set-name",arn))
+ if d.get("ChangeSetArn")!=arn or d.get("StackName")!=BOOTSTRAP_STACK or d.get("Status")!="CREATE_COMPLETE": raise OperatorError("refusing unexpected change set")
+ p=r.run(aws("cloudformation","execute-change-set","--change-set-name",arn))
  if p.returncode: raise OperatorError(p.stderr)
 def upload(r:Runner,file:str,key:str)->None:
  require_expected_identity(r); p=Path(file); digest=hashlib.sha256(p.read_bytes()).hexdigest(); size=str(p.stat().st_size); bucket=outputs(r)["ApplicationBucketName"]
@@ -66,7 +82,7 @@ def lifecycle(r:Runner, action:str, confirm:str)->None:
  if p.returncode: raise OperatorError(p.stderr)
  print("stop preserves EBS cost but removes availability" if action=="stop" else "start restores availability and EC2 cost")
 def deploy(r:Runner,key:str,sha:str,release_id:str,domain:str,email:str)->None:
- if not key.startswith("releases/") or ".." in key or len(sha)!=64 or len(release_id)!=40: raise OperatorError("invalid release deployment input")
+ if not key.startswith("releases/") or ".." in key or not re.fullmatch(r"[0-9a-f]{64}",sha) or not re.fullmatch(r"[0-9a-f]{40}",release_id) or not re.fullmatch(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+",domain) or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+",email): raise OperatorError("invalid release deployment input")
  require_expected_identity(r); o=outputs(r); document=o.get("DeployReleaseDocumentName",""); instance=o.get("ApplicationInstanceId","")
  if not document or not instance: raise OperatorError("required deployment outputs missing")
  params=json.dumps({"Bucket":[o["ApplicationBucketName"]],"ReleaseKey":[key],"ReleaseSha256":[sha],"ReleaseId":[release_id],"DomainName":[domain],"CertificateEmail":[email]})
@@ -95,8 +111,10 @@ def main(argv=None, runner:Runner|None=None)->int:
    if q.returncode:return q.returncode
    run_json(r,aws("cloudformation","validate-template","--template-body",f"file://{root/'infra/aws/phase2a/template.yaml'}")); return 0
   if a.cmd=="outputs": print(json.dumps(outputs(r),sort_keys=True)); return 0
-  if a.cmd.startswith("plan-"): plan(r,BOOTSTRAP_STACK if a.cmd=="plan-bootstrap" else APPLICATION_STACK,str(Path(__file__).resolve().parents[1]/("infra/aws/bootstrap/template.yaml" if a.cmd=="plan-bootstrap" else "infra/aws/phase2a/template.yaml"))); return 0
-  if a.cmd.startswith("execute-"): execute(r,a.change_set_arn,a.confirm_account,BOOTSTRAP_STACK if a.cmd=="execute-bootstrap" else APPLICATION_STACK); return 0
+  if a.cmd=="plan-bootstrap": plan_bootstrap(r,str(Path(__file__).resolve().parents[1]/"infra/aws/bootstrap/template.yaml")); return 0
+  if a.cmd=="plan-stack": plan(r,APPLICATION_STACK,str(Path(__file__).resolve().parents[1]/"infra/aws/phase2a/template.yaml")); return 0
+  if a.cmd=="execute-bootstrap": execute_bootstrap(r,a.change_set_arn,a.confirm_account); return 0
+  if a.cmd=="execute-change-set": execute(r,a.change_set_arn,a.confirm_account); return 0
   if a.cmd.startswith("upload-"):
    if not a.key.startswith(a.prefix) or ".." in a.key: raise OperatorError("unsafe artifact key")
    upload(r,a.file,a.key); return 0
