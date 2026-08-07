@@ -12,20 +12,24 @@ def safe_error(error, secrets):
  text=str(error)
  for secret in secrets: text=text.replace(secret,"[REDACTED]")
  return text
-def request_text(url, *, headers=None, body=None, secrets=()):
+def request_text(url, *, method="GET", headers=None, body=None, secrets=()):
  try:
-  request=Request(url,data=body,headers=headers or {})
+  request=Request(url,data=body,headers=headers or {},method=method)
   with urlopen(request,timeout=15,context=ssl.create_default_context()) as response:return response.read().decode("utf-8")
  except Exception as error: raise ValueError(safe_error(error,secrets)) from None
 def request_json(url, **kwargs): return json.loads(request_text(url,**kwargs))
 def login(base_url, credential, secrets):
- return request_json(base_url+"/api/auth/smoke-login",headers={"Authorization":"Bearer "+credential},secrets=secrets)
+ request_json(base_url+"/api/session/provider-key",headers={"Authorization":"Bearer "+credential},secrets=secrets)
+ return {"token":credential}
 def provider_key(base_url, session, secret, secrets):
- return request_json(base_url+"/api/provider-key",headers={"Authorization":"Bearer "+session},body=json.dumps({"key":secret}).encode(),secrets=secrets)
+ return request_json(base_url+"/api/session/provider-key",method="PUT",headers={"Authorization":"Bearer "+session,"Content-Type":"application/json"},body=json.dumps({"api_key":secret}).encode(),secrets=secrets)
 def owner_isolation(base_url, first, second, secrets):
- a=request_json(base_url+"/api/ops/owner-smoke",headers={"Authorization":"Bearer "+first},secrets=secrets)
- b=request_json(base_url+"/api/ops/owner-smoke",headers={"Authorization":"Bearer "+second},secrets=secrets)
- if a.get("owner_id")==b.get("owner_id"): raise ValueError("owner isolation failed")
+ a=request_json(base_url+"/api/threads",method="POST",headers={"Authorization":"Bearer "+first},body=b"{}",secrets=secrets)
+ b=request_json(base_url+"/api/threads",method="POST",headers={"Authorization":"Bearer "+second},body=b"{}",secrets=secrets)
+ if a.get("thread_id")==b.get("thread_id"): raise ValueError("owner isolation failed")
+ try: request_json(base_url+"/api/threads/"+a["thread_id"]+"/state",headers={"Authorization":"Bearer "+second},secrets=secrets)
+ except ValueError: return
+ raise ValueError("cross-owner state request was not denied")
 def check_https(base_url):
  request=Request(base_url,method="HEAD")
  with urlopen(request,timeout=15,context=ssl.create_default_context()) as response:
