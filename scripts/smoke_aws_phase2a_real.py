@@ -31,11 +31,11 @@ def provider_key(base_url, session, secret, secrets, session_id=""):
  result=request_json(base_url+"/api/session/provider-key",method="PUT",headers={**auth_headers(session,session_id),"Content-Type":"application/json"},body=json.dumps({"api_key":secret}).encode(),secrets=secrets)
  if result.get("configured") is not True: raise ValueError("provider key was not configured")
  return result
-def owner_isolation(base_url, first, second, secrets):
- a=request_json(base_url+"/api/threads",method="POST",headers={"Authorization":"Bearer "+first},body=b"{}",secrets=secrets)
- b=request_json(base_url+"/api/threads",method="POST",headers={"Authorization":"Bearer "+second},body=b"{}",secrets=secrets)
+def owner_isolation(base_url, first, second, secrets, first_session="", second_session=""):
+ a=request_json(base_url+"/api/threads",method="POST",headers=auth_headers(first,first_session),body=b"{}",secrets=secrets)
+ b=request_json(base_url+"/api/threads",method="POST",headers=auth_headers(second,second_session),body=b"{}",secrets=secrets)
  if a.get("thread_id")==b.get("thread_id"): raise ValueError("owner isolation failed")
- try: request_json(base_url+"/api/threads/"+a["thread_id"]+"/state",headers={"Authorization":"Bearer "+second},secrets=secrets)
+ try: request_json(base_url+"/api/threads/"+a["thread_id"]+"/state",headers=auth_headers(second,second_session),secrets=secrets)
  except RequestError as error:
   if error.status==404: return
   raise
@@ -46,7 +46,10 @@ def check_https(base_url):
   if response.geturl().rstrip("/")!=base_url.rstrip("/"): raise ValueError("HTTPS target redirected unexpectedly")
 def check_redirect(base_url):
  request=Request("http://epiagent.org",method="HEAD")
- try: build_opener(NoRedirect).open(request,timeout=15)
+ try:
+  response=build_opener(NoRedirect).open(request,timeout=15)
+  status=getattr(response,"status",response.getcode()); location=response.headers.get("Location","")
+  if status not in {301,302,307,308} or location.rstrip("/")!=base_url.rstrip("/"): raise ValueError("HTTP does not redirect to canonical HTTPS URL")
  except Exception as error:
   location=getattr(error,"headers",{}).get("Location","")
   if location.rstrip("/")!=base_url.rstrip("/"): raise ValueError("HTTP does not redirect to canonical HTTPS URL")
@@ -74,7 +77,7 @@ def run(args):
    elif phase=="http_redirect": check_redirect(args.base_url)
    elif phase=="cognito_login": sessions=[login(args.base_url,secrets[0],secrets),login(args.base_url,secrets[1],secrets)]
    elif phase=="provider_key": provider_key(args.base_url,sessions[0].get("token",""),provider_secret,secrets,sessions[0]["session_id"])
-   elif phase=="owner_isolation": owner_isolation(args.base_url,sessions[0].get("token",""),sessions[1].get("token",""),secrets)
+   elif phase=="owner_isolation": owner_isolation(args.base_url,sessions[0].get("token",""),sessions[1].get("token",""),secrets,sessions[0]["session_id"],sessions[1]["session_id"])
    elif phase in {"restart_persistence","stop_start"}:
     if not args.instance_id: raise ValueError("--instance-id is required for disruptive phase")
     raise ValueError("instance "+args.instance_id+" requires separate confirmed operator action")
