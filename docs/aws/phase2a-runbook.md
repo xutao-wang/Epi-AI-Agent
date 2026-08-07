@@ -26,11 +26,13 @@ never place provider keys on the command line.
 ## Beginner operator sequence
 
 For the one-time bootstrap, an MFA-protected administrator uses **CloudFormation
-→ Create stack → With new resources → Upload a template file**, selects
-`infra/aws/bootstrap/template.yaml`, names it `epi-agent-bootstrap`, enters
-`DeveloperGroupName=Developer`, acknowledges `CAPABILITY_NAMED_IAM`, reviews the
-IAM role, policy, and permissions-boundary resources, and only then creates the
-stack. The pinned developer CLI must not perform this administrator action.
+→ Change sets → Create change set → For new stack**, uploads
+`infra/aws/bootstrap/template.yaml`, sets stack name `epi-agent-bootstrap`,
+type `CREATE`, `DeveloperGroupName=Developer`, and `CAPABILITY_NAMED_IAM`.
+Create the change set, inspect every Add/Modify/Replace IAM role, policy, and
+permissions-boundary action, then **stop for explicit approval**. Execute that
+reviewed change set in the Console only after approval. The pinned developer
+CLI must not perform this administrator action.
 
 ```sh
 HOSTED_ZONE_ID="Z123456789EXAMPLE"
@@ -67,7 +69,7 @@ CloudWatch logs/alarms, SNS, Cognito, Route 53 hosted-zone and DNS-query charges
 ## Exact reviewed actions
 
 ```sh
-python scripts/aws_phase2a.py execute-bootstrap CHANGE_SET_ARN --confirm-account 641379499556
+# Administrator-only Console action: the pinned xutao-dev CLI cannot bootstrap.
 python scripts/aws_phase2a.py execute-change-set CHANGE_SET_ARN --confirm-account 641379499556
 python scripts/aws_phase2a.py upload-release dist/aws/epi-agent-SHA.tar.gz releases/SHA.tar.gz
 python scripts/aws_phase2a.py upload-study study.tar.gz studies/STUDY.tar.gz
