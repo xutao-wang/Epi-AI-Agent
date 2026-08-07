@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from jwt.exceptions import InvalidTokenError
 
 from api.auth import AuthenticatedUser, LOCAL_SESSION_ID, RequestIdentity
+from api.deployment import DeploymentState
 from api.provider_credentials import ProviderCredentialStore
 from api.runtime import ThreadAlreadyRunningError, ThreadAwaitingReviewError
 from api.schemas import (
@@ -50,6 +51,9 @@ class _FakeRuntime:
         self.state_provider_keys: list[str | None] = []
         self.submitted_provider_keys: list[str] = []
         self.resumed_provider_keys: list[str] = []
+
+    def active_run_count(self) -> int:
+        return 0
 
     def release_session(self, owner_user_id: str, session_id: str) -> None:
         self.released_sessions.append((owner_user_id, session_id))
@@ -547,6 +551,82 @@ def test_health_route_returns_ok_without_touching_runtime() -> None:
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
     assert runtime.created_threads == 0
+
+
+def test_deployment_status_routes_and_maintenance_drain(tmp_path: Path) -> None:
+    sentinel = tmp_path / "maintenance"
+    deployment_state = DeploymentState(
+        maintenance_file=sentinel,
+        release_id="release-1",
+    )
+    runtime = _FakeRuntime()
+    anonymous_client = TestClient(
+        create_app(runtime=runtime, deployment_state=deployment_state),
+    )
+    client = TestClient(
+        create_app(runtime=runtime, deployment_state=deployment_state),
+        headers={"X-Epi-Session-ID": LOCAL_SESSION_ID},
+    )
+
+    assert anonymous_client.get("/api/health").json() == {"status": "ok"}
+    assert anonymous_client.get("/api/readiness").json() == {
+        "status": "ready",
+        "release_id": "release-1",
+    }
+    assert anonymous_client.get("/api/ops/deployment-status").json() == {
+        "status": "ready",
+        "release_id": "release-1",
+        "maintenance": False,
+        "active_runs": 0,
+    }
+
+    sentinel.touch()
+
+    readiness = anonymous_client.get("/api/readiness")
+    operations = anonymous_client.get("/api/ops/deployment-status")
+    history = client.get("/api/conversations")
+    created = client.post("/api/threads")
+
+    assert readiness.status_code == 503
+    assert readiness.json() == {"status": "maintenance", "release_id": "release-1"}
+    assert operations.status_code == 200
+    assert operations.json() == {
+        "status": "maintenance",
+        "release_id": "release-1",
+        "maintenance": True,
+        "active_runs": 0,
+    }
+    assert history.status_code == 200
+    assert created.status_code == 503
+    assert created.json() == {"detail": {"code": "DEPLOYMENT_MAINTENANCE"}}
+    assert created.headers["Retry-After"] == "30"
+
+
+def test_maintenance_rejects_unsafe_requests_before_credential_pruning(
+    tmp_path: Path,
+) -> None:
+    class _FailingPruneCredentialStore(ProviderCredentialStore):
+        def prune_expired(self) -> int:
+            raise AssertionError("credential pruning should not run")
+
+    sentinel = tmp_path / "maintenance"
+    sentinel.touch()
+    client = TestClient(
+        create_app(
+            runtime=_FakeRuntime(),
+            credential_store=_FailingPruneCredentialStore(),
+            deployment_state=DeploymentState(
+                maintenance_file=sentinel,
+                release_id="release-1",
+            ),
+        ),
+        headers={"X-Epi-Session-ID": LOCAL_SESSION_ID},
+        raise_server_exceptions=False,
+    )
+
+    response = client.post("/api/threads")
+
+    assert response.status_code == 503
 
 
 def test_static_frontend_serves_index_and_assets(tmp_path: Path) -> None:

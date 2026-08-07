@@ -32,6 +32,16 @@ class ProviderKeyStatus(BaseModel):
     configured: bool
 
 
+class ReadinessStatus(BaseModel):
+    status: Literal["ready", "maintenance"]
+    release_id: str
+
+
+class DeploymentStatus(ReadinessStatus):
+    maintenance: bool
+    active_runs: int
+
+
 class RunStatus(BaseModel):
     state: RunState
     steps: int = 0
@@ -90,6 +100,7 @@ class ModelOption(BaseModel):
     id: str
     label: str
     reasoning_tier: Literal["standard", "low", "medium", "high"]
+    supports_sampling_controls: bool
     summary: str
     initial_output_tokens: int = Field(gt=0)
     automatic_output_token_ceiling: int = Field(gt=0)

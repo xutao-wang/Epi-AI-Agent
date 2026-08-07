@@ -27,6 +27,7 @@ from openai import (
 from api.runtime import (
     ApiGraphRunner,
     ReportAgentApiRuntime,
+    ThreadRuntime,
     ThreadAwaitingReviewError,
     ThreadAlreadyRunningError,
     _dataset_summary,
@@ -50,6 +51,7 @@ from graph.conversation_events import (
 )
 from utils.attachment_artifacts import AttachmentError, LocalAttachmentStore
 from utils.dataset_artifacts import persist_dataset_artifact
+from utils.model_runtime_profiles import model_runtime_profile
 
 
 _DEFAULT_RUNTIME_SETTINGS = {
@@ -93,6 +95,27 @@ def test_runtime_capabilities_include_study_design() -> None:
     )
 
     assert capabilities.study_design.status == "available"
+
+
+def test_model_profiles_declare_sampling_control_support() -> None:
+    assert model_runtime_profile("gpt-5.4").supports_sampling_controls is True
+    for model_id in (
+        "gpt-5.6-luna",
+        "gpt-5.6-terra",
+        "gpt-5.6-sol",
+        "gpt5.6-Luna-Light",
+    ):
+        assert (
+            model_runtime_profile(model_id).supports_sampling_controls
+            is False
+        )
+
+    assert (
+        model_runtime_profile("gpt-5.6-sol").descriptor()[
+            "supports_sampling_controls"
+        ]
+        is False
+    )
 
 
 def test_dataset_summary_prefers_provenance_title_over_legacy_description() -> None:
@@ -501,6 +524,37 @@ def test_runtime_create_thread_stores_default_settings() -> None:
     assert state.runtime_settings_locked is False
 
 
+def test_active_run_count_ignores_idle_and_stale_threads() -> None:
+    class _StatusRunner:
+        def __init__(self, state: str | None = None, *, stale: bool = False) -> None:
+            self.state = state
+            self.stale = stale
+
+        def status(self, _thread_id: str) -> dict[str, str]:
+            if self.stale:
+                raise RuntimeError("stale runner")
+            return {"state": self.state or "idle"}
+
+    runtime = _runtime(_RuntimeFakeGraph(None))
+    settings = runtime._threads[("local-user", "thread-1")].settings
+    runtime._threads = {
+        ("owner-a", "running-thread"): ThreadRuntime(
+            settings=settings,
+            runner=_StatusRunner("running"),
+        ),
+        ("owner-b", "idle-thread"): ThreadRuntime(
+            settings=settings,
+            runner=_StatusRunner("idle"),
+        ),
+        ("owner-c", "stale-thread"): ThreadRuntime(
+            settings=settings,
+            runner=_StatusRunner(stale=True),
+        ),
+    }
+
+    assert runtime.active_run_count() == 1
+
+
 def test_runtime_reopens_saved_thread_with_its_persisted_model(tmp_path: Path) -> None:
     history_store = ConversationHistoryStore(tmp_path / "agent_memory.db")
     history_store.create("local-user", "saved-thread", model_name="gpt-5.6-luna")
@@ -770,10 +824,31 @@ def test_runtime_create_thread_validates_custom_openai_model() -> None:
 
     assert state.runtime_settings is not None
     assert state.runtime_settings.model_name == "gpt-5.6-luna"
-    assert state.runtime_settings.temperature == 0.2
-    assert state.runtime_settings.top_p == 0.8
+    assert state.runtime_settings.temperature is None
+    assert state.runtime_settings.top_p is None
     assert state.runtime_settings.max_steps == 6
     assert state.runtime_settings.timeout_seconds == 120
+
+
+def test_runtime_preserves_supported_gpt54_sampling_settings() -> None:
+    runtime = ReportAgentApiRuntime(
+        graph_factory=_RecordingGraphFactory(),
+        default_runtime_settings=_DEFAULT_RUNTIME_SETTINGS,
+        models=["gpt-5.4", "gpt-5.6-luna"],
+    )
+
+    thread_id = runtime.create_thread(
+        {
+            "model_name": "gpt-5.4",
+            "temperature": 0.2,
+            "top_p": 0.8,
+        }
+    )
+    state = runtime.state(thread_id)
+
+    assert state.runtime_settings is not None
+    assert state.runtime_settings.temperature == 0.2
+    assert state.runtime_settings.top_p == 0.8
 
 
 def test_runtime_rejects_unsupported_model() -> None:
@@ -1074,6 +1149,8 @@ def test_runtime_graph_factory_receives_selected_settings() -> None:
         {
             **_DEFAULT_RUNTIME_SETTINGS,
             "model_name": "gpt-5.6-luna",
+            "temperature": None,
+            "top_p": None,
             "max_steps": 6,
         }
     ]
@@ -2937,6 +3014,8 @@ def test_runtime_options_expose_ordered_model_descriptors() -> None:
     assert options.models[-1].label == "gpt-5.6-sol (Medium)"
     assert options.models[-1].automatic_output_cost == "$1.50"
     assert options.models[-1].incremental_output_cost == "$0.75"
+    gpt56 = next(model for model in options.models if model.id == "gpt-5.6-luna")
+    assert gpt56.supports_sampling_controls is False
 
 
 def test_selected_model_supplies_locked_workflow_deadline() -> None:

@@ -1,0 +1,35 @@
+[Unit]
+Description=Epi-Agent FastAPI service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=epi-agent-web
+Group=epi-agent-web
+EnvironmentFile=/etc/epi-agent/app.env
+WorkingDirectory=/opt/epi-agent/current
+ExecStart=/opt/epi-agent/current/.venv/bin/python -m uvicorn api.server:app --host 127.0.0.1 --port 8000 --workers 1
+StandardOutput=append:/var/log/epi-agent/application.log
+StandardError=append:/var/log/epi-agent/application.log
+Restart=on-failure
+RestartSec=5s
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadOnlyPaths=/opt/epi-agent/current
+ReadWritePaths=/srv/epi-agent/runtime /srv/epi-agent/study_data /run/epi-agent
+
+[Install]
+WantedBy=multi-user.target

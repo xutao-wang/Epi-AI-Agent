@@ -17,6 +17,7 @@ frontend/vite.config.js
 frontend/vite.config.d.ts
 
 # Local-only development and generated content.
+/dist/aws/
 scripts/
 tests/
 runtime/
@@ -44,4 +45,3 @@ study_data/
 # Private validation and generated benchmark material.
 
 db_rag/benchmark/
-

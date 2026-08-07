@@ -197,6 +197,7 @@ function modelOption(
     id,
     label,
     reasoning_tier: "standard",
+    supports_sampling_controls: true,
     summary: "Reliable general-purpose default.",
     initial_output_tokens: 8_192,
     automatic_output_token_ceiling: 16_384,
@@ -227,6 +228,7 @@ const runtimeOptions: RuntimeOptions = {
     modelOption("gpt-5.4-mini", "gpt-5.4-mini"),
     modelOption("gpt-5.6-sol", "gpt-5.6-sol (Medium)", {
       reasoning_tier: "medium",
+      supports_sampling_controls: false,
       summary: "Deepest and highest-cost tier for complex analysis.",
       initial_output_tokens: 25_000,
       automatic_output_token_ceiling: 50_000,

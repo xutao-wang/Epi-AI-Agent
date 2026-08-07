@@ -5,6 +5,7 @@ import json
 import sqlite3
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -24,9 +25,109 @@ from api.auth import (
     LocalTokenVerifier,
     RequestIdentity,
 )
+from api.deployment import python_worker_launcher
 from utils.attachment_artifacts import LocalAttachmentStore
 from utils.attachment_readers import AttachmentReaderService
 from utils.model_runtime_profiles import model_runtime_profile
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        ("", None),
+        (
+            "/usr/local/libexec/epi-agent-python-worker",
+            (
+                "/usr/bin/sudo",
+                "-n",
+                "/usr/local/libexec/epi-agent-python-worker",
+            ),
+        ),
+    ],
+)
+def test_python_worker_launcher_reads_the_hosted_launcher_setting(
+    configured: str,
+    expected: tuple[str, ...] | None,
+) -> None:
+    assert python_worker_launcher(
+        {"REPORT_AGENT_PYTHON_WORKER_LAUNCHER": configured}
+    ) == expected
+
+
+@pytest.mark.parametrize(
+    "configured",
+    [
+        "relative-launcher",
+        "/usr/local/worker\n",
+        "/usr/local/worker\x00",
+        "/usr/local/libexec/alternate-worker",
+        "/usr/local/libexec/epi-agent-python-worker --fixed-option",
+        "/usr/bin/sudo -n /usr/local/libexec/epi-agent-python-worker",
+    ],
+)
+def test_python_worker_launcher_rejects_unsafe_hosted_configuration(
+    configured: str,
+) -> None:
+    with pytest.raises(ValueError):
+        python_worker_launcher(
+            {"REPORT_AGENT_PYTHON_WORKER_LAUNCHER": configured}
+        )
+
+
+def test_application_routes_hosted_python_through_the_fixed_launcher(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import api.app as app_module
+    from api.runtime import GraphBuildContext
+    from utils.user_storage import UserStorageLayout
+
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(app_module, "build_openai_llm", lambda **_kwargs: "llm")
+    monkeypatch.setattr(
+        app_module,
+        "build_graph",
+        lambda _llm, **kwargs: captured.update(kwargs) or "graph",
+    )
+    application = app_module.build_application(
+        environ={
+            "REPORT_AGENT_AUTH_MODE": "cognito",
+            "REPORT_AGENT_AWS_REGION": "us-east-1",
+            "REPORT_AGENT_COGNITO_USER_POOL_ID": "us-east-1_example",
+            "REPORT_AGENT_COGNITO_APP_CLIENT_ID": "client-123",
+            "REPORT_AGENT_COGNITO_LOGOUT_ENDPOINT": "https://auth.example.test/logout",
+            "REPORT_AGENT_AUTH_REDIRECT_URI": "https://example.test/callback",
+            "REPORT_AGENT_AUTH_POST_LOGOUT_REDIRECT_URI": "https://example.test/",
+            "REPORT_AGENT_RUNTIME_ROOT": str(tmp_path / "runtime"),
+            "REPORT_AGENT_STUDY_ROOT": str(tmp_path / "studies"),
+            "REPORT_AGENT_ALLOWED_MODELS": "gpt-5.4",
+            "OPENAI_MODEL": "gpt-5.4",
+            "REPORT_AGENT_TITLE_MODEL": "gpt-5.4",
+            "REPORT_AGENT_PYTHON_WORKER_LAUNCHER": (
+                "/usr/local/libexec/epi-agent-python-worker"
+            ),
+        }
+    )
+    storage = UserStorageLayout(tmp_path / "runtime").thread("user-a", "thread-a")
+
+    application.state.report_agent_runtime.graph_factory(
+        SimpleNamespace(model_name="gpt-5.4", temperature=None, top_p=None),
+        GraphBuildContext(
+            owner_user_id="user-a",
+            session_id="11111111-1111-4111-8111-111111111111",
+            thread_id="thread-a",
+            provider_api_key="session-key",
+            storage=storage,
+        ),
+    )
+
+    python_runtime = captured["python_runtime"]
+    assert python_runtime._runtime_root == storage.execution.resolve()
+    assert python_runtime._worker_launcher == (
+        "/usr/bin/sudo",
+        "-n",
+        "/usr/local/libexec/epi-agent-python-worker",
+    )
 
 
 def test_startup_claims_legacy_history_only_in_local_mode(tmp_path: Path) -> None:

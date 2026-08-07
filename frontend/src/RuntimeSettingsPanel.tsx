@@ -1,4 +1,5 @@
 import type { RuntimeOptions, RuntimeSettings } from "./types";
+import { useEffect, useState } from "react";
 
 interface Props {
   locked: boolean;
@@ -34,11 +35,18 @@ export default function RuntimeSettingsPanel({
   settings,
 }: Props) {
   const modelOptions = options?.models ?? [];
-  const modelValue = modelOptions.some(
-    (model) => model.id === settings.model_name,
-  )
-    ? settings.model_name
-    : "";
+  const [selectedModelName, setSelectedModelName] = useState(
+    settings.model_name,
+  );
+  useEffect(() => {
+    setSelectedModelName(settings.model_name);
+  }, [settings.model_name]);
+  const selectedModel = modelOptions.find(
+    (model) => model.id === selectedModelName,
+  );
+  const modelValue = selectedModel ? selectedModelName : "";
+  const supportsSamplingControls =
+    selectedModel?.supports_sampling_controls ?? false;
   const controlsDisabled = locked;
 
   function updateSettings(update: Partial<RuntimeSettings>) {
@@ -62,6 +70,17 @@ export default function RuntimeSettingsPanel({
     updateSettings({ [field]: parsed });
   }
 
+  function handleModelChange(modelName: string) {
+    const selected = modelOptions.find((model) => model.id === modelName);
+    setSelectedModelName(modelName);
+    updateSettings({
+      model_name: modelName,
+      ...(selected && !selected.supports_sampling_controls
+        ? { temperature: null, top_p: null }
+        : {}),
+    });
+  }
+
   return (
     <section className="runtime-settings-panel" aria-labelledby="runtime-settings-title">
       <h2 id="runtime-settings-title">Model Settings</h2>
@@ -73,7 +92,7 @@ export default function RuntimeSettingsPanel({
         <span>Model</span>
         <select
           disabled={controlsDisabled || modelOptions.length === 0}
-          onChange={(event) => updateSettings({ model_name: event.target.value })}
+          onChange={(event) => handleModelChange(event.target.value)}
           value={modelValue}
         >
           <option disabled value="">
@@ -87,7 +106,13 @@ export default function RuntimeSettingsPanel({
         </select>
       </label>
 
-      {Object.entries(numericFields).map(([field, label]) => (
+      {Object.entries(numericFields)
+        .filter(
+          ([field]) =>
+            supportsSamplingControls ||
+            (field !== "temperature" && field !== "top_p"),
+        )
+        .map(([field, label]) => (
         <label key={field}>
           <span>{label}</span>
           <input
@@ -100,7 +125,10 @@ export default function RuntimeSettingsPanel({
             value={numericValue(settings[field as NumericField])}
           />
         </label>
-      ))}
+        ))}
+      {!supportsSamplingControls ? (
+        <p>Sampling controls are unavailable for this model.</p>
+      ) : null}
 
       <dl className="settings-list">
         {options ? (
