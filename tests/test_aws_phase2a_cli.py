@@ -36,7 +36,7 @@ def test_bootstrap_plan_is_direct_and_never_executes():
 def test_application_plan_resolves_execution_role_and_polls():
  s=_source(); assert "role=bootstrap_role(r)" in s and "for _ in range(12)" in s
 def test_execute_change_set_rechecks_exact_arn_stack_and_status():
- s=_source(); assert 'd.get("ChangeSetArn")!=arn' in s and 'd.get("Status")!="CREATE_COMPLETE"' in s
+ s=_source(); assert 'd.get("ChangeSetId",d.get("ChangeSetArn"))!=arn' in s and 'd.get("Status")!="CREATE_COMPLETE"' in s
 def test_validate_runs_lint_before_aws_validation():
  s=_source(); assert s.index('"cfn-lint"') < s.index('"validate-template"')
 def test_upload_enforces_release_and_study_prefixes():
