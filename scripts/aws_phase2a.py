@@ -38,7 +38,7 @@ def change_name(stack:str)->str:return f"epi-agent-{stack}-plan-{uuid.uuid4().he
 def plan(r:Runner,stack:str,template:str, parameters:list[str]|None=None)->dict:
  require_expected_identity(r); role=bootstrap_role(r); name=change_name(stack)
  probe=r.run(aws("cloudformation","describe-stacks","--stack-name",stack))
- if probe.returncode and "does not exist" not in (probe.stderr or "").lower() and "validationerror" not in (probe.stderr or "").lower(): raise OperatorError(probe.stderr or "unable to describe stack")
+ if probe.returncode and ("does not exist" not in (probe.stderr or "").lower() or "validationerror" not in (probe.stderr or "").lower()): raise OperatorError(probe.stderr or "unable to describe stack")
  exists=probe.returncode==0
  extra=["--parameters",*parameters] if parameters else []
  run_json(r,aws("cloudformation","create-change-set","--stack-name",stack,"--change-set-name",name,"--change-set-type","UPDATE" if exists else "CREATE","--template-body",f"file://{template}","--role-arn",role,"--capabilities","CAPABILITY_NAMED_IAM",*extra))

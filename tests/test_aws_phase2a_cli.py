@@ -83,3 +83,19 @@ def test_deploy_retries_transient_invocation_then_succeeds(monkeypatch):
  monkeypatch.setattr(cli.time,"sleep",lambda seconds:sleeps.append(seconds))
  cli.deploy(SequenceRunner(),"releases/a.tgz","a"*64,"b"*40,"epiagent.org","ops@example.org")
  assert len(sleeps)==2
+
+def test_plan_rejects_access_denied_before_change_set(monkeypatch):
+ import subprocess, pytest
+ class Denied:
+  def __init__(self): self.calls=[]
+  def run(self,argv,*,capture_output=True):
+   self.calls.append(argv)
+   if "get-caller-identity" in argv:return subprocess.CompletedProcess(argv,0,'{"Account":"641379499556","Arn":"arn:aws:iam::641379499556:user/x"}',"")
+   if "describe-stacks" in argv and "epi-agent-bootstrap" in argv:return subprocess.CompletedProcess(argv,0,'{"Stacks":[{"Outputs":[{"OutputKey":"CloudFormationExecutionRoleArn","OutputValue":"r"}]}]}',"")
+   return subprocess.CompletedProcess(argv,255,"","AccessDenied")
+ r=Denied()
+ with pytest.raises(cli.OperatorError): cli.plan(r,cli.APPLICATION_STACK,"template")
+ assert not any("create-change-set" in call for call in r.calls)
+
+def test_plan_requires_validation_error_and_nonexistence_phrase():
+ s=_source(); assert '"does not exist" not in (probe.stderr or "").lower() or "validationerror" not in (probe.stderr or "").lower()' in s
