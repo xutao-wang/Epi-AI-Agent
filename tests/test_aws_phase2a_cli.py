@@ -67,3 +67,19 @@ def test_ssm_poll_contract_retries_before_terminal_failure():
  s=_source(); assert 'for _ in range(20)' in s and 'time.sleep(POLL_INTERVAL_SECONDS)' in s and '"TimedOut","Cancelled"' in s
 def test_change_set_poll_contract_sleeps_and_never_executes():
  s=_source(); section=s[s.index("def plan("):s.index("def plan_bootstrap")]; assert 'time.sleep(POLL_INTERVAL_SECONDS)' in section and 'execute-change-set' not in section
+
+def test_deploy_retries_transient_invocation_then_succeeds(monkeypatch):
+ import subprocess
+ calls=[]; sleeps=[]
+ class SequenceRunner:
+  def run(self,argv,*,capture_output=True):
+   calls.append(argv)
+   if "get-caller-identity" in argv: return subprocess.CompletedProcess(argv,0,'{"Account":"641379499556","Arn":"arn:aws:iam::641379499556:user/x"}',"")
+   if "send-command" in argv: return subprocess.CompletedProcess(argv,0,'{"Command":{"CommandId":"c"}}',"")
+   if sum("get-command-invocation" in x for x in calls)==1: return subprocess.CompletedProcess(argv,255,"","InvocationDoesNotExist")
+   if sum("get-command-invocation" in x for x in calls)==2: return subprocess.CompletedProcess(argv,0,'{"Status":"InProgress"}',"")
+   return subprocess.CompletedProcess(argv,0,'{"Status":"Success"}',"")
+ monkeypatch.setattr(cli,"outputs",lambda r:{"ApplicationBucketName":"b","DeployReleaseDocumentName":"d","ApplicationInstanceId":"i"})
+ monkeypatch.setattr(cli.time,"sleep",lambda seconds:sleeps.append(seconds))
+ cli.deploy(SequenceRunner(),"releases/a.tgz","a"*64,"b"*40,"epiagent.org","ops@example.org")
+ assert len(sleeps)==2

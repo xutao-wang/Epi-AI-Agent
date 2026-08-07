@@ -92,7 +92,11 @@ def deploy(r:Runner,key:str,sha:str,release_id:str,domain:str,email:str)->None:
  params=json.dumps({"Bucket":[o["ApplicationBucketName"]],"ReleaseKey":[key],"ReleaseSha256":[sha],"ReleaseId":[release_id],"DomainName":[domain],"CertificateEmail":[email]})
  sent=run_json(r,aws("ssm","send-command","--document-name",document,"--instance-ids",instance,"--parameters",params)); command=sent["Command"]["CommandId"]
  for _ in range(20):
-  result=run_json(r,aws("ssm","get-command-invocation","--command-id",command,"--instance-id",instance)); status=result.get("Status")
+  try: result=run_json(r,aws("ssm","get-command-invocation","--command-id",command,"--instance-id",instance))
+  except OperatorError as error:
+   if "InvocationDoesNotExist" in str(error): time.sleep(POLL_INTERVAL_SECONDS); continue
+   raise
+  status=result.get("Status")
   if status=="Success": return
   if status in {"Failed","TimedOut","Cancelled"}: raise OperatorError("deployment command did not succeed")
   time.sleep(POLL_INTERVAL_SECONDS)
