@@ -15,6 +15,7 @@ Metadata:
           - InstanceType
           - RootVolumeGiB
           - CertificateEmail
+          - AlertEmail
       - Label:
           default: Retained data configuration
         Parameters:
@@ -48,6 +49,11 @@ Parameters:
     Type: String
     Description: Operator email address for the application's TLS certificate lifecycle.
     AllowedPattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
+  AlertEmail:
+    Type: String
+    Default: ''
+    Description: Optional email address for CloudWatch alarm notifications. Leave blank to create no email subscription.
+    AllowedPattern: '^$|^[^@\s]+@[^@\s]+\.[^@\s]+$'
   DataSnapshotId:
     Type: String
     Default: ''
@@ -59,6 +65,11 @@ Conditions:
     Fn::Not:
       - Fn::Equals:
           - Ref: DataSnapshotId
+          - ''
+  HasAlertEmail:
+    Fn::Not:
+      - Fn::Equals:
+          - Ref: AlertEmail
           - ''
 
 Resources:
@@ -298,6 +309,466 @@ Resources:
     Properties:
       Domain: !Sub epi-agent-phase2a-${AWS::AccountId}
       UserPoolId: !Ref ApplicationUserPool
+
+  ApplicationInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      PermissionsBoundary: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/epi-agent-workload-boundary
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: epi-agent-host-read-and-observe
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ReadReleaseAndStudyArtifacts
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource:
+                  - !Sub ${ApplicationBucket.Arn}/releases/*
+                  - !Sub ${ApplicationBucket.Arn}/studies/*
+              - Sid: ReadCloudWatchAgentConfiguration
+                Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !GetAtt CloudWatchAgentConfiguration.Arn
+              - Sid: PublishHostLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:DescribeLogStreams
+                  - logs:PutLogEvents
+                Resource: !Sub ${ApplicationLogGroup.Arn}:*
+              - Sid: PublishHostMetrics
+                Effect: Allow
+                Action: cloudwatch:PutMetricData
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace: CWAgent
+              - Sid: IdentifyAttachedDataVolume
+                Effect: Allow
+                Action: ec2:DescribeVolumes
+                Resource: '*'
+
+  ApplicationInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref ApplicationInstanceRole
+
+  ApplicationLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: /epi-agent/phase2a
+      RetentionInDays: 30
+
+  CloudWatchAgentConfiguration:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /epi-agent/phase2a/cloudwatch-agent
+      Type: String
+      Description: CloudWatch agent configuration for the Epi Agent application host.
+      Value:
+        Fn::Sub: |
+          {
+            "agent": {"metrics_collection_interval": 60, "run_as_user": "root"},
+            "logs": {
+              "logs_collected": {
+                "files": {
+                  "collect_list": [
+                    {"file_path": "/var/log/epi-agent/application.log", "log_group_name": "${ApplicationLogGroup}", "log_stream_name": "{instance_id}"},
+                    {"file_path": "/var/log/nginx/access.log", "log_group_name": "${ApplicationLogGroup}", "log_stream_name": "{instance_id}"},
+                    {"file_path": "/var/log/nginx/error.log", "log_group_name": "${ApplicationLogGroup}", "log_stream_name": "{instance_id}"}
+                  ]
+                }
+              }
+            },
+            "metrics": {
+              "append_dimensions": {"InstanceId": "${!aws:InstanceId}"},
+              "metrics_collected": {
+                "cpu": {"measurement": ["cpu_usage_idle", "cpu_usage_iowait"], "metrics_collection_interval": 60},
+                "mem": {"measurement": ["mem_used_percent"], "metrics_collection_interval": 60},
+                "disk": {"measurement": ["used_percent", "inodes_free"], "resources": ["/", "/srv/epi-agent"], "metrics_collection_interval": 60}
+              }
+            }
+          }
+
+  ApplicationInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+      InstanceType: t3.large
+      CreditSpecification:
+        CPUCredits: standard
+      IamInstanceProfile: !Ref ApplicationInstanceProfile
+      SubnetId: !Ref PublicSubnet
+      SecurityGroupIds:
+        - !Ref ApplicationSecurityGroup
+      DisableApiTermination: true
+      MetadataOptions:
+        HttpEndpoint: enabled
+        HttpTokens: required
+        HttpPutResponseHopLimit: 1
+        InstanceMetadataTags: disabled
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            DeleteOnTermination: true
+            Encrypted: true
+            VolumeSize: 30
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: epi-agent-phase2a
+        - Key: Project
+          Value: epi-agent
+        - Key: Environment
+          Value: phase2a
+      UserData:
+        Fn::Base64:
+          Fn::Sub: |
+            #!/bin/bash
+            set -Eeuo pipefail
+            expected_volume_id='${ApplicationDataVolume}'
+            signal_failure() {
+              /opt/aws/bin/cfn-signal -e 1 --stack '${AWS::StackName}' --resource ApplicationInstance --region '${AWS::Region}'
+            }
+            trap signal_failure ERR
+
+            dnf install -y awscli-2 amazon-cloudwatch-agent nginx certbot python3-certbot-nginx acl jq sudo uv
+            getent group epi-agent-web >/dev/null || groupadd --system epi-agent-web
+            id -u epi-agent-web >/dev/null 2>&1 || useradd --system --gid epi-agent-web --home-dir /nonexistent --shell /sbin/nologin epi-agent-web
+            getent group epi-agent-exec >/dev/null || groupadd --system epi-agent-exec
+            id -u epi-agent-exec >/dev/null 2>&1 || useradd --system --gid epi-agent-exec --home-dir /nonexistent --shell /sbin/nologin epi-agent-exec
+
+            volume_suffix=$(printf '%s' "$expected_volume_id" | sed 's/^vol-//')
+            data_device="/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_vol$volume_suffix"
+            for attempt in $(seq 1 60); do
+              [ -b "$data_device" ] && break
+              sleep 5
+            done
+            [ -b "$data_device" ] || { echo "expected EBS data volume was not attached" >&2; exit 1; }
+            resolved_device=$(readlink -f "$data_device")
+            [ -b "$resolved_device" ] || { echo "expected EBS data volume path is invalid" >&2; exit 1; }
+            if ! /usr/sbin/blkid "$resolved_device" >/dev/null 2>&1; then
+              /usr/sbin/mkfs.ext4 -F "$resolved_device"
+            fi
+            data_uuid=$(/usr/sbin/blkid -s UUID -o value "$resolved_device")
+            [ -n "$data_uuid" ] || { echo "data volume has no filesystem UUID" >&2; exit 1; }
+            install -d -m 0750 -o root -g epi-agent-web /srv/epi-agent
+            grep -q "UUID=$data_uuid /srv/epi-agent ext4" /etc/fstab || echo "UUID=$data_uuid /srv/epi-agent ext4 defaults,nofail 0 2" >> /etc/fstab
+            mountpoint -q /srv/epi-agent || mount /srv/epi-agent
+            install -d -m 0750 -o root -g epi-agent-web /srv/epi-agent/runtime /srv/epi-agent/study_data /srv/epi-agent/releases
+            install -d -m 0750 -o root -g epi-agent-web /opt/epi-agent /opt/epi-agent/releases /run/epi-agent /etc/epi-agent
+            install -d -m 0755 -o root -g root /var/www/certbot
+            install -d -m 0750 -o epi-agent-web -g epi-agent-web /var/log/epi-agent
+            install -m 0640 -o root -g epi-agent-web /dev/null /etc/epi-agent/app.env
+            domain_regex=$(printf '%s' '${DomainName}' | sed 's/\./\\\\./g')
+            cat > /etc/epi-agent/app.env <<EOF
+            REPORT_AGENT_AUTH_MODE=cognito
+            REPORT_AGENT_AWS_REGION=${AWS::Region}
+            REPORT_AGENT_COGNITO_USER_POOL_ID=${ApplicationUserPool}
+            REPORT_AGENT_COGNITO_APP_CLIENT_ID=${ApplicationUserPoolClient}
+            REPORT_AGENT_COGNITO_LOGOUT_ENDPOINT=https://${ApplicationUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com/logout
+            REPORT_AGENT_AUTH_REDIRECT_URI=https://${DomainName}/auth/callback
+            REPORT_AGENT_AUTH_POST_LOGOUT_REDIRECT_URI=https://${DomainName}/
+            REPORT_AGENT_CORS_ALLOW_ORIGIN_REGEX=^https://$domain_regex$
+            REPORT_AGENT_RUNTIME_ROOT=/srv/epi-agent/runtime
+            REPORT_AGENT_CHECKPOINT_DB_PATH=/srv/epi-agent/runtime/agent_memory_fastapi.db
+            REPORT_AGENT_STUDY_ROOT=/srv/epi-agent/study_data
+            REPORT_AGENT_STATIC_DIR=/opt/epi-agent/current/frontend/dist
+            REPORT_AGENT_WEB_CONCURRENCY=1
+            REPORT_AGENT_MAINTENANCE_FILE=/run/epi-agent/maintenance
+            REPORT_AGENT_PYTHON_WORKER_LAUNCHER=/usr/bin/sudo -n /usr/local/libexec/epi-agent-python-worker
+            EOF
+            chown root:epi-agent-web /etc/epi-agent/app.env
+            chmod 0640 /etc/epi-agent/app.env
+            systemctl enable nginx.service
+            systemctl start nginx.service
+            systemctl disable --now epi-agent.service || true
+            /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c ssm:${CloudWatchAgentConfiguration}
+            /opt/aws/bin/cfn-signal -e 0 --stack '${AWS::StackName}' --resource ApplicationInstance --region '${AWS::Region}'
+
+  ApplicationDataVolumeAttachment:
+    Type: AWS::EC2::VolumeAttachment
+    Properties:
+      Device: /dev/sdf
+      InstanceId: !Ref ApplicationInstance
+      VolumeId: !Ref ApplicationDataVolume
+
+  ApplicationElasticIpAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt ApplicationElasticIp.AllocationId
+      InstanceId: !Ref ApplicationInstance
+
+  EpiAgentDeployReleaseDocument:
+    Type: AWS::SSM::Document
+    Properties:
+      DocumentType: Command
+      DocumentFormat: YAML
+      Name: epi-agent-deploy-release
+      Content:
+        schemaVersion: '2.2'
+        description: Install a verified Epi Agent release without shell-evaluating operator input.
+        parameters:
+          Bucket:
+            type: String
+            allowedPattern: '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
+          ReleaseKey:
+            type: String
+            allowedPattern: '^releases/(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9._/-]*$'
+          ReleaseSha256:
+            type: String
+            allowedPattern: '^[0-9a-f]{64}$'
+          ReleaseId:
+            type: String
+            allowedPattern: '^[0-9a-f]{40}$'
+          DomainName:
+            type: String
+            allowedPattern: '^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))+$'
+          CertificateEmail:
+            type: String
+            allowedPattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
+        mainSteps:
+          - action: aws:runShellScript
+            name: installRelease
+            inputs:
+              interpolationType: ENV_VAR
+              runCommand:
+                - |
+                  set -Eeuo pipefail
+                  staging_dir=$(mktemp -d /opt/epi-agent/ssm-assets.XXXXXX)
+                  trap 'rm -rf -- "$staging_dir"' EXIT
+                  aws s3 cp "s3://$SSM_Bucket/$SSM_ReleaseKey" "$staging_dir/release.tar.gz"
+                  printf '%s  %s\n' "$SSM_ReleaseSha256" "$staging_dir/release.tar.gz" | sha256sum -c -
+                  /usr/bin/python3.12 - "$staging_dir/release.tar.gz" "$staging_dir/release" <<'PY'
+                  import tarfile
+                  import sys
+                  from pathlib import PurePosixPath
+                  archive, destination = sys.argv[1:]
+                  with tarfile.open(archive, "r:gz") as source:
+                      members = source.getmembers()
+                      for member in members:
+                          path = PurePosixPath(member.name)
+                          if member.issym() or member.islnk() or path.is_absolute() or ".." in path.parts:
+                              raise SystemExit("unsafe release archive")
+                  source.extractall(destination, members=members, filter="data")
+                  PY
+                  install -d -m 0755 /usr/local/libexec
+                  install -o root -g root -m 0750 "$staging_dir/release/deploy/aws/bin/install-release.sh" /usr/local/sbin/install-release.sh
+                  install -o root -g root -m 0750 "$staging_dir/release/deploy/aws/bin/install-study.sh" /usr/local/sbin/install-study.sh
+                  install -o root -g root -m 0750 "$staging_dir/release/deploy/aws/bin/epi-agent-python-worker" /usr/local/libexec/epi-agent-python-worker
+                  install -o root -g root -m 0644 "$staging_dir/release/deploy/aws/systemd/epi-agent.service" /etc/systemd/system/epi-agent.service
+                  install -o root -g root -m 0644 "$staging_dir/release/deploy/aws/systemd/epi-agent-certificate-renew.service" /etc/systemd/system/epi-agent-certificate-renew.service
+                  install -o root -g root -m 0644 "$staging_dir/release/deploy/aws/systemd/epi-agent-certificate-renew.timer" /etc/systemd/system/epi-agent-certificate-renew.timer
+                  install -o root -g root -m 0644 "$staging_dir/release/deploy/aws/nginx/epi-agent.conf" /etc/nginx/conf.d/epi-agent.conf
+                  install -o root -g root -m 0640 "$staging_dir/release/deploy/aws/env/app.env.example" /etc/epi-agent/app.env.example
+                  systemctl daemon-reload
+                  systemctl enable --now nginx.service epi-agent-certificate-renew.timer
+                  exec /usr/local/sbin/install-release.sh "$SSM_Bucket" "$SSM_ReleaseKey" "$SSM_ReleaseSha256" "$SSM_ReleaseId" "$SSM_DomainName" "$SSM_CertificateEmail"
+
+  ApplicationDataVolumeLifecycleRole:
+    Type: AWS::IAM::Role
+    Properties:
+      PermissionsBoundary: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/epi-agent-workload-boundary
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: dlm.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: manage-epi-agent-data-snapshots
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:CreateSnapshot
+                  - ec2:CreateSnapshots
+                  - ec2:DeleteSnapshot
+                  - ec2:DescribeVolumes
+                  - ec2:DescribeSnapshots
+                  - ec2:CreateTags
+                Resource: '*'
+
+  ApplicationDataVolumeLifecyclePolicy:
+    Type: AWS::DLM::LifecyclePolicy
+    Properties:
+      Description: Daily retained snapshots of the Epi Agent data volume.
+      State: ENABLED
+      ExecutionRoleArn: !GetAtt ApplicationDataVolumeLifecycleRole.Arn
+      PolicyDetails:
+        ResourceTypes:
+          - VOLUME
+        TargetTags:
+          - Key: Project
+            Value: epi-agent
+          - Key: Environment
+            Value: phase2a
+          - Key: Backup
+            Value: daily
+        Schedules:
+          - Name: daily-14-day-retention
+            CreateRule:
+              Interval: 24
+              IntervalUnit: HOURS
+              Times:
+                - '03:00'
+            RetainRule:
+              Count: 14
+            CopyTags: true
+            TagsToAdd:
+              - Key: Project
+                Value: epi-agent
+              - Key: Environment
+                Value: phase2a
+
+  ApplicationAlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: epi-agent-phase2a-alerts
+
+  ApplicationAlertEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlertEmail
+    Properties:
+      TopicArn: !Ref ApplicationAlertTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  ApplicationEc2StatusAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: epi-agent-ec2-status
+      AlarmDescription: EC2 status checks are failing.
+      Namespace: AWS/EC2
+      MetricName: StatusCheckFailed
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref ApplicationInstance
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: breaching
+      AlarmActions:
+        - !Ref ApplicationAlertTopic
+
+  ApplicationCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: epi-agent-cpu
+      Namespace: AWS/EC2
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref ApplicationInstance
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 80
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref ApplicationAlertTopic
+
+  ApplicationCpuCreditsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: epi-agent-cpu-credits
+      Namespace: AWS/EC2
+      MetricName: CPUCreditBalance
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref ApplicationInstance
+      Statistic: Minimum
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 24
+      ComparisonOperator: LessThanOrEqualToThreshold
+      TreatMissingData: breaching
+      AlarmActions:
+        - !Ref ApplicationAlertTopic
+
+  ApplicationMemoryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: epi-agent-memory
+      Namespace: CWAgent
+      MetricName: mem_used_percent
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref ApplicationInstance
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 85
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: breaching
+      AlarmActions:
+        - !Ref ApplicationAlertTopic
+
+  ApplicationDataDiskAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: epi-agent-data-disk
+      Namespace: CWAgent
+      MetricName: disk_used_percent
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref ApplicationInstance
+        - Name: path
+          Value: /srv/epi-agent
+        - Name: fstype
+          Value: ext4
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 85
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: breaching
+      AlarmActions:
+        - !Ref ApplicationAlertTopic
+
+  ApplicationServiceErrorMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref ApplicationLogGroup
+      FilterPattern: '?ERROR ?CRITICAL'
+      MetricTransformations:
+        - MetricNamespace: EpiAgent
+          MetricName: ServiceErrors
+          MetricValue: '1'
+
+  ApplicationServiceErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: epi-agent-service-errors
+      Namespace: EpiAgent
+      MetricName: ServiceErrors
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref ApplicationAlertTopic
 
   ApplicationElasticIp:
     Type: AWS::EC2::EIP

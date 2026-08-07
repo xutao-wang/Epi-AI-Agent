@@ -456,10 +456,12 @@ def test_phase2a_parameters_examples_and_pinned_linter_contract() -> None:
         "RootVolumeGiB",
         "DataVolumeGiB",
         "CertificateEmail",
+        "AlertEmail",
         "DataSnapshotId",
     }
     assert template["Conditions"] == {
-        "HasDataSnapshot": {"Fn::Not": [{"Fn::Equals": [{"Ref": "DataSnapshotId"}, ""]}]}
+        "HasDataSnapshot": {"Fn::Not": [{"Fn::Equals": [{"Ref": "DataSnapshotId"}, ""]}]},
+        "HasAlertEmail": {"Fn::Not": [{"Fn::Equals": [{"Ref": "AlertEmail"}, ""]}]},
     }
     assert template["Parameters"]["DataSnapshotId"]["Description"] == (
         "Optional EBS snapshot ID used only when creating the data volume. "
@@ -479,3 +481,137 @@ def test_phase2a_parameters_examples_and_pinned_linter_contract() -> None:
         {"ParameterKey": "DataVolumeGiB", "ParameterValue": "50"},
     ]
     assert PHASE2A_LINT_REQUIREMENTS.read_text(encoding="utf-8") == "cfn-lint==1.53.1\n"
+
+
+def test_phase2a_compute_uses_a_hardened_single_worker_with_retained_data() -> None:
+    template = phase2a_template()
+    resources = template["Resources"]
+    instance = resources["ApplicationInstance"]
+    properties = instance["Properties"]
+
+    assert instance["Type"] == "AWS::EC2::Instance"
+    assert properties["InstanceType"] == "t3.large"
+    assert properties["CreditSpecification"] == {"CPUCredits": "standard"}
+    assert properties["ImageId"] == "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}"
+    assert properties["DisableApiTermination"] is True
+    assert properties["MetadataOptions"] == {
+        "HttpEndpoint": "enabled",
+        "HttpTokens": "required",
+        "HttpPutResponseHopLimit": 1,
+        "InstanceMetadataTags": "disabled",
+    }
+    assert "KeyName" not in properties
+    assert properties["BlockDeviceMappings"] == [
+        {
+            "DeviceName": "/dev/xvda",
+            "Ebs": {
+                "DeleteOnTermination": True,
+                "Encrypted": True,
+                "VolumeSize": 30,
+                "VolumeType": "gp3",
+            },
+        }
+    ]
+    attachment = resources["ApplicationDataVolumeAttachment"]
+    assert attachment["Type"] == "AWS::EC2::VolumeAttachment"
+    assert attachment["Properties"] == {
+        "Device": "/dev/sdf",
+        "InstanceId": {"Ref": "ApplicationInstance"},
+        "VolumeId": {"Ref": "ApplicationDataVolume"},
+    }
+    assert resources["ApplicationElasticIpAssociation"]["Properties"] == {
+        "AllocationId": {"Fn::GetAtt": "ApplicationElasticIp.AllocationId"},
+        "InstanceId": {"Ref": "ApplicationInstance"},
+    }
+
+
+def test_phase2a_instance_iam_is_read_only_for_artifacts_and_observability() -> None:
+    resources = phase2a_template()["Resources"]
+    role = resources["ApplicationInstanceRole"]["Properties"]
+    assert role["ManagedPolicyArns"] == [
+        {"Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"}
+    ]
+    statements = role["Policies"][0]["PolicyDocument"]["Statement"]
+    allowed_actions = {
+        action
+        for statement in statements
+        for action in ([statement["Action"]] if isinstance(statement["Action"], str) else statement["Action"])
+    }
+    assert {"s3:GetObject", "s3:GetObjectVersion", "ssm:GetParameter", "logs:PutLogEvents", "cloudwatch:PutMetricData"} <= allowed_actions
+    assert all(not action.startswith(("s3:Put", "route53:", "cognito-idp:", "iam:")) for action in allowed_actions)
+    artifact_statement = next(statement for statement in statements if statement["Sid"] == "ReadReleaseAndStudyArtifacts")
+    assert artifact_statement["Resource"] == [
+        {"Fn::Sub": "${ApplicationBucket.Arn}/releases/*"},
+        {"Fn::Sub": "${ApplicationBucket.Arn}/studies/*"},
+    ]
+
+
+def test_phase2a_userdata_is_guarded_idempotent_and_defers_application_start() -> None:
+    properties = phase2a_template()["Resources"]["ApplicationInstance"]["Properties"]
+    user_data = properties["UserData"]["Fn::Base64"]["Fn::Sub"]
+
+    for package in (
+        "awscli-2", "amazon-cloudwatch-agent", "nginx", "certbot", "python3-certbot-nginx", "acl", "jq", "sudo", "uv"
+    ):
+        assert package in user_data
+    assert "expected_volume_id='${ApplicationDataVolume}'" in user_data
+    assert "/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_vol" in user_data
+    assert "blkid" in user_data
+    assert "mkfs" in user_data
+    assert "UUID=" in user_data
+    assert "epi-agent-web" in user_data
+    assert "epi-agent-exec" in user_data
+    assert "REPORT_AGENT_COGNITO_USER_POOL_ID=${ApplicationUserPool}" in user_data
+    assert "REPORT_AGENT_CORS_ALLOW_ORIGIN_REGEX=^https://$domain_regex$" in user_data
+    assert "SECRET" not in user_data
+    assert "systemctl disable --now epi-agent.service" in user_data
+    assert "cfn-signal" in user_data
+    assert "rm -rf /srv/epi-agent" not in user_data
+    assert user_data.count("${ApplicationDataVolume}") == 1
+
+
+def test_phase2a_ssm_release_document_uses_strict_environment_interpolation() -> None:
+    document = phase2a_template()["Resources"]["EpiAgentDeployReleaseDocument"]["Properties"]
+    content = document["Content"]
+
+    assert document["DocumentType"] == "Command"
+    assert content["schemaVersion"] == "2.2"
+    assert content["mainSteps"][0]["action"] == "aws:runShellScript"
+    inputs = content["mainSteps"][0]["inputs"]
+    assert inputs["interpolationType"] == "ENV_VAR"
+    assert "{{ Bucket }}" not in "\n".join(inputs["runCommand"])
+    for name in ("Bucket", "ReleaseKey", "ReleaseSha256", "ReleaseId", "DomainName", "CertificateEmail"):
+        assert content["parameters"][name]["allowedPattern"].startswith("^")
+    command = "\n".join(inputs["runCommand"])
+    assert "install-release.sh" in command
+    assert "install -o root -g root -m 0750" in command
+    assert "eval " not in command
+    assert "bash -c" not in command
+
+
+def test_phase2a_backup_and_observability_cover_host_failure_modes() -> None:
+    template = phase2a_template()
+    resources = template["Resources"]
+
+    lifecycle = resources["ApplicationDataVolumeLifecyclePolicy"]["Properties"]
+    assert lifecycle["State"] == "ENABLED"
+    schedule = lifecycle["PolicyDetails"]["Schedules"][0]
+    assert schedule["CreateRule"]["Interval"] == 24
+    assert schedule["CreateRule"]["IntervalUnit"] == "HOURS"
+    assert schedule["RetainRule"] == {"Count": 14}
+    assert resources["ApplicationLogGroup"]["Properties"]["RetentionInDays"] == 30
+    assert resources["ApplicationAlertTopic"]["Type"] == "AWS::SNS::Topic"
+    assert resources["ApplicationAlertEmailSubscription"]["Condition"] == "HasAlertEmail"
+    assert template["Conditions"]["HasAlertEmail"] == {"Fn::Not": [{"Fn::Equals": [{"Ref": "AlertEmail"}, ""]}]}
+
+    alarm_resources = [resource for resource in resources.values() if resource["Type"] == "AWS::CloudWatch::Alarm"]
+    alarm_names = {alarm["Properties"]["AlarmName"] for alarm in alarm_resources}
+    assert {"epi-agent-ec2-status", "epi-agent-cpu", "epi-agent-cpu-credits", "epi-agent-memory", "epi-agent-data-disk", "epi-agent-service-errors"} <= alarm_names
+    parameter = resources["CloudWatchAgentConfiguration"]["Properties"]
+    assert parameter["Type"] == "String"
+    configuration = parameter["Value"]["Fn::Sub"]
+    assert "${ApplicationLogGroup}" in configuration
+    assert "/var/log/epi-agent/application.log" in configuration
+    assert "mem_used_percent" in configuration
+    assert "inodes_free" in configuration
+    assert "/srv/epi-agent" in configuration

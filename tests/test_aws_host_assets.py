@@ -56,6 +56,8 @@ def test_web_service_runs_the_api_with_least_privilege() -> None:
     assert "EnvironmentFile=/etc/epi-agent/app.env" in source
     assert "--host 127.0.0.1 --port 8000" in source
     assert "--workers 1" in source
+    assert "StandardOutput=append:/var/log/epi-agent/application.log" in source
+    assert "StandardError=append:/var/log/epi-agent/application.log" in source
     assert "UMask=0027" in source
     assert "NoNewPrivileges=true" in source
     assert "ReadWritePaths=/srv/epi-agent/runtime /srv/epi-agent/study_data /run/epi-agent" in source
