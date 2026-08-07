@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Protocol, Sequence
 
 EXPECTED_ACCOUNT="641379499556"; EXPECTED_PROFILE="xutao-dev"; EXPECTED_REGION="us-east-1"
+EXPECTED_PRINCIPAL_ARN="arn:aws:iam::641379499556:user/xutao-dev"
 BOOTSTRAP_STACK="epi-agent-bootstrap"; APPLICATION_STACK="epi-agent-phase2a"
 POLL_INTERVAL_SECONDS=1
 CHANGE_SET_TIMEOUT_SECONDS=1800
@@ -15,7 +16,7 @@ class Runner(Protocol):
  def run(self, argv: Sequence[str], *, capture_output: bool=True) -> subprocess.CompletedProcess[str]: ...
 class SubprocessRunner:
  def run(self, argv, *, capture_output=True): return subprocess.run(argv,text=True,capture_output=capture_output,check=False)
-def aws(*args:str)->list[str]: return ["aws",*args,"--profile",EXPECTED_PROFILE,"--region",EXPECTED_REGION]
+def aws(*args:str)->list[str]: return ["aws",*args,"--profile",EXPECTED_PROFILE,"--region",EXPECTED_REGION,"--output","json"]
 def run_json(r:Runner, argv:Sequence[str])->dict:
  p=r.run(argv)
  if p.returncode: raise OperatorError(p.stderr or "AWS command failed")
@@ -24,7 +25,7 @@ def run_json(r:Runner, argv:Sequence[str])->dict:
 def require_expected_identity(r:Runner)->dict[str,str]:
  i=run_json(r,aws("sts","get-caller-identity")); arn=i.get("Arn","")
  parts=arn.split(":")
- if i.get("Account")!=EXPECTED_ACCOUNT or len(parts)!=6 or parts[0]!="arn" or parts[1]!="aws" or parts[4]!=EXPECTED_ACCOUNT or parts[2]!="iam" or not parts[5]: raise OperatorError("refusing AWS mutation: unexpected account")
+ if i.get("Account")!=EXPECTED_ACCOUNT or arn!=EXPECTED_PRINCIPAL_ARN or len(parts)!=6 or parts[0]!="arn" or parts[1]!="aws" or parts[4]!=EXPECTED_ACCOUNT: raise OperatorError("refusing AWS mutation: unexpected account")
  return i
 def bootstrap_role(r:Runner)->str:
  o=run_json(r,aws("cloudformation","describe-stacks","--stack-name",BOOTSTRAP_STACK))

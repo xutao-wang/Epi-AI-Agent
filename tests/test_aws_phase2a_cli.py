@@ -6,12 +6,17 @@ class R:
  def run(self,a,*,capture_output=True):
   import subprocess; self.calls.append(list(a)); return subprocess.CompletedProcess(a,0,self.out,"")
 def test_identity_target_and_aws_flags():
- r=R('{"Account":"641379499556","Arn":"arn:aws:iam::641379499556:user/x"}')
+ r=R('{"Account":"641379499556","Arn":"arn:aws:iam::641379499556:user/xutao-dev"}')
  assert cli.require_expected_identity(r)["Account"]==cli.EXPECTED_ACCOUNT
- assert r.calls[0][-4:]==["--profile","xutao-dev","--region","us-east-1"]
+ assert r.calls[0][-6:]==["--profile","xutao-dev","--region","us-east-1","--output","json"]
 def test_wrong_identity_stops_after_one_call():
  r=R('{"Account":"1","Arn":"arn:aws:iam::1:user/x"}')
  import pytest
+ with pytest.raises(cli.OperatorError): cli.require_expected_identity(r)
+ assert len(r.calls)==1
+def test_same_account_wrong_principal_stops_after_one_call():
+ import pytest
+ r=R('{"Account":"641379499556","Arn":"arn:aws:iam::641379499556:user/other"}')
  with pytest.raises(cli.OperatorError): cli.require_expected_identity(r)
  assert len(r.calls)==1
 def test_malformed_or_failed_identity_stops_after_one_call():
@@ -74,7 +79,7 @@ def test_deploy_retries_transient_invocation_then_succeeds(monkeypatch):
  class SequenceRunner:
   def run(self,argv,*,capture_output=True):
    calls.append(argv)
-   if "get-caller-identity" in argv: return subprocess.CompletedProcess(argv,0,'{"Account":"641379499556","Arn":"arn:aws:iam::641379499556:user/x"}',"")
+   if "get-caller-identity" in argv: return subprocess.CompletedProcess(argv,0,'{"Account":"641379499556","Arn":"arn:aws:iam::641379499556:user/xutao-dev"}',"")
    if "send-command" in argv: return subprocess.CompletedProcess(argv,0,'{"Command":{"CommandId":"c"}}',"")
    if sum("get-command-invocation" in x for x in calls)==1: return subprocess.CompletedProcess(argv,255,"","InvocationDoesNotExist")
    if sum("get-command-invocation" in x for x in calls)==2: return subprocess.CompletedProcess(argv,0,'{"Status":"InProgress"}',"")
@@ -90,7 +95,7 @@ def test_plan_rejects_access_denied_before_change_set(monkeypatch):
   def __init__(self): self.calls=[]
   def run(self,argv,*,capture_output=True):
    self.calls.append(argv)
-   if "get-caller-identity" in argv:return subprocess.CompletedProcess(argv,0,'{"Account":"641379499556","Arn":"arn:aws:iam::641379499556:user/x"}',"")
+   if "get-caller-identity" in argv:return subprocess.CompletedProcess(argv,0,'{"Account":"641379499556","Arn":"arn:aws:iam::641379499556:user/xutao-dev"}',"")
    if "describe-stacks" in argv and "epi-agent-bootstrap" in argv:return subprocess.CompletedProcess(argv,0,'{"Stacks":[{"Outputs":[{"OutputKey":"CloudFormationExecutionRoleArn","OutputValue":"r"}]}]}',"")
    return subprocess.CompletedProcess(argv,255,"","AccessDenied")
  r=Denied()
