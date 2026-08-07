@@ -33,12 +33,13 @@ def outputs(r:Runner)->dict[str,str]:
 def change_name(stack:str)->str:return f"epi-agent-{stack}-plan"
 def plan(r:Runner,stack:str,template:str)->dict:
  require_expected_identity(r); role=bootstrap_role(r); name=change_name(stack)
- run_json(r,aws("cloudformation","create-change-set","--stack-name",stack,"--change-set-name",name,"--change-set-type","CREATE","--template-body",f"file://{template}","--role-arn",role))
+ exists=r.run(aws("cloudformation","describe-stacks","--stack-name",stack,"--role-arn",role)).returncode==0
+ run_json(r,aws("cloudformation","create-change-set","--stack-name",stack,"--change-set-name",name,"--change-set-type","UPDATE" if exists else "CREATE","--template-body",f"file://{template}","--role-arn",role))
  result=run_json(r,aws("cloudformation","describe-change-set","--stack-name",stack,"--change-set-name",name,"--role-arn",role)); print(json.dumps(result,sort_keys=True)); return result
-def execute(r:Runner,arn:str,confirm:str)->None:
+def execute(r:Runner,arn:str,confirm:str,stack:str=APPLICATION_STACK)->None:
  if confirm!=EXPECTED_ACCOUNT: raise OperatorError("confirm the expected account exactly")
  require_expected_identity(r); d=run_json(r,stack_args(r,"describe-change-set","--change-set-name",arn))
- if d.get("ChangeSetArn")!=arn or d.get("StackName")!=APPLICATION_STACK or d.get("Status")!="CREATE_COMPLETE": raise OperatorError("refusing unexpected change set")
+ if d.get("ChangeSetArn")!=arn or d.get("StackName")!=stack or d.get("Status")!="CREATE_COMPLETE": raise OperatorError("refusing unexpected change set")
  p=r.run(stack_args(r,"execute-change-set","--change-set-name",arn));
  if p.returncode: raise OperatorError(p.stderr)
 def upload(r:Runner,file:str,key:str)->None:
@@ -50,16 +51,45 @@ def upload(r:Runner,file:str,key:str)->None:
   return
  cp=r.run(aws("s3","cp",str(p),f"s3://{bucket}/{key}","--metadata",f"sha256={digest}","--expected-size",size))
  if cp.returncode: raise OperatorError(cp.stderr)
+def lifecycle(r:Runner, action:str, confirm:str)->None:
+ require_expected_identity(r); instance=outputs(r).get("ApplicationInstanceId","")
+ if not instance or confirm!=instance: raise OperatorError("confirm the exact stack instance ID")
+ p=r.run(aws("ec2",action+"-instances","--instance-ids",instance))
+ if p.returncode: raise OperatorError(p.stderr)
+ print("stop preserves EBS cost but removes availability" if action=="stop" else "start restores availability and EC2 cost")
+def deploy(r:Runner,key:str,sha:str,release_id:str,domain:str,email:str)->None:
+ require_expected_identity(r); o=outputs(r); document=o.get("DeployReleaseDocumentName",""); instance=o.get("ApplicationInstanceId","")
+ if not document or not instance: raise OperatorError("required deployment outputs missing")
+ params=json.dumps({"Bucket":[o["ApplicationBucketName"]],"ReleaseKey":[key],"ReleaseSha256":[sha],"ReleaseId":[release_id],"DomainName":[domain],"CertificateEmail":[email]})
+ sent=run_json(r,aws("ssm","send-command","--document-name",document,"--instance-ids",instance,"--parameters",params)); command=sent["Command"]["CommandId"]
+ result=run_json(r,aws("ssm","get-command-invocation","--command-id",command,"--instance-id",instance))
+ if result.get("Status")!="Success": raise OperatorError("deployment command did not succeed")
 def main(argv=None, runner:Runner|None=None)->int:
  r=runner or SubprocessRunner(); p=argparse.ArgumentParser(); s=p.add_subparsers(dest="cmd",required=True)
- s.add_parser("identity"); s.add_parser("validate");
- for n in ("plan-bootstrap","execute-bootstrap","plan-stack","outputs","stop","start","deploy-release","upload-release","upload-study","execute-change-set"): s.add_parser(n)
+ s.add_parser("identity"); s.add_parser("validate"); s.add_parser("outputs")
+ for n in ("plan-bootstrap","plan-stack"): s.add_parser(n)
+ for n in ("execute-bootstrap","execute-change-set"):
+  q=s.add_parser(n); q.add_argument("change_set_arn"); q.add_argument("--confirm-account",required=True)
+ for n,prefix in (("upload-release","releases/"),("upload-study","studies/")):
+  q=s.add_parser(n); q.add_argument("file"); q.add_argument("key"); q.set_defaults(prefix=prefix)
+ for n in ("stop","start"):
+  q=s.add_parser(n); q.add_argument("--confirm-instance",required=True)
+ q=s.add_parser("deploy-release"); q.add_argument("key"); q.add_argument("sha"); q.add_argument("release_id"); q.add_argument("domain"); q.add_argument("email")
  a=p.parse_args(argv)
  try:
   if a.cmd=="identity": print(json.dumps(require_expected_identity(r))); return 0
   if a.cmd=="validate":
-   q=r.run(["uvx","--from","cfn-lint==1.53.1","cfn-lint","infra/aws/bootstrap/template.yaml","infra/aws/phase2a/template.yaml"],capture_output=False); return q.returncode
+   root=Path(__file__).resolve().parents[1]; q=r.run(["uvx","--from","cfn-lint==1.53.1","cfn-lint",str(root/"infra/aws/bootstrap/template.yaml"),str(root/"infra/aws/phase2a/template.yaml")],capture_output=False)
+   if q.returncode:return q.returncode
+   run_json(r,aws("cloudformation","validate-template","--template-body",f"file://{root/'infra/aws/phase2a/template.yaml'}")); return 0
   if a.cmd=="outputs": print(json.dumps(outputs(r),sort_keys=True)); return 0
+  if a.cmd.startswith("plan-"): plan(r,BOOTSTRAP_STACK if a.cmd=="plan-bootstrap" else APPLICATION_STACK,str(Path(__file__).resolve().parents[1]/("infra/aws/bootstrap/template.yaml" if a.cmd=="plan-bootstrap" else "infra/aws/phase2a/template.yaml"))); return 0
+  if a.cmd.startswith("execute-"): execute(r,a.change_set_arn,a.confirm_account,BOOTSTRAP_STACK if a.cmd=="execute-bootstrap" else APPLICATION_STACK); return 0
+  if a.cmd.startswith("upload-"):
+   if not a.key.startswith(a.prefix) or ".." in a.key: raise OperatorError("unsafe artifact key")
+   upload(r,a.file,a.key); return 0
+  if a.cmd in ("stop","start"): lifecycle(r,a.cmd,a.confirm_instance); return 0
+  if a.cmd=="deploy-release": deploy(r,a.key,a.sha,a.release_id,a.domain,a.email); return 0
   raise OperatorError("subcommand requires explicit operator arguments")
  except OperatorError as e: print(f"error: {e}",file=sys.stderr); return 2
 if __name__=="__main__": raise SystemExit(main())
