@@ -15,6 +15,10 @@ def test_default_phases_exclude_disruptive_actions():
 def test_phase_flags_exist():
  args=smoke.parse_args(["--allow-live-aws","--base-url","https://epiagent.org","--user-one-env","A","--user-two-env","B","--stop-start"])
  assert args.stop_start
+def test_provider_key_has_fixed_environment_source(monkeypatch):
+ monkeypatch.setenv("A","a"); monkeypatch.setenv("B","b")
+ assert smoke.main(["--allow-live-aws","--base-url","https://epiagent.org","--user-one-env","A","--user-two-env","B"])==2
+ assert smoke.PROVIDER_KEY_ENV=="REPORT_AGENT_SMOKE_PROVIDER_KEY"
 def test_rejects_other_https_host(monkeypatch):
  monkeypatch.setenv("A","a");monkeypatch.setenv("B","b")
  assert smoke.main(["--allow-live-aws","--base-url","https://other.example","--user-one-env","A","--user-two-env","B"])==2

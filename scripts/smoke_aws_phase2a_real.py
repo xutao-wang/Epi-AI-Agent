@@ -7,6 +7,7 @@ from urllib.request import Request, build_opener, HTTPRedirectHandler, urlopen
 from urllib.error import HTTPError
 PHASES=("tls","http_redirect","cognito_login","provider_key","owner_isolation","restart_persistence","stop_start","snapshot_restore")
 DEFAULT=("tls","http_redirect","cognito_login","provider_key","owner_isolation")
+PROVIDER_KEY_ENV="REPORT_AGENT_SMOKE_PROVIDER_KEY"
 class NoRedirect(HTTPRedirectHandler):
  def redirect_request(self,*args): return None
 class RequestError(ValueError):
@@ -59,6 +60,8 @@ def run(args):
  if args.user_one_env==args.user_two_env: raise ValueError("two distinct credential environment variable names are required")
  if not os.environ.get(args.user_one_env) or not os.environ.get(args.user_two_env): raise ValueError("required test-user credentials are absent")
  secrets=[os.environ[args.user_one_env],os.environ[args.user_two_env]]
+ if "provider_key" in DEFAULT and not os.environ.get(PROVIDER_KEY_ENV): raise ValueError("required provider-key environment variable is absent")
+ provider_secret=os.environ[PROVIDER_KEY_ENV]; secrets.append(provider_secret)
  selected=list(DEFAULT)+[x for x in ("restart_persistence","stop_start","snapshot_restore") if getattr(args,x)]
  for phase in selected:
   print("live smoke phase:",phase)
@@ -66,7 +69,7 @@ def run(args):
    if phase=="tls": check_https(args.base_url)
    elif phase=="http_redirect": check_redirect(args.base_url)
    elif phase=="cognito_login": sessions=[login(args.base_url,secrets[0],secrets),login(args.base_url,secrets[1],secrets)]
-   elif phase=="provider_key": provider_key(args.base_url,sessions[0].get("token",""),secrets[0],secrets)
+   elif phase=="provider_key": provider_key(args.base_url,sessions[0].get("token",""),provider_secret,secrets)
    elif phase=="owner_isolation": owner_isolation(args.base_url,sessions[0].get("token",""),sessions[1].get("token",""),secrets)
    elif phase=="restart_persistence": print("restart persistence target must be separately confirmed")
    elif phase in {"stop_start","snapshot_restore"}: print("target must be printed and separately confirmed")

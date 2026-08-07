@@ -21,3 +21,5 @@ Retained-resource cleanup and snapshot deletion require separate explicit review
 
 Repository support does not mean a live stack exists until Task 11. The opt-in
 real smoke requires `--allow-live-aws`; it is never run as part of pytest.
+Its BYOK check reads only `REPORT_AGENT_SMOKE_PROVIDER_KEY` from the environment;
+never place provider keys on the command line.
