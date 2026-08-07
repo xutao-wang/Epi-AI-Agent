@@ -68,7 +68,9 @@ import sys
 study_root = Path(sys.argv[1])
 study_id = sys.argv[2]
 package_version = sys.argv[3]
-installed_manifest = study_root / "packages" / study_id / package_version / "study-package.json"
+installed_manifest = (
+    study_root / "studies" / "packages" / study_id / package_version / "study-package.json"
+)
 try:
     manifest = json.loads(installed_manifest.read_text(encoding="utf-8"))
 except (OSError, ValueError) as error:

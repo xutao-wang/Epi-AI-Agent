@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install an immutable, checksummed Epi-Agent release. This script is intended
 # to be called by a root-owned deployment mechanism with positional arguments.
-set -euo pipefail
+set -Eeuo pipefail
 
 # Deployment commands must not resolve from a caller-controlled PATH.
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -41,6 +41,11 @@ is_safe_email() {
 cleanup() {
   local exit_status=$?
   trap - EXIT ERR
+  set +e
+  if [ "${activated:-false}" = true ]; then
+    restore_previous_release
+  fi
+  rm -f -- "$maintenance_file"
   if [ -n "${staging_dir:-}" ] && [ -d "$staging_dir" ]; then
     rm -rf -- "$staging_dir"
   fi
@@ -58,22 +63,6 @@ restore_previous_release() {
     rm -f -- "$current_link"
     systemctl stop epi-agent.service
   fi
-}
-
-activation_failed() {
-  local exit_status=$?
-  trap - EXIT ERR
-  set +e
-  if [ "${activated:-false}" = true ]; then
-    restore_previous_release
-  fi
-  rm -f -- "$maintenance_file"
-  if [ -n "${staging_dir:-}" ] && [ -d "$staging_dir" ]; then
-    rm -rf -- "$staging_dir"
-  fi
-  cleanup_status=$exit_status
-  [ "$cleanup_status" -ne 0 ] || cleanup_status=1
-  exit "$cleanup_status"
 }
 
 wait_for_drain() {
@@ -177,7 +166,7 @@ install -m 0640 -o root -g epi-agent-web /dev/null "$maintenance_file"
 
 staging_dir=$(mktemp -d /opt/epi-agent/staging.XXXXXX)
 trap cleanup EXIT
-trap activation_failed ERR
+trap 'exit $?' ERR
 archive_path="$staging_dir/release.tar.gz"
 release_payload="$staging_dir/release"
 mkdir -m 0755 "$release_payload"

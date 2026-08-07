@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import io
+import json
 from pathlib import Path
+import os
+import subprocess
+import tarfile
 
 
 def test_python_worker_launcher_enforces_the_fixed_privilege_boundary() -> None:
@@ -102,6 +107,8 @@ REPORT_AGENT_PYTHON_WORKER_LAUNCHER=/usr/bin/sudo -n /usr/local/libexec/epi-agen
 def test_release_installer_enforces_a_safe_atomic_activation_contract() -> None:
     source = _asset("deploy/aws/bin/install-release.sh")
 
+    assert "set -Eeuo pipefail" in source
+    assert "trap 'exit $?\' ERR" in source
     assert '"$(id -u)" -eq 0' in source
     assert '^[0-9a-f]{40}$' in source
     assert '^[0-9a-f]{64}$' in source
@@ -145,6 +152,7 @@ def test_study_installer_verifies_archive_and_preserves_prior_versions() -> None
     assert "study-package.json" in source
     assert "study_id" in source
     assert "package_version" in source
+    assert 'study_root / "studies" / "packages"' in source
     assert "rm -rf /srv/epi-agent" not in source
 
 
@@ -160,3 +168,140 @@ def test_certificate_and_cloudwatch_assets_are_present() -> None:
     assert "OnCalendar=" in certificate_timer
     assert "epi-agent.service" in cloudwatch
     assert "/var/log/nginx/access.log" in cloudwatch
+
+
+def _write_release_archive(archive_path: Path) -> None:
+    release_id = "a" * 40
+    manifest = json.dumps({"commit_sha": release_id, "python_version": "3.12"}).encode()
+    with tarfile.open(archive_path, "w:gz") as archive:
+        for name, payload in (("release.json", manifest), ("requirements.txt", b"\n")):
+            member = tarfile.TarInfo(name)
+            member.size = len(payload)
+            archive.addfile(member, io.BytesIO(payload))
+
+
+def _write_executable(path: Path, source: str) -> None:
+    path.write_text(source, encoding="utf-8")
+    path.chmod(0o755)
+
+
+def _release_harness(
+    tmp_path: Path, *, invalid_archive: bool, readiness_fails: bool
+) -> tuple[subprocess.CompletedProcess[str], Path, Path, Path, Path]:
+    root = tmp_path / "host"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    archive_path = tmp_path / "release.tar.gz"
+    if invalid_archive:
+        archive_path.write_bytes(b"not a tar archive")
+    else:
+        _write_release_archive(archive_path)
+
+    for name, body in {
+        "id": "printf '%s\\n' 0\n",
+        "aws": 'cp "$TEST_ARCHIVE" "$4"\n',
+        "sha256sum": "exit 0\n",
+        "systemctl": 'printf "%s\\n" "$*" >> "$TEST_SYSTEMCTL_LOG"\n',
+        "curl": """case "$*" in
+  *deployment-status*) printf '%s\\n' '{"maintenance": true, "active_runs": 0}' ;;
+  *readiness*) [ "$TEST_READINESS_FAILS" = 0 ] || exit 22 ;;
+esac
+""",
+        "uv": """if [ "$1" = venv ]; then
+  mkdir -p "$4/bin"
+  : > "$4/bin/python"
+fi
+""",
+        "mv": """replace_destination=false
+while [ "$#" -gt 0 ] && [ "${1#-}" != "$1" ]; do
+  replace_destination=true
+  shift
+done
+if [ "$replace_destination" = true ]; then
+  /bin/rm -f "$2"
+fi
+/bin/mv "$@"
+""",
+        "readlink": """[ "$1" = -- ] && shift
+/usr/bin/readlink "$@"
+""",
+        "python3": 'exec "$TEST_PYTHON" "$@"\n',
+    }.items():
+        _write_executable(fake_bin / name, "#!/usr/bin/env bash\nset -eu\n" + body)
+
+    source = _asset("deploy/aws/bin/install-release.sh")
+    source = source.replace("/opt/epi-agent", str(root / "opt" / "epi-agent"))
+    source = source.replace("/run/epi-agent", str(root / "run" / "epi-agent"))
+    source = source.replace("/etc/letsencrypt", str(root / "etc" / "letsencrypt"))
+    source = source.replace("/var/www/certbot", str(root / "var" / "www" / "certbot"))
+    source = source.replace("/usr/bin/python3.12", "python3")
+    source = source.replace(" -o root -g epi-agent-web", "")
+    source = source.replace(
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        f"PATH={fake_bin}:/usr/bin:/bin",
+    )
+    harness_path = tmp_path / "install-release.sh"
+    _write_executable(harness_path, source)
+
+    current_link = root / "opt" / "epi-agent" / "current"
+    current_link.parent.mkdir(parents=True)
+    current_link.symlink_to("/previous/release")
+    certificate = root / "etc" / "letsencrypt" / "live" / "example.org" / "fullchain.pem"
+    certificate.parent.mkdir(parents=True)
+    certificate.touch()
+    systemctl_log = tmp_path / "systemctl.log"
+    environment = os.environ | {
+        "TEST_ARCHIVE": str(archive_path),
+        "TEST_PYTHON": str(Path(os.sys.executable)),
+        "TEST_SYSTEMCTL_LOG": str(systemctl_log),
+        "TEST_READINESS_FAILS": "1" if readiness_fails else "0",
+    }
+    completed = subprocess.run(
+        [
+            "bash",
+            str(harness_path),
+            "example-bucket",
+            "releases/test.tar.gz",
+            "0" * 64,
+            "a" * 40,
+            "example.org",
+            "ops@example.org",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=environment,
+    )
+    return (
+        completed,
+        current_link,
+        root / "run" / "epi-agent" / "maintenance",
+        root / "opt" / "epi-agent",
+        systemctl_log,
+    )
+
+
+def test_release_installer_rolls_back_after_readiness_failure(tmp_path: Path) -> None:
+    completed, current_link, maintenance_file, staging_parent, systemctl_log = _release_harness(
+        tmp_path, invalid_archive=False, readiness_fails=True
+    )
+
+    assert completed.returncode != 0, completed.stderr
+    assert current_link.readlink() == Path("/previous/release")
+    assert not maintenance_file.exists()
+    assert not list(staging_parent.glob("staging.*"))
+    assert systemctl_log.read_text(encoding="utf-8").splitlines().count(
+        "restart epi-agent.service"
+    ) == 2
+
+
+def test_release_installer_clears_maintenance_when_archive_is_invalid(tmp_path: Path) -> None:
+    completed, current_link, maintenance_file, staging_parent, systemctl_log = _release_harness(
+        tmp_path, invalid_archive=True, readiness_fails=False
+    )
+
+    assert completed.returncode != 0, completed.stderr
+    assert current_link.readlink() == Path("/previous/release")
+    assert not maintenance_file.exists()
+    assert not list(staging_parent.glob("staging.*"))
+    assert not systemctl_log.exists()
