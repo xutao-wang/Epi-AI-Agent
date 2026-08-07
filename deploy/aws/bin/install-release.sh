@@ -160,13 +160,14 @@ is_safe_s3_key "$release_key" || fail 'release key is invalid'
 is_safe_domain "$domain" || fail 'domain is invalid'
 is_safe_email "$certificate_email" || fail 'certificate email is invalid'
 
+trap cleanup EXIT
+trap 'exit $?' ERR
+
 install -d -m 0755 /opt/epi-agent "$releases_root"
 install -d -m 0750 -o root -g epi-agent-web /run/epi-agent
 install -m 0640 -o root -g epi-agent-web /dev/null "$maintenance_file"
 
 staging_dir=$(mktemp -d /opt/epi-agent/staging.XXXXXX)
-trap cleanup EXIT
-trap 'exit $?' ERR
 archive_path="$staging_dir/release.tar.gz"
 release_payload="$staging_dir/release"
 mkdir -m 0755 "$release_payload"

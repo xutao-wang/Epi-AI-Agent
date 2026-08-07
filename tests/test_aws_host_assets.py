@@ -109,6 +109,9 @@ def test_release_installer_enforces_a_safe_atomic_activation_contract() -> None:
 
     assert "set -Eeuo pipefail" in source
     assert "trap 'exit $?\' ERR" in source
+    assert source.index("trap cleanup EXIT") < source.index(
+        'install -m 0640 -o root -g epi-agent-web /dev/null "$maintenance_file"'
+    )
     assert '"$(id -u)" -eq 0' in source
     assert '^[0-9a-f]{40}$' in source
     assert '^[0-9a-f]{64}$' in source
@@ -186,7 +189,11 @@ def _write_executable(path: Path, source: str) -> None:
 
 
 def _release_harness(
-    tmp_path: Path, *, invalid_archive: bool, readiness_fails: bool
+    tmp_path: Path,
+    *,
+    invalid_archive: bool,
+    readiness_fails: bool,
+    staging_fails: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path, Path, Path]:
     root = tmp_path / "host"
     fake_bin = tmp_path / "bin"
@@ -225,6 +232,11 @@ fi
         "readlink": """[ "$1" = -- ] && shift
 /usr/bin/readlink "$@"
 """,
+        "mktemp": """if [ "$TEST_STAGING_FAILS" = 1 ]; then
+  exit 1
+fi
+/usr/bin/mktemp "$@"
+""",
         "python3": 'exec "$TEST_PYTHON" "$@"\n',
     }.items():
         _write_executable(fake_bin / name, "#!/usr/bin/env bash\nset -eu\n" + body)
@@ -255,6 +267,7 @@ fi
         "TEST_PYTHON": str(Path(os.sys.executable)),
         "TEST_SYSTEMCTL_LOG": str(systemctl_log),
         "TEST_READINESS_FAILS": "1" if readiness_fails else "0",
+        "TEST_STAGING_FAILS": "1" if staging_fails else "0",
     }
     completed = subprocess.run(
         [
@@ -298,6 +311,20 @@ def test_release_installer_rolls_back_after_readiness_failure(tmp_path: Path) ->
 def test_release_installer_clears_maintenance_when_archive_is_invalid(tmp_path: Path) -> None:
     completed, current_link, maintenance_file, staging_parent, systemctl_log = _release_harness(
         tmp_path, invalid_archive=True, readiness_fails=False
+    )
+
+    assert completed.returncode != 0, completed.stderr
+    assert current_link.readlink() == Path("/previous/release")
+    assert not maintenance_file.exists()
+    assert not list(staging_parent.glob("staging.*"))
+    assert not systemctl_log.exists()
+
+
+def test_release_installer_clears_maintenance_when_staging_creation_fails(
+    tmp_path: Path,
+) -> None:
+    completed, current_link, maintenance_file, staging_parent, systemctl_log = _release_harness(
+        tmp_path, invalid_archive=False, readiness_fails=False, staging_fails=True
     )
 
     assert completed.returncode != 0, completed.stderr
