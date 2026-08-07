@@ -45,6 +45,7 @@ def build_graph(
     db_rag_readiness: DbRagReadiness | None = None,
     db_rag_embedding_model: str | None = None,
     max_iterations: int = DEFAULT_EPI_AGENT_MAX_ITERATIONS,
+    python_runtime: LocalPythonRuntime | None = None,
 ) -> CompiledStateGraph:
     """Compile the single checkpointed EpiAgent used by FastAPI."""
 
@@ -88,7 +89,8 @@ def build_graph(
         service=attachment_reader_service,
         studies=studies,
         default_study_id=default_study_id,
-        python_runtime=LocalPythonRuntime(runtime_root=execution_root),
+        python_runtime=python_runtime
+        or LocalPythonRuntime(runtime_root=execution_root),
         runtime_root=root,
         include_db_rag=readiness.available,
         checkpointer=SqliteSaver(connection),

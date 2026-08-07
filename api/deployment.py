@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -8,6 +9,23 @@ from pathlib import Path
 
 
 DEFAULT_CORS_ALLOW_ORIGIN_REGEX = r"^http://(127\.0\.0\.1|localhost):\d+$"
+
+
+def python_worker_launcher(environ: Mapping[str, str]) -> tuple[str, ...] | None:
+    configured = str(environ.get("REPORT_AGENT_PYTHON_WORKER_LAUNCHER", ""))
+    if not configured.strip():
+        return None
+    if "\x00" in configured or "\n" in configured or "\r" in configured:
+        raise ValueError("REPORT_AGENT_PYTHON_WORKER_LAUNCHER contains unsafe characters")
+    try:
+        launcher = tuple(shlex.split(configured))
+    except ValueError as exc:
+        raise ValueError("REPORT_AGENT_PYTHON_WORKER_LAUNCHER is invalid") from exc
+    if not launcher or not Path(launcher[0]).is_absolute():
+        raise ValueError(
+            "REPORT_AGENT_PYTHON_WORKER_LAUNCHER must start with an absolute path"
+        )
+    return launcher
 
 
 @dataclass(frozen=True)

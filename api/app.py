@@ -17,7 +17,13 @@ from api.conversation_history import (
     ConversationHistoryStore,
     OpenAIConversationTitleGenerator,
 )
-from api.deployment import checkpoint_db_path, runtime_root, static_dir, study_root
+from api.deployment import (
+    checkpoint_db_path,
+    python_worker_launcher,
+    runtime_root,
+    static_dir,
+    study_root,
+)
 from api.provider_credentials import ProviderCredentialStore
 from api.public_config import application_auth_config, public_app_config
 from api.runtime import GraphBuildContext, ReportAgentApiRuntime, RuntimeSettings
@@ -29,6 +35,7 @@ from db_rag.config import (
 )
 from db_rag.readiness import DbRagReadiness, resolve_db_rag_readiness
 from epi_agent.studies import StudyRegistry
+from epi_agent.runtimes.python import LocalPythonRuntime
 from graph.builder import build_graph
 from llm_vllm import build_openai_llm
 from study_package.registry import discover_studies
@@ -122,6 +129,7 @@ def build_application(*, environ: Mapping[str, str] | None = None) -> FastAPI:
     allowed_models = configured_openai_models(environ)
     title_model = configured_title_model(environ)
     max_iterations = configured_epi_agent_max_iterations(environ)
+    worker_launcher = python_worker_launcher(environ)
 
     runtime_root_path = (
         Path(environ["REPORT_AGENT_RUNTIME_ROOT"])
@@ -177,6 +185,10 @@ def build_application(*, environ: Mapping[str, str] | None = None) -> FastAPI:
             db_rag_readiness=db_rag_readiness,
             db_rag_embedding_model=db_rag_embedding_model,
             max_iterations=max_iterations,
+            python_runtime=LocalPythonRuntime(
+                runtime_root=context.storage.execution,
+                worker_launcher=worker_launcher,
+            ),
         )
 
     runtime_settings = {

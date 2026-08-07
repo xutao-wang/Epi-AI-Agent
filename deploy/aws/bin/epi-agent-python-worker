@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# This file is installed by the AWS deployment as root:root mode 0755.  Its
+# only caller is the restricted epi-agent-web sudoers rule.
+set -euo pipefail
+
+execution_root=/srv/epi-agent/runtime/users
+worker_user=epi-agent-exec
+web_user=epi-agent-web
+
+fail() {
+  printf '%s\n' "epi-agent-python-worker: $1" >&2
+  exit 64
+}
+
+reject_symlink_components() {
+  local candidate=$1
+  while [ "$candidate" != "$execution_root" ]; do
+    [ -L "$candidate" ] && fail "symbolic links are not permitted"
+    candidate=${candidate%/*}
+    [ -n "$candidate" ] || fail "path is invalid"
+  done
+  [ -L "$execution_root" ] && fail "symbolic links are not permitted"
+}
+
+if [ "$#" -ne 4 ] || [ "$1" != "--input-dir" ] || [ "$3" != "--output-dir" ]; then
+  fail "expected --input-dir DIR --output-dir DIR"
+fi
+
+raw_input_dir=$2
+raw_output_dir=$4
+case "$raw_input_dir" in
+  "$execution_root"/*) ;;
+  *) fail "input directory is outside the execution root" ;;
+esac
+case "$raw_output_dir" in
+  "$execution_root"/*) ;;
+  *) fail "output directory is outside the execution root" ;;
+esac
+reject_symlink_components "$raw_input_dir"
+reject_symlink_components "$raw_output_dir"
+input_dir=$(/usr/bin/realpath -e -- "$raw_input_dir") || fail "input directory is invalid"
+output_dir=$(/usr/bin/realpath -e -- "$raw_output_dir") || fail "output directory is invalid"
+
+case "$input_dir" in
+  "$execution_root"/*) ;;
+  *) fail "input directory is outside the execution root" ;;
+esac
+case "$output_dir" in
+  "$execution_root"/*) ;;
+  *) fail "output directory is outside the execution root" ;;
+esac
+case "$input_dir" in
+  */threads/*/execution/*) ;;
+  *) fail "input directory is outside a thread execution directory" ;;
+esac
+case "$output_dir" in
+  */threads/*/execution/*) ;;
+  *) fail "output directory is outside a thread execution directory" ;;
+esac
+
+run_dir=${input_dir%/input}
+[ "$run_dir/input" = "$input_dir" ] || fail "input directory name is invalid"
+[ "$run_dir/output" = "$output_dir" ] || fail "output directory name is invalid"
+work_dir=$run_dir/work
+[ -d "$work_dir" ] || fail "work directory is invalid"
+
+for path in "$raw_input_dir" "$raw_output_dir" "$input_dir" "$output_dir" "$work_dir"; do
+  if [ -L "$path" ] || [ -n "$(/usr/bin/find -P "$path" -type l -print -quit)" ]; then
+    fail "symbolic links are not permitted"
+  fi
+done
+
+web_uid=$(/usr/bin/id -u "$web_user")
+for path in "$run_dir" "$input_dir" "$output_dir" "$work_dir"; do
+  [ "$(/usr/bin/stat -c %u -- "$path")" = "$web_uid" ] || fail "path owner is invalid"
+  if [ -n "$(/usr/bin/find -P "$path" ! -uid "$web_uid" -print -quit)" ]; then
+    fail "path contains files owned by another user"
+  fi
+done
+
+/usr/bin/setfacl -R -m "u:$worker_user:rx" "$input_dir"
+/usr/bin/setfacl -R -m "u:$worker_user:rwx" "$output_dir" "$work_dir"
+
+exec /usr/sbin/runuser --user epi-agent-exec -- \
+  /usr/bin/env -i \
+  PATH=/opt/epi-agent/current/.venv/bin:/usr/bin \
+  LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONUTF8=1 MPLBACKEND=Agg \
+  /opt/epi-agent/current/.venv/bin/python \
+  /opt/epi-agent/current/epi_agent/runtimes/python/worker.py \
+  --input-dir "$input_dir" --output-dir "$output_dir"
