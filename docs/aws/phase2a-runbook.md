@@ -23,3 +23,39 @@ Repository support does not mean a live stack exists until Task 11. The opt-in
 real smoke requires `--allow-live-aws`; it is never run as part of pytest.
 Its BYOK check reads only `REPORT_AGENT_SMOKE_PROVIDER_KEY` from the environment;
 never place provider keys on the command line.
+
+## Beginner operator sequence
+
+In the AWS Console select **IAM → User groups → Developer** and verify the
+operator uses `xutao-dev`. Run:
+
+```sh
+python scripts/aws_phase2a.py identity
+python scripts/aws_phase2a.py validate
+python scripts/aws_phase2a.py plan-bootstrap
+```
+
+> **Warning:** inspect every CloudFormation **Add**, **Modify**, and especially
+> **Replace** action before executing the exact reviewed change-set ARN. Bootstrap
+> execution is an administrator action; it creates IAM authority.
+
+After bootstrap, use `plan-stack --domain-name epiagent.org --hosted-zone-id Z...`
+`--certificate-email ops@example.org`, review its actions, and execute only with
+the exact account confirmation. In **SNS → Subscriptions**, confirm the email.
+In **Cognito → User pools → epi-agent-phase2a → Users**, choose **Create user**
+to send the first invitation.
+
+Upload immutable packages with `upload-release RELEASE releases/ID.tar.gz` and
+`upload-study STUDY studies/ID.tar.gz`; invoke `deploy-release` with the exact
+key, SHA-256, release ID, domain, and certificate email. In **CloudWatch →
+Alarms/Logs**, check status, CPU, credits, memory, disk, and service errors.
+
+> **Warning:** terminate, retained bucket/volume cleanup, and snapshot deletion
+> are separate destructive actions. Stopping the instance retains EBS/EIP cost;
+> termination removes the root disk. Snapshot restore means creating a separate
+> volume, attaching it to a separate mount, validating it, then migrating.
+
+For rollback deploy a previously verified release. For a domain change, update
+DNS and certificate configuration through a reviewed change set. Cost inventory:
+EC2 runtime, EIP, root/data EBS, 14-day snapshots, S3 objects/requests,
+CloudWatch logs/alarms, SNS, Cognito, Route 53 hosted-zone and DNS-query charges.
