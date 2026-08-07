@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Explicitly opt-in, real AWS Phase 2A acceptance smoke; never run by pytest."""
 from __future__ import annotations
-import argparse, os, sys, ssl, json
+import argparse, os, sys, ssl, json, uuid
 from urllib.parse import urlparse
 from urllib.request import Request, build_opener, HTTPRedirectHandler, urlopen
 from urllib.error import HTTPError
@@ -23,18 +23,21 @@ def request_text(url, *, method="GET", headers=None, body=None, secrets=()):
  except HTTPError as error: raise RequestError(error.code,safe_error(error,secrets)) from None
  except Exception as error: raise RequestError(None,safe_error(error,secrets)) from None
 def request_json(url, **kwargs): return json.loads(request_text(url,**kwargs))
-def login(base_url, credential, secrets):
- request_json(base_url+"/api/session/provider-key",headers={"Authorization":"Bearer "+credential},secrets=secrets)
- return {"token":credential}
-def provider_key(base_url, session, secret, secrets):
- return request_json(base_url+"/api/session/provider-key",method="PUT",headers={"Authorization":"Bearer "+session,"Content-Type":"application/json"},body=json.dumps({"api_key":secret}).encode(),secrets=secrets)
+def auth_headers(token, session_id): return {"Authorization":"Bearer "+token,"X-Epi-Session-ID":session_id}
+def login(base_url, credential, secrets, session_id=None):
+ session_id=session_id or str(uuid.uuid4()); request_json(base_url+"/api/session/provider-key",headers=auth_headers(credential,session_id),secrets=secrets)
+ return {"token":credential,"session_id":session_id}
+def provider_key(base_url, session, secret, secrets, session_id=""):
+ result=request_json(base_url+"/api/session/provider-key",method="PUT",headers={**auth_headers(session,session_id),"Content-Type":"application/json"},body=json.dumps({"api_key":secret}).encode(),secrets=secrets)
+ if result.get("configured") is not True: raise ValueError("provider key was not configured")
+ return result
 def owner_isolation(base_url, first, second, secrets):
  a=request_json(base_url+"/api/threads",method="POST",headers={"Authorization":"Bearer "+first},body=b"{}",secrets=secrets)
  b=request_json(base_url+"/api/threads",method="POST",headers={"Authorization":"Bearer "+second},body=b"{}",secrets=secrets)
  if a.get("thread_id")==b.get("thread_id"): raise ValueError("owner isolation failed")
  try: request_json(base_url+"/api/threads/"+a["thread_id"]+"/state",headers={"Authorization":"Bearer "+second},secrets=secrets)
  except RequestError as error:
-  if error.status in {401,403,404}: return
+  if error.status==404: return
   raise
  raise ValueError("cross-owner state request was not denied")
 def check_https(base_url):
@@ -52,6 +55,7 @@ def parse_args(argv=None):
  p.add_argument("--user-one-env",required=True); p.add_argument("--user-two-env",required=True)
  for phase in PHASES:
   if phase not in DEFAULT:p.add_argument("--"+phase.replace("_","-"),action="store_true")
+ p.add_argument("--instance-id",default=""); p.add_argument("--snapshot-id",default="")
  return p.parse_args(argv)
 def run(args):
  url=urlparse(args.base_url)
@@ -69,10 +73,14 @@ def run(args):
    if phase=="tls": check_https(args.base_url)
    elif phase=="http_redirect": check_redirect(args.base_url)
    elif phase=="cognito_login": sessions=[login(args.base_url,secrets[0],secrets),login(args.base_url,secrets[1],secrets)]
-   elif phase=="provider_key": provider_key(args.base_url,sessions[0].get("token",""),provider_secret,secrets)
+   elif phase=="provider_key": provider_key(args.base_url,sessions[0].get("token",""),provider_secret,secrets,sessions[0]["session_id"])
    elif phase=="owner_isolation": owner_isolation(args.base_url,sessions[0].get("token",""),sessions[1].get("token",""),secrets)
-   elif phase=="restart_persistence": print("restart persistence target must be separately confirmed")
-   elif phase in {"stop_start","snapshot_restore"}: print("target must be printed and separately confirmed")
+   elif phase in {"restart_persistence","stop_start"}:
+    if not args.instance_id: raise ValueError("--instance-id is required for disruptive phase")
+    raise ValueError("instance "+args.instance_id+" requires separate confirmed operator action")
+   elif phase=="snapshot_restore":
+    if not args.snapshot_id: raise ValueError("--snapshot-id is required for restore")
+    raise ValueError("snapshot "+args.snapshot_id+" requires separate confirmed operator action")
   except Exception as error: raise ValueError(safe_error(error,secrets)) from None
  return 0
 def main(argv=None):

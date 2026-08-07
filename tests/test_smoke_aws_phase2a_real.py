@@ -34,7 +34,7 @@ def test_owner_isolation_rejects_same_owner(monkeypatch):
  with pytest.raises(ValueError): smoke.owner_isolation("https://epiagent.org","a","b",())
 def test_login_and_byok_pass_secrets_only_to_request_layer(monkeypatch, capsys):
  calls=[]
- monkeypatch.setattr(smoke,"request_json",lambda *args,**kwargs:calls.append((args,kwargs)) or {"token":"session"})
+ monkeypatch.setattr(smoke,"request_json",lambda *args,**kwargs:calls.append((args,kwargs)) or {"token":"session","configured":True})
  smoke.login("https://epiagent.org","credential-secret",("credential-secret",))
  smoke.provider_key("https://epiagent.org","session","provider-secret",("provider-secret",))
  assert "provider-secret" not in capsys.readouterr().out and len(calls)==2
