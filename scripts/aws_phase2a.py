@@ -11,7 +11,7 @@ class OperatorError(RuntimeError): pass
 class Runner(Protocol):
  def run(self, argv: Sequence[str], *, capture_output: bool=True) -> subprocess.CompletedProcess[str]: ...
 class SubprocessRunner:
- def run(self, argv, *, capture_output=True): return subprocess.run(argv,text=True,capture_output=capture,check=False)
+ def run(self, argv, *, capture_output=True): return subprocess.run(argv,text=True,capture_output=capture_output,check=False)
 def aws(*args:str)->list[str]: return ["aws",*args,"--profile",EXPECTED_PROFILE,"--region",EXPECTED_REGION]
 def run_json(r:Runner, argv:Sequence[str])->dict:
  p=r.run(argv)
@@ -20,7 +20,8 @@ def run_json(r:Runner, argv:Sequence[str])->dict:
  except ValueError as e: raise OperatorError("AWS returned invalid JSON") from e
 def require_expected_identity(r:Runner)->dict[str,str]:
  i=run_json(r,aws("sts","get-caller-identity")); arn=i.get("Arn","")
- if i.get("Account")!=EXPECTED_ACCOUNT or f":{EXPECTED_ACCOUNT}:" not in arn: raise OperatorError("refusing AWS mutation: unexpected account")
+ parts=arn.split(":")
+ if i.get("Account")!=EXPECTED_ACCOUNT or len(parts)!=6 or parts[0]!="arn" or parts[1]!="aws" or parts[4]!=EXPECTED_ACCOUNT or parts[2]!="iam" or not parts[5]: raise OperatorError("refusing AWS mutation: unexpected account")
  return i
 def bootstrap_role(r:Runner)->str:
  o=run_json(r,aws("cloudformation","describe-stacks","--stack-name",BOOTSTRAP_STACK))
@@ -35,7 +36,13 @@ def plan(r:Runner,stack:str,template:str)->dict:
  require_expected_identity(r); role=bootstrap_role(r); name=change_name(stack)
  exists=r.run(aws("cloudformation","describe-stacks","--stack-name",stack,"--role-arn",role)).returncode==0
  run_json(r,aws("cloudformation","create-change-set","--stack-name",stack,"--change-set-name",name,"--change-set-type","UPDATE" if exists else "CREATE","--template-body",f"file://{template}","--role-arn",role))
- result=run_json(r,aws("cloudformation","describe-change-set","--stack-name",stack,"--change-set-name",name,"--role-arn",role)); print(json.dumps(result,sort_keys=True)); return result
+ for _ in range(12):
+  result=run_json(r,aws("cloudformation","describe-change-set","--stack-name",stack,"--change-set-name",name,"--role-arn",role))
+  if result.get("Status") in {"CREATE_COMPLETE","FAILED"}:
+   print(json.dumps(result,sort_keys=True))
+   if result["Status"]=="FAILED": raise OperatorError("change set creation failed")
+   return result
+ raise OperatorError("change set did not reach a terminal status")
 def execute(r:Runner,arn:str,confirm:str,stack:str=APPLICATION_STACK)->None:
  if confirm!=EXPECTED_ACCOUNT: raise OperatorError("confirm the expected account exactly")
  require_expected_identity(r); d=run_json(r,stack_args(r,"describe-change-set","--change-set-name",arn))
@@ -49,6 +56,7 @@ def upload(r:Runner,file:str,key:str)->None:
   old=json.loads(head.stdout).get("Metadata",{}).get("sha256")
   if old!=digest: raise OperatorError("refusing overwrite with different checksum")
   return
+ if head.returncode and "404" not in (head.stderr or "") and "Not Found" not in (head.stderr or ""): raise OperatorError(head.stderr or "unable to inspect artifact")
  cp=r.run(aws("s3","cp",str(p),f"s3://{bucket}/{key}","--metadata",f"sha256={digest}","--expected-size",size))
  if cp.returncode: raise OperatorError(cp.stderr)
 def lifecycle(r:Runner, action:str, confirm:str)->None:
@@ -58,12 +66,16 @@ def lifecycle(r:Runner, action:str, confirm:str)->None:
  if p.returncode: raise OperatorError(p.stderr)
  print("stop preserves EBS cost but removes availability" if action=="stop" else "start restores availability and EC2 cost")
 def deploy(r:Runner,key:str,sha:str,release_id:str,domain:str,email:str)->None:
+ if not key.startswith("releases/") or ".." in key or len(sha)!=64 or len(release_id)!=40: raise OperatorError("invalid release deployment input")
  require_expected_identity(r); o=outputs(r); document=o.get("DeployReleaseDocumentName",""); instance=o.get("ApplicationInstanceId","")
  if not document or not instance: raise OperatorError("required deployment outputs missing")
  params=json.dumps({"Bucket":[o["ApplicationBucketName"]],"ReleaseKey":[key],"ReleaseSha256":[sha],"ReleaseId":[release_id],"DomainName":[domain],"CertificateEmail":[email]})
  sent=run_json(r,aws("ssm","send-command","--document-name",document,"--instance-ids",instance,"--parameters",params)); command=sent["Command"]["CommandId"]
- result=run_json(r,aws("ssm","get-command-invocation","--command-id",command,"--instance-id",instance))
- if result.get("Status")!="Success": raise OperatorError("deployment command did not succeed")
+ for _ in range(20):
+  result=run_json(r,aws("ssm","get-command-invocation","--command-id",command,"--instance-id",instance)); status=result.get("Status")
+  if status=="Success": return
+  if status in {"Failed","TimedOut","Cancelled"}: raise OperatorError("deployment command did not succeed")
+ raise OperatorError("deployment command did not reach a terminal status")
 def main(argv=None, runner:Runner|None=None)->int:
  r=runner or SubprocessRunner(); p=argparse.ArgumentParser(); s=p.add_subparsers(dest="cmd",required=True)
  s.add_parser("identity"); s.add_parser("validate"); s.add_parser("outputs")

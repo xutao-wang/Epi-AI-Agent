@@ -14,3 +14,18 @@ def test_wrong_identity_stops_after_one_call():
  import pytest
  with pytest.raises(cli.OperatorError): cli.require_expected_identity(r)
  assert len(r.calls)==1
+def test_malformed_or_failed_identity_stops_after_one_call():
+ import pytest, subprocess
+ for output,code in (("{}",0),("not json",0),("",255)):
+  class Bad(R):
+   def run(self,a,*,capture_output=True):
+    self.calls.append(list(a)); return subprocess.CompletedProcess(a,code,output,"expired credentials")
+  r=Bad(output)
+  with pytest.raises(cli.OperatorError): cli.require_expected_identity(r)
+  assert len(r.calls)==1
+def test_subprocess_runner_accepts_capture_output_false(monkeypatch):
+ seen={}
+ def fake(argv,**kwargs): seen.update(kwargs); import subprocess; return subprocess.CompletedProcess(argv,0,"","")
+ monkeypatch.setattr(cli.subprocess,"run",fake)
+ cli.SubprocessRunner().run(["true"],capture_output=False)
+ assert seen["capture_output"] is False
