@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make the existing invitation-only Epi Agent application deployable at `https://epiagent.org` on one recoverable AWS EC2 instance, then validate the live environment without Docker.
+**Goal:** Make the existing invitation-only Epi Agent application deployable at `https://epiagent.org` on one recoverable AWS EC2 instance, correct model-specific sampling parameters, then validate the live environment without Docker.
 
-**Architecture:** Version-controlled CloudFormation provisions the AWS foundation in account `641379499556`, Region `us-east-1`; immutable release archives are uploaded to private S3 and installed through an SSM Command document. Nginx terminates HTTPS and proxies to one FastAPI process, while a retained encrypted EBS data volume holds SQLite, conversations, and user artifacts. Repository implementation and offline validation finish before a separately approved change set creates billable resources.
+**Architecture:** Model runtime profiles first govern which request parameters each OpenAI model may receive, so GPT-5.6 requests omit unsupported sampling controls in local and AWS execution alike. Version-controlled CloudFormation provisions the AWS foundation in account `641379499556`, Region `us-east-1`; immutable release archives are uploaded to private S3 and installed through an SSM Command document. Nginx terminates HTTPS and proxies to one FastAPI process, while a retained encrypted EBS data volume holds SQLite, conversations, and user artifacts. Repository implementation and offline validation finish before a separately approved change set creates billable resources.
 
 **Tech Stack:** Python 3.12, FastAPI, React/Vite, pytest, Amazon Linux 2023, CloudFormation, EC2, gp3 EBS, S3, Cognito, Route 53, Systems Manager, CloudWatch, Nginx, Certbot, systemd, AWS CLI 2.36+, cfn-lint 1.53.1.
 
@@ -21,6 +21,7 @@
 - `epiagent.org` and hosted zone `Z02132461LVJ2PFOYFXFU` already exist and must never be imported, replaced, or deleted by CloudFormation.
 - Public ingress is TCP 80 and 443 only; no SSH, load balancer, CloudFront, NAT Gateway, RDS, Redis, ECS, or EKS.
 - Cognito public sign-up is disabled. Users bring their own OpenAI keys, and no server-owned provider key may be persisted.
+- Model request parameters are capability-driven: every GPT-5.6 public or internal profile must omit `temperature` and `top_p`; neither a UI default nor a legacy saved value may cause those keys to reach `ChatOpenAI`.
 - Local native startup remains supported and does not require Docker or AWS configuration.
 - Generated Python remains a controlled-demo boundary, runs through one fixed privileged launcher on AWS, receives no AWS/OpenAI credentials, and has outbound traffic blocked.
 - Durable EBS, S3, and Cognito resources use both deletion and update-replacement retention policies.
@@ -28,6 +29,14 @@
 - Never log authorization headers, cookies, Cognito tokens, provider keys, request bodies containing keys, or AWS credential material.
 
 ## File and Responsibility Map
+
+### Model capability correction
+
+- Modify `utils/model_runtime_profiles.py`: declare sampling-control support per model and expose it through model descriptors.
+- Modify `llm_vllm.py`: omit `temperature` and `top_p` for profiles that do not support sampling controls.
+- Modify `api/runtime.py` and `api/schemas.py`: normalize unsupported sampling values to `None` and return the capability to clients.
+- Modify `frontend/src/types.ts` and `frontend/src/RuntimeSettingsPanel.tsx`: clear and hide unsupported controls when a GPT-5.6 model is selected.
+- Modify `tests/test_llm_vllm.py`, `tests/test_api_runtime.py`, `frontend/src/RuntimeSettingsPanel.test.tsx`, and related fixtures: prove GPT-5.6 omission while preserving GPT-5.4 behavior.
 
 ### Application deployment interfaces
 
@@ -72,6 +81,299 @@
 - Create `scripts/smoke_aws_phase2a_real.py`: opt-in live Cognito/HTTPS/persistence acceptance smoke with secret redaction.
 - Create `tests/test_smoke_aws_phase2a_real.py`: offline contract tests for the opt-in smoke.
 - Modify `README.md` and `docs/working-demo.md`: link the runbook and replace the now-obsolete “AWS delivery deferred” wording.
+
+---
+
+### Task 0: Enforce model-specific sampling parameter support
+
+**Files:**
+- Modify: `utils/model_runtime_profiles.py`
+- Modify: `llm_vllm.py`
+- Modify: `api/runtime.py:791-832`
+- Modify: `api/schemas.py:87-105`
+- Modify: `frontend/src/types.ts:59-73`
+- Modify: `frontend/src/RuntimeSettingsPanel.tsx`
+- Modify: `tests/test_llm_vllm.py`
+- Modify: `tests/test_api_runtime.py:750-780`
+- Modify: `tests/test_api_server.py`
+- Modify: `frontend/src/RuntimeSettingsPanel.test.tsx`
+- Modify: `frontend/src/App.test.tsx`
+
+**Interfaces:**
+- Produces: `ModelRuntimeProfile.supports_sampling_controls: bool`.
+- Produces: `ModelRuntimeProfile.descriptor()["supports_sampling_controls"]` and matching API/frontend `ModelOption` fields.
+- Produces: model-aware `ReportAgentApiRuntime._normalize_settings(...)` that returns `temperature=None` and `top_p=None` for every GPT-5.6 profile.
+- Produces: defense-in-depth in `build_openai_llm(...)` so unsupported sampling keys are absent even if a stale caller supplies values.
+- Consumed by: the runtime-options endpoint, model settings UI, local native runs, and the later AWS release.
+
+- [ ] **Step 1: Write failing model-profile capability tests**
+
+Add a focused test in `tests/test_api_runtime.py` with these exact assertions:
+
+```python
+def test_model_profiles_declare_sampling_control_support() -> None:
+    assert model_runtime_profile("gpt-5.4").supports_sampling_controls is True
+    for model_id in (
+        "gpt-5.6-luna",
+        "gpt-5.6-terra",
+        "gpt-5.6-sol",
+        "gpt5.6-Luna-Light",
+    ):
+        assert (
+            model_runtime_profile(model_id).supports_sampling_controls
+            is False
+        )
+```
+
+Also assert that the public descriptor for `gpt-5.6-sol` contains
+`"supports_sampling_controls": False`.
+
+- [ ] **Step 2: Run the profile test and confirm RED**
+
+Run: `.venv/bin/python -m pytest tests/test_api_runtime.py -k sampling_control_support -q`
+
+Expected: FAIL because `ModelRuntimeProfile` has no
+`supports_sampling_controls` field.
+
+- [ ] **Step 3: Add the explicit model capability**
+
+Add this required dataclass field next to `reasoning_effort`:
+
+```python
+supports_sampling_controls: bool
+```
+
+Set it to `True` only for `gpt-5.4`, and set it to `False` for
+`gpt-5.6-luna`, `gpt-5.6-terra`, `gpt-5.6-sol`, and
+`gpt5.6-Luna-Light`. Add the field to `descriptor()`:
+
+```python
+"supports_sampling_controls": self.supports_sampling_controls,
+```
+
+Do not infer support from a model-name prefix at request time; the registry is
+the single source of truth.
+
+- [ ] **Step 4: Write failing transport tests for omission and preservation**
+
+Extend `tests/test_llm_vllm.py` with one reusable capture helper, then prove both
+branches:
+
+```python
+def _capture_chat_openai(monkeypatch) -> dict[str, object]:
+    captured: dict[str, object] = {}
+
+    class FakeChatOpenAI:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(llm_vllm, "ChatOpenAI", FakeChatOpenAI)
+    return captured
+
+
+def test_gpt56_omits_unsupported_sampling_kwargs(monkeypatch) -> None:
+    captured = _capture_chat_openai(monkeypatch)
+    llm_vllm.build_openai_llm(
+        model_name="gpt-5.6-sol",
+        api_key="session-key",
+        temperature=0.2,
+        top_p=0.8,
+    )
+    assert "temperature" not in captured
+    assert "top_p" not in captured
+
+
+def test_gpt54_preserves_supported_sampling_kwargs(monkeypatch) -> None:
+    captured = _capture_chat_openai(monkeypatch)
+    llm_vllm.build_openai_llm(
+        model_name="gpt-5.4",
+        api_key="session-key",
+        temperature=0.2,
+        top_p=0.8,
+    )
+    assert captured["temperature"] == 0.2
+    assert captured["top_p"] == 0.8
+```
+
+Refactor the existing key-forwarding test to use `_capture_chat_openai` so the
+test module has only one fake implementation.
+
+- [ ] **Step 5: Run the transport tests and confirm RED**
+
+Run: `.venv/bin/python -m pytest tests/test_llm_vllm.py -q`
+
+Expected: the GPT-5.6 test FAILS because explicit values are currently passed
+to `ChatOpenAI`; the GPT-5.4 preservation test passes.
+
+- [ ] **Step 6: Gate transport kwargs by the model profile**
+
+Replace the unconditional sampling assignments in `build_openai_llm` with:
+
+```python
+supports_sampling = (
+    profile is None or profile.supports_sampling_controls
+)
+if supports_sampling and temperature is not None:
+    kwargs["temperature"] = temperature
+elif supports_sampling and profile is not None and profile.model_id == "gpt-5.4":
+    kwargs["temperature"] = 0.0
+if supports_sampling and top_p is not None:
+    kwargs["top_p"] = top_p
+elif supports_sampling and profile is not None and profile.model_id == "gpt-5.4":
+    kwargs["top_p"] = 1.0
+```
+
+The important contract is key absence for unsupported profiles. Do not send
+`temperature=None`, `top_p=None`, `temperature=0`, or `top_p=1` as a substitute
+for omission.
+
+- [ ] **Step 7: Write failing runtime normalization and descriptor tests**
+
+Replace the existing GPT-5.6 custom-settings expectation in
+`tests/test_api_runtime.py` so stale values are accepted but normalized away:
+
+```python
+assert state.runtime_settings.model_name == "gpt-5.6-luna"
+assert state.runtime_settings.temperature is None
+assert state.runtime_settings.top_p is None
+assert state.runtime_settings.max_steps == 6
+assert state.runtime_settings.timeout_seconds == 120
+```
+
+Add an assertion on `runtime.runtime_options()`:
+
+```python
+options = runtime.runtime_options()
+gpt56 = next(model for model in options.models if model.id == "gpt-5.6-luna")
+assert gpt56.supports_sampling_controls is False
+```
+
+Keep a GPT-5.4 test proving valid non-null sampling settings still survive
+normalization.
+
+- [ ] **Step 8: Run runtime/API tests and confirm RED**
+
+Run: `.venv/bin/python -m pytest tests/test_api_runtime.py tests/test_api_server.py -k 'runtime_settings or runtime_options or custom_openai_model' -q`
+
+Expected: FAIL because GPT-5.6 values remain non-null and `ModelOption` lacks
+the capability field.
+
+- [ ] **Step 9: Normalize unsupported values and extend the API schema**
+
+Add this required field to `api.schemas.ModelOption`:
+
+```python
+supports_sampling_controls: bool
+```
+
+In `_normalize_settings`, resolve the selected profile after validating the
+model name, then clear sampling fields before range validation:
+
+```python
+profile = model_runtime_profile(normalized.model_name)
+if not profile.supports_sampling_controls:
+    normalized.temperature = None
+    normalized.top_p = None
+```
+
+Use the same `profile` object when assigning the model-specific workflow
+timeout. This deliberately tolerates old saved/default values while ensuring
+they cannot reach a GPT-5.6 request.
+
+- [ ] **Step 10: Write failing frontend capability tests**
+
+Add a required `supportsSamplingControls: boolean` parameter to the
+`modelOption` fixture factory and return it as `supports_sampling_controls`.
+Pass `false` for every GPT-5.6 option and `true` for GPT-5.4. Create a
+`standardSettings` fixture with `model_name: "gpt-5.4"`, render with that
+fixture, and assert:
+
+```typescript
+fireEvent.change(screen.getByLabelText("Model"), {
+  target: { value: "gpt-5.6-luna" },
+});
+expect(onChange).toHaveBeenLastCalledWith({
+  ...standardSettings,
+  model_name: "gpt-5.6-luna",
+  temperature: null,
+  top_p: null,
+});
+expect(screen.queryByLabelText("Temperature")).not.toBeInTheDocument();
+expect(screen.queryByLabelText("Top probability")).not.toBeInTheDocument();
+expect(
+  screen.getByText("Sampling controls are unavailable for this model."),
+).toBeInTheDocument();
+```
+
+Also retain the existing GPT-5.4 edit test to prove both controls remain
+visible and editable for a supporting profile. Add the required boolean to the
+`ModelOption` fixture in `frontend/src/App.test.tsx` so the full TypeScript test
+suite remains type-correct.
+
+- [ ] **Step 11: Run the frontend test and confirm RED**
+
+Run: `npm --prefix frontend test -- --run src/RuntimeSettingsPanel.test.tsx`
+
+Expected: FAIL because the selected model does not yet control the sampling
+fields or clear stale values.
+
+- [ ] **Step 12: Implement model-aware frontend controls**
+
+Add this field to `frontend/src/types.ts`:
+
+```typescript
+supports_sampling_controls: boolean;
+```
+
+In `RuntimeSettingsPanel`, derive the selected profile from `modelOptions`.
+Use a dedicated model-change handler that clears both fields when the target
+profile does not support them:
+
+```typescript
+function handleModelChange(modelName: string) {
+  const selected = modelOptions.find((model) => model.id === modelName);
+  updateSettings({
+    model_name: modelName,
+    ...(selected && !selected.supports_sampling_controls
+      ? { temperature: null, top_p: null }
+      : {}),
+  });
+}
+```
+
+Render the Temperature and Top probability inputs only when the selected
+profile supports sampling controls. Otherwise render exactly:
+
+```tsx
+<p>Sampling controls are unavailable for this model.</p>
+```
+
+Leave max steps and workflow timeout visible for every model.
+
+- [ ] **Step 13: Run the complete correction gate**
+
+Run:
+
+```bash
+.venv/bin/python -m pytest tests/test_llm_vllm.py tests/test_api_runtime.py tests/test_api_server.py -q
+npm --prefix frontend test -- --run
+npm --prefix frontend run build
+```
+
+Expected: all commands PASS. Inspect the fake `ChatOpenAI` kwargs once more and
+confirm no GPT-5.6 request contains either sampling key.
+
+- [ ] **Step 14: Commit the correction before infrastructure work**
+
+```bash
+git add utils/model_runtime_profiles.py llm_vllm.py api/runtime.py api/schemas.py \
+  frontend/src/types.ts frontend/src/RuntimeSettingsPanel.tsx \
+  tests/test_llm_vllm.py tests/test_api_runtime.py tests/test_api_server.py \
+  frontend/src/RuntimeSettingsPanel.test.tsx frontend/src/App.test.tsx
+git commit -m "fix: omit unsupported GPT-5.6 sampling controls"
+```
+
+Do not begin Task 1 until this commit passes the complete correction gate.
 
 ---
 
@@ -1050,7 +1352,7 @@ not invite additional users until every mandatory acceptance item passes.
 
 Phase 2A is complete only when:
 
-- repository tasks 1–9 are committed on `aws-test` with fresh passing evidence;
+- repository tasks 0–9 are committed on `aws-test` with fresh passing evidence;
 - two-stage code review has no unresolved Critical or Important finding;
 - the user separately approved both IAM bootstrap and billable stack execution;
 - the live stack targets account `641379499556`, Region `us-east-1`;
