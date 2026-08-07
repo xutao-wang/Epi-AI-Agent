@@ -1,0 +1,14 @@
+[Unit]
+Description=Renew Epi-Agent TLS certificate
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/certbot renew --webroot -w /var/www/certbot --quiet
+ExecStartPost=/usr/bin/systemctl reload nginx.service
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt
