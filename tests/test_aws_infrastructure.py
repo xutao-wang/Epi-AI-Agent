@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from pathlib import Path
 
@@ -249,6 +250,15 @@ def test_bootstrap_policy_supports_phase2a_endpoint_storage_and_cognito_domain_l
         "cognito-idp:UpdateUserPoolDomain",
     } <= actions
     assert "s3:DeleteBucketTagging" not in actions
+
+
+def test_bootstrap_policy_supports_cognito_resource_tag_lifecycle() -> None:
+    statements = bootstrap_template()["Resources"]["CloudFormationExecutionPolicy"]["Properties"][
+        "PolicyDocument"
+    ]["Statement"]
+    cognito = next(statement for statement in statements if statement["Sid"] == "ManageCognito")
+
+    assert {"cognito-idp:TagResource", "cognito-idp:UntagResource"} <= set(cognito["Action"])
 
 
 def test_bootstrap_boundary_and_execution_role_support_task7_without_broadening_iam() -> None:
@@ -609,6 +619,27 @@ def test_phase2a_ssm_release_document_uses_strict_environment_interpolation() ->
     assert 'sed "s/epiagent\\\\.org/$SSM_DomainName/g"' in command
     assert "/etc/nginx/staged/epi-agent.conf" in command
     assert "/etc/nginx/conf.d/epi-agent.conf" not in command
+
+
+def test_phase2a_ssm_release_document_patterns_are_re2_compatible() -> None:
+    parameters = phase2a_template()["Resources"]["EpiAgentDeployReleaseDocument"]["Properties"][
+        "Content"
+    ]["parameters"]
+    patterns = {name: parameter["allowedPattern"] for name, parameter in parameters.items()}
+
+    for pattern in patterns.values():
+        assert all(token not in pattern for token in ("(?=", "(?!", "(?<=", "(?<!"))
+
+    release_key = re.compile(patterns["ReleaseKey"])
+    assert release_key.fullmatch("releases/0123456789abcdef.tar.gz")
+    assert not release_key.fullmatch("releases/../secrets")
+    assert not release_key.fullmatch("releases/package..tar.gz")
+    assert not release_key.fullmatch("releases//package.tar.gz")
+
+    domain_name = re.compile(patterns["DomainName"])
+    assert domain_name.fullmatch("epiagent.org")
+    assert not domain_name.fullmatch("-epiagent.org")
+    assert not domain_name.fullmatch("epiagent-.org")
 
 
 def test_phase2a_backup_and_observability_cover_host_failure_modes() -> None:

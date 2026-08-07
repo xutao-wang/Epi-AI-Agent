@@ -542,7 +542,7 @@ Resources:
             allowedPattern: '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
           ReleaseKey:
             type: String
-            allowedPattern: '^releases/(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9._/-]*$'
+            allowedPattern: '^releases/[A-Za-z0-9][A-Za-z0-9_/-]*(\.[A-Za-z0-9_/-]+)*$'
           ReleaseSha256:
             type: String
             allowedPattern: '^[0-9a-f]{64}$'
@@ -551,7 +551,7 @@ Resources:
             allowedPattern: '^[0-9a-f]{40}$'
           DomainName:
             type: String
-            allowedPattern: '^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))+$'
+            allowedPattern: '^([A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9-]{0,61}[A-Za-z0-9])(\.([A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9-]{0,61}[A-Za-z0-9]))+$'
           CertificateEmail:
             type: String
             allowedPattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'

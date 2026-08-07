@@ -241,6 +241,8 @@ Resources:
               - cognito-idp:DescribeUserPoolClient
               - cognito-idp:DescribeUserPoolDomain
               - cognito-idp:ListUserPools
+              - cognito-idp:TagResource
+              - cognito-idp:UntagResource
               - cognito-idp:UpdateUserPool
               - cognito-idp:UpdateUserPoolClient
               - cognito-idp:UpdateUserPoolDomain
