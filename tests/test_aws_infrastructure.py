@@ -92,8 +92,11 @@ def test_bootstrap_execution_policy_is_limited_to_phase_2a_services_and_resource
         "ManageDnsRecords",
         "ManageObservability",
         "ManageParametersAndLifecyclePolicies",
-        "ManageEpiAgentRoles",
+        "ManageEpiAgentRoleReadAndDeletion",
+        "CreateEpiAgentRoleWithBoundary",
+        "MutateEpiAgentRolePermissionsAndTrustWithBoundary",
         "PassEpiAgentRolesToApprovedServices",
+        "ReadDnsChanges",
     }
     assert "iam:PassRole" in next(
         statement["Action"]
@@ -109,6 +112,34 @@ def test_bootstrap_execution_policy_is_limited_to_phase_2a_services_and_resource
     assert pass_role["Condition"] == {
         "StringEquals": {"iam:PassedToService": ["ec2.amazonaws.com", "dlm.amazonaws.com"]}
     }
+    mutations = {
+        "iam:CreateRole",
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:PutRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:UpdateAssumeRolePolicy",
+    }
+    boundary_arn = {"Fn::GetAtt": "EpiAgentWorkloadBoundary.PolicyArn"}
+    mutation_statements = [
+        statement
+        for statement in statements
+        if mutations.intersection(
+            {statement["Action"]}
+            if isinstance(statement["Action"], str)
+            else set(statement["Action"])
+        )
+    ]
+    assert mutation_statements
+    seen_mutations: set[str] = set()
+    for statement in mutation_statements:
+        actions = {statement["Action"]} if isinstance(statement["Action"], str) else set(statement["Action"])
+        assert actions <= mutations
+        seen_mutations.update(actions)
+        assert statement["Condition"] == {
+            "StringEquals": {"iam:PermissionsBoundary": boundary_arn}
+        }
+    assert seen_mutations == mutations
     for excluded in (
         "AWS::IAM::User",
         "AWS::IAM::AccessKey",
@@ -120,8 +151,58 @@ def test_bootstrap_execution_policy_is_limited_to_phase_2a_services_and_resource
         "route53:CreateHostedZone",
         "route53:DeleteHostedZone",
         "route53domains:",
+        "iam:CreatePolicy",
+        "iam:DeletePolicy",
+        "iam:CreatePolicyVersion",
+        "iam:DeletePolicyVersion",
+        "iam:SetDefaultPolicyVersion",
+        "iam:PutRolePermissionsBoundary",
+        "iam:DeleteRolePermissionsBoundary",
     ):
         assert excluded not in rendered
+
+
+def test_bootstrap_workload_boundary_limits_workload_roles_without_iam_or_sts() -> None:
+    template = bootstrap_template()
+    resources = template["Resources"]
+    boundary = resources["EpiAgentWorkloadBoundary"]
+
+    assert boundary["Type"] == "AWS::IAM::ManagedPolicy"
+    assert boundary["Properties"]["ManagedPolicyName"] == "epi-agent-workload-boundary"
+    assert boundary["Metadata"] == {"Project": "epi-agent", "Environment": "phase2a"}
+    assert "PermissionsBoundary" not in resources["CloudFormationExecutionRole"]["Properties"]
+    actions = {
+        action
+        for statement in boundary["Properties"]["PolicyDocument"]["Statement"]
+        for action in (
+            [statement["Action"]]
+            if isinstance(statement["Action"], str)
+            else statement["Action"]
+        )
+    }
+    assert actions
+    assert all(action.split(":", 1)[0] in {"ec2", "logs", "s3", "ssm"} for action in actions)
+    assert all(not action.startswith(("iam:", "sts:")) for action in actions)
+
+
+def test_bootstrap_stack_scopes_route53_change_lookup_to_change_arns() -> None:
+    statements = bootstrap_template()["Resources"]["CloudFormationExecutionPolicy"]["Properties"][
+        "PolicyDocument"
+    ]["Statement"]
+
+    records = next(statement for statement in statements if statement["Sid"] == "ManageDnsRecords")
+    changes = next(statement for statement in statements if statement["Sid"] == "ReadDnsChanges")
+    assert records["Action"] == [
+        "route53:ChangeResourceRecordSets",
+        "route53:ListResourceRecordSets",
+    ]
+    assert records["Resource"] == {"Fn::Sub": "arn:${AWS::Partition}:route53:::hostedzone/*"}
+    assert changes == {
+        "Sid": "ReadDnsChanges",
+        "Effect": "Allow",
+        "Action": "route53:GetChange",
+        "Resource": {"Fn::Sub": "arn:${AWS::Partition}:route53:::change/*"},
+    }
 
 
 def test_bootstrap_stack_exports_the_execution_role_arn() -> None:
