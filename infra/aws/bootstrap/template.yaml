@@ -62,9 +62,12 @@ Resources:
             Effect: Allow
             Action:
               - logs:CreateLogStream
-              - logs:DescribeLogStreams
               - logs:PutLogEvents
             Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/epi-agent/*:*
+          - Sid: DescribeWorkloadLogStreams
+            Effect: Allow
+            Action: logs:DescribeLogStreams
+            Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/epi-agent/*
           - Sid: ReadWorkloadParameters
             Effect: Allow
             Action:

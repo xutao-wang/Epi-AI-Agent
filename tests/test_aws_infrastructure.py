@@ -259,6 +259,9 @@ def test_bootstrap_boundary_and_execution_role_support_task7_without_broadening_
     execution = template["Resources"]["CloudFormationExecutionPolicy"]["Properties"]["PolicyDocument"]["Statement"]
     execution_actions = {action for statement in execution for action in ([statement["Action"]] if isinstance(statement["Action"], str) else statement["Action"])}
     assert {"iam:CreateInstanceProfile", "iam:AddRoleToInstanceProfile", "ssm:CreateDocument", "ssm:UpdateDocument", "logs:PutMetricFilter", "ec2:ModifyInstanceAttribute"} <= execution_actions
+    log_statements = {statement["Sid"]: statement for statement in boundary if statement["Sid"] in {"WriteWorkloadLogs", "DescribeWorkloadLogStreams"}}
+    assert log_statements["WriteWorkloadLogs"]["Resource"] == {"Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/epi-agent/*:*"}
+    assert log_statements["DescribeWorkloadLogStreams"] == {"Sid": "DescribeWorkloadLogStreams", "Effect": "Allow", "Action": "logs:DescribeLogStreams", "Resource": {"Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/epi-agent/*"}}
 
 
 def test_bootstrap_stack_exports_the_execution_role_arn() -> None:
