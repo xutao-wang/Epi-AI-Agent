@@ -19,9 +19,17 @@ def test_python_worker_launcher_enforces_the_fixed_privilege_boundary() -> None:
     assert "runuser --user epi-agent-exec" in source
     assert "/opt/epi-agent/current/epi_agent/runtimes/python/worker.py" in source
     web_acl_command = "runuser --user epi-agent-web -- /usr/bin/setfacl"
-    assert source.count(web_acl_command) == 2
+    assert source.count(web_acl_command) == 3
     assert "\n/usr/bin/setfacl" not in source
-    assert source.index(web_acl_command) < source.index(
+    child_acl_command = f"{web_acl_command} -R"
+    assert source.count(child_acl_command) == 2
+    run_dir_acl_command = (
+        "runuser --user epi-agent-web -- /usr/bin/setfacl "
+        '-m "u:$worker_user:rx" "$run_dir"'
+    )
+    assert source.count(run_dir_acl_command) == 1
+    assert source.index(run_dir_acl_command) < source.index(child_acl_command)
+    assert source.index(child_acl_command) < source.index(
         "runuser --user epi-agent-exec"
     )
     assert 'eval ' not in source
