@@ -78,8 +78,10 @@ for path in "$run_dir" "$input_dir" "$output_dir" "$work_dir"; do
   fi
 done
 
-/usr/bin/setfacl -R -m "u:$worker_user:rx" "$input_dir"
-/usr/bin/setfacl -R -m "u:$worker_user:rwx" "$output_dir" "$work_dir"
+/usr/sbin/runuser --user epi-agent-web -- /usr/bin/setfacl -R \
+  -m "u:$worker_user:rx" "$input_dir"
+/usr/sbin/runuser --user epi-agent-web -- /usr/bin/setfacl -R \
+  -m "u:$worker_user:rwx" "$output_dir" "$work_dir"
 
 exec /usr/sbin/runuser --user epi-agent-exec -- \
   /usr/bin/env -i \

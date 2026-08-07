@@ -9,6 +9,8 @@ from pathlib import Path
 
 
 DEFAULT_CORS_ALLOW_ORIGIN_REGEX = r"^http://(127\.0\.0\.1|localhost):\d+$"
+_PYTHON_WORKER_PATH = "/usr/local/libexec/epi-agent-python-worker"
+_PYTHON_WORKER_LAUNCHER = ("/usr/bin/sudo", "-n", _PYTHON_WORKER_PATH)
 
 
 def python_worker_launcher(environ: Mapping[str, str]) -> tuple[str, ...] | None:
@@ -21,11 +23,11 @@ def python_worker_launcher(environ: Mapping[str, str]) -> tuple[str, ...] | None
         launcher = tuple(shlex.split(configured))
     except ValueError as exc:
         raise ValueError("REPORT_AGENT_PYTHON_WORKER_LAUNCHER is invalid") from exc
-    if not launcher or not Path(launcher[0]).is_absolute():
+    if launcher != (_PYTHON_WORKER_PATH,):
         raise ValueError(
-            "REPORT_AGENT_PYTHON_WORKER_LAUNCHER must start with an absolute path"
+            "REPORT_AGENT_PYTHON_WORKER_LAUNCHER must be the fixed worker path"
         )
-    return launcher
+    return _PYTHON_WORKER_LAUNCHER
 
 
 @dataclass(frozen=True)

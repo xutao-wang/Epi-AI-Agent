@@ -37,14 +37,10 @@ from utils.model_runtime_profiles import model_runtime_profile
         ("", None),
         (
             "/usr/local/libexec/epi-agent-python-worker",
-            ("/usr/local/libexec/epi-agent-python-worker",),
-        ),
-        (
-            "/usr/local/libexec/epi-agent-python-worker --fixed-option 'value with spaces'",
             (
+                "/usr/bin/sudo",
+                "-n",
                 "/usr/local/libexec/epi-agent-python-worker",
-                "--fixed-option",
-                "value with spaces",
             ),
         ),
     ],
@@ -60,7 +56,14 @@ def test_python_worker_launcher_reads_the_hosted_launcher_setting(
 
 @pytest.mark.parametrize(
     "configured",
-    ["relative-launcher", "/usr/local/worker\n", "/usr/local/worker\x00"],
+    [
+        "relative-launcher",
+        "/usr/local/worker\n",
+        "/usr/local/worker\x00",
+        "/usr/local/libexec/alternate-worker",
+        "/usr/local/libexec/epi-agent-python-worker --fixed-option",
+        "/usr/bin/sudo -n /usr/local/libexec/epi-agent-python-worker",
+    ],
 )
 def test_python_worker_launcher_rejects_unsafe_hosted_configuration(
     configured: str,
@@ -121,6 +124,8 @@ def test_application_routes_hosted_python_through_the_fixed_launcher(
     python_runtime = captured["python_runtime"]
     assert python_runtime._runtime_root == storage.execution.resolve()
     assert python_runtime._worker_launcher == (
+        "/usr/bin/sudo",
+        "-n",
         "/usr/local/libexec/epi-agent-python-worker",
     )
 

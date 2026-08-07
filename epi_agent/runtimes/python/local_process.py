@@ -29,6 +29,11 @@ MAX_FIGURE_BYTES = 10_000_000
 _DEFAULT_TIMEOUT_SECONDS = 60.0
 _DEFAULT_MEMORY_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
 _ALLOWED_ENVIRONMENT = ("PATH", "LANG", "LC_ALL", "PYTHONUTF8")
+_HOSTED_WORKER_LAUNCHER = (
+    "/usr/bin/sudo",
+    "-n",
+    "/usr/local/libexec/epi-agent-python-worker",
+)
 
 
 def _failure(
@@ -248,8 +253,8 @@ class LocalPythonRuntime:
                 raise ValueError("worker_launcher must contain non-empty strings")
             if "\x00" in "".join(launcher):
                 raise ValueError("worker_launcher must not contain NUL characters")
-            if not Path(launcher[0]).is_absolute():
-                raise ValueError("worker_launcher must start with an absolute path")
+            if launcher != _HOSTED_WORKER_LAUNCHER:
+                raise ValueError("worker_launcher must be the fixed hosted launcher")
             self._worker_launcher = launcher
 
     def execute(

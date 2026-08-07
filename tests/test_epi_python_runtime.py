@@ -39,8 +39,16 @@ class _SuccessfulWorker:
     ("worker_launcher", "expected_prefix"),
     [
         (
-            ("/usr/local/libexec/epi-agent-python-worker",),
-            ["/usr/local/libexec/epi-agent-python-worker"],
+            (
+                "/usr/bin/sudo",
+                "-n",
+                "/usr/local/libexec/epi-agent-python-worker",
+            ),
+            [
+                "/usr/bin/sudo",
+                "-n",
+                "/usr/local/libexec/epi-agent-python-worker",
+            ],
         ),
         (
             None,
@@ -113,7 +121,13 @@ def test_python_runtime_uses_configured_launcher_or_native_worker(
 
 @pytest.mark.parametrize(
     "worker_launcher",
-    [(), ("relative-launcher",)],
+    [
+        (),
+        ("relative-launcher",),
+        ("/usr/local/libexec/alternate-worker",),
+        ("/usr/bin/sudo", "-n", "/usr/local/libexec/alternate-worker"),
+        ("/usr/bin/sudo", "-n", "/usr/local/libexec/epi-agent-python-worker", "--x"),
+    ],
 )
 def test_python_runtime_rejects_invalid_worker_launcher(
     worker_launcher: tuple[str, ...],
