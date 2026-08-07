@@ -34,7 +34,7 @@ def _source(): return (Path(__file__).parents[1]/"scripts/aws_phase2a.py").read_
 def test_bootstrap_plan_is_direct_and_never_executes():
  s=_source(); assert "def plan_bootstrap" in s and 'create-change-set' in s and 'execute-change-set' not in s[s.index("def plan_bootstrap"):s.index("def execute(")]
 def test_application_plan_resolves_execution_role_and_polls():
- s=_source(); assert "role=bootstrap_role(r)" in s and "for _ in range(12)" in s
+ s=_source(); assert "role=bootstrap_role(r)" in s and "CHANGE_SET_TIMEOUT_SECONDS" in s
 def test_execute_change_set_rechecks_exact_arn_stack_and_status():
  s=_source(); assert 'd.get("ChangeSetId",d.get("ChangeSetArn"))!=arn' in s and 'd.get("Status")!="CREATE_COMPLETE"' in s
 def test_validate_runs_lint_before_aws_validation():
@@ -64,7 +64,7 @@ def test_role_is_placed_only_on_application_change_set_create():
  s=_source(); create=s[s.index('"create-change-set"'):s.index('"describe-change-set"')]; assert '"--role-arn",role' in create
  assert 'describe-change-set","--stack-name",stack,"--change-set-name",name)' in s
 def test_ssm_poll_contract_retries_before_terminal_failure():
- s=_source(); assert 'for _ in range(20)' in s and 'time.sleep(POLL_INTERVAL_SECONDS)' in s and '"TimedOut","Cancelled"' in s
+ s=_source(); assert 'DEPLOY_TIMEOUT_SECONDS' in s and 'time.sleep(POLL_INTERVAL_SECONDS)' in s and '"TimedOut","Cancelled"' in s
 def test_change_set_poll_contract_sleeps_and_never_executes():
  s=_source(); section=s[s.index("def plan("):s.index("def plan_bootstrap")]; assert 'time.sleep(POLL_INTERVAL_SECONDS)' in section and 'execute-change-set' not in section
 

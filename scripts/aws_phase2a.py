@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Account-guarded operator commands for the Epi Agent Phase 2A stack."""
 from __future__ import annotations
-import argparse, hashlib, json, re, subprocess, sys, time
+import argparse, hashlib, json, re, subprocess, sys, time, uuid
 from pathlib import Path
 from typing import Protocol, Sequence
 
 EXPECTED_ACCOUNT="641379499556"; EXPECTED_PROFILE="xutao-dev"; EXPECTED_REGION="us-east-1"
 BOOTSTRAP_STACK="epi-agent-bootstrap"; APPLICATION_STACK="epi-agent-phase2a"
 POLL_INTERVAL_SECONDS=1
+CHANGE_SET_TIMEOUT_SECONDS=1800
+DEPLOY_TIMEOUT_SECONDS=3600
 class OperatorError(RuntimeError): pass
 class Runner(Protocol):
  def run(self, argv: Sequence[str], *, capture_output: bool=True) -> subprocess.CompletedProcess[str]: ...
@@ -32,31 +34,35 @@ def bootstrap_role(r:Runner)->str:
 def stack_args(r:Runner,*x:str)->list[str]: return aws("cloudformation",*x)
 def outputs(r:Runner)->dict[str,str]:
  o=run_json(r,stack_args(r,"describe-stacks","--stack-name",APPLICATION_STACK)); return {x["OutputKey"]:x["OutputValue"] for x in o["Stacks"][0]["Outputs"]}
-def change_name(stack:str)->str:return f"epi-agent-{stack}-plan"
+def change_name(stack:str)->str:return f"epi-agent-{stack}-plan-{uuid.uuid4().hex[:12]}"
 def plan(r:Runner,stack:str,template:str, parameters:list[str]|None=None)->dict:
  require_expected_identity(r); role=bootstrap_role(r); name=change_name(stack)
- exists=r.run(aws("cloudformation","describe-stacks","--stack-name",stack)).returncode==0
+ probe=r.run(aws("cloudformation","describe-stacks","--stack-name",stack))
+ if probe.returncode and "does not exist" not in (probe.stderr or "").lower() and "validationerror" not in (probe.stderr or "").lower(): raise OperatorError(probe.stderr or "unable to describe stack")
+ exists=probe.returncode==0
  extra=["--parameters",*parameters] if parameters else []
  run_json(r,aws("cloudformation","create-change-set","--stack-name",stack,"--change-set-name",name,"--change-set-type","UPDATE" if exists else "CREATE","--template-body",f"file://{template}","--role-arn",role,"--capabilities","CAPABILITY_NAMED_IAM",*extra))
- for _ in range(12):
+ deadline=time.monotonic()+CHANGE_SET_TIMEOUT_SECONDS
+ while time.monotonic()<deadline:
   result=run_json(r,aws("cloudformation","describe-change-set","--stack-name",stack,"--change-set-name",name))
   if result.get("Status") in {"CREATE_COMPLETE","FAILED"}:
    print(json.dumps(result,sort_keys=True))
    if result["Status"]=="FAILED": raise OperatorError("change set creation failed")
    return result
   time.sleep(POLL_INTERVAL_SECONDS)
- raise OperatorError("change set did not reach a terminal status")
+ raise OperatorError("change set did not reach a terminal status before timeout")
 def plan_bootstrap(r:Runner,template:str)->dict:
  require_expected_identity(r); name=change_name(BOOTSTRAP_STACK)
  run_json(r,aws("cloudformation","create-change-set","--stack-name",BOOTSTRAP_STACK,"--change-set-name",name,"--change-set-type","CREATE","--template-body",f"file://{template}","--capabilities","CAPABILITY_NAMED_IAM"))
- for _ in range(12):
+ deadline=time.monotonic()+CHANGE_SET_TIMEOUT_SECONDS
+ while time.monotonic()<deadline:
   result=run_json(r,aws("cloudformation","describe-change-set","--stack-name",BOOTSTRAP_STACK,"--change-set-name",name))
   if result.get("Status") in {"CREATE_COMPLETE","FAILED"}:
    print(json.dumps(result,sort_keys=True))
    if result["Status"]=="FAILED": raise OperatorError("change set creation failed")
    return result
   time.sleep(POLL_INTERVAL_SECONDS)
- raise OperatorError("change set did not reach a terminal status")
+ raise OperatorError("change set did not reach a terminal status before timeout")
 def execute(r:Runner,arn:str,confirm:str,stack:str=APPLICATION_STACK)->None:
  if confirm!=EXPECTED_ACCOUNT: raise OperatorError("confirm the expected account exactly")
  require_expected_identity(r); d=run_json(r,stack_args(r,"describe-change-set","--change-set-name",arn))
@@ -82,25 +88,26 @@ def upload(r:Runner,file:str,key:str)->None:
 def lifecycle(r:Runner, action:str, confirm:str)->None:
  require_expected_identity(r); instance=outputs(r).get("ApplicationInstanceId","")
  if not instance or confirm!=instance: raise OperatorError("confirm the exact stack instance ID")
+ print("stop preserves EBS cost but removes availability" if action=="stop" else "start restores availability and EC2 cost")
  p=r.run(aws("ec2",action+"-instances","--instance-ids",instance))
  if p.returncode: raise OperatorError(p.stderr)
- print("stop preserves EBS cost but removes availability" if action=="stop" else "start restores availability and EC2 cost")
 def deploy(r:Runner,key:str,sha:str,release_id:str,domain:str,email:str)->None:
  if not key.startswith("releases/") or ".." in key or not re.fullmatch(r"[0-9a-f]{64}",sha) or not re.fullmatch(r"[0-9a-f]{40}",release_id) or not re.fullmatch(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+",domain) or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+",email): raise OperatorError("invalid release deployment input")
  require_expected_identity(r); o=outputs(r); document=o.get("DeployReleaseDocumentName",""); instance=o.get("ApplicationInstanceId","")
  if not document or not instance: raise OperatorError("required deployment outputs missing")
  params=json.dumps({"Bucket":[o["ApplicationBucketName"]],"ReleaseKey":[key],"ReleaseSha256":[sha],"ReleaseId":[release_id],"DomainName":[domain],"CertificateEmail":[email]})
  sent=run_json(r,aws("ssm","send-command","--document-name",document,"--instance-ids",instance,"--parameters",params)); command=sent["Command"]["CommandId"]
- for _ in range(20):
+ deadline=time.monotonic()+DEPLOY_TIMEOUT_SECONDS; last_status="pending"
+ while time.monotonic()<deadline:
   try: result=run_json(r,aws("ssm","get-command-invocation","--command-id",command,"--instance-id",instance))
   except OperatorError as error:
    if "InvocationDoesNotExist" in str(error): time.sleep(POLL_INTERVAL_SECONDS); continue
    raise
-  status=result.get("Status")
+  status=result.get("Status"); last_status=status or last_status
   if status=="Success": return
   if status in {"Failed","TimedOut","Cancelled"}: raise OperatorError("deployment command did not succeed")
   time.sleep(POLL_INTERVAL_SECONDS)
- raise OperatorError("deployment command did not reach a terminal status")
+ raise OperatorError(f"deployment command {command} timed out with last status {last_status}")
 def main(argv=None, runner:Runner|None=None)->int:
  r=runner or SubprocessRunner(); p=argparse.ArgumentParser(); s=p.add_subparsers(dest="cmd",required=True)
  s.add_parser("identity"); s.add_parser("validate"); s.add_parser("outputs")
