@@ -33,10 +33,11 @@ def stack_args(r:Runner,*x:str)->list[str]: return aws("cloudformation",*x)
 def outputs(r:Runner)->dict[str,str]:
  o=run_json(r,stack_args(r,"describe-stacks","--stack-name",APPLICATION_STACK)); return {x["OutputKey"]:x["OutputValue"] for x in o["Stacks"][0]["Outputs"]}
 def change_name(stack:str)->str:return f"epi-agent-{stack}-plan"
-def plan(r:Runner,stack:str,template:str)->dict:
+def plan(r:Runner,stack:str,template:str, parameters:list[str]|None=None)->dict:
  require_expected_identity(r); role=bootstrap_role(r); name=change_name(stack)
- exists=r.run(aws("cloudformation","describe-stacks","--stack-name",stack,"--role-arn",role)).returncode==0
- run_json(r,aws("cloudformation","create-change-set","--stack-name",stack,"--change-set-name",name,"--change-set-type","UPDATE" if exists else "CREATE","--template-body",f"file://{template}","--role-arn",role,"--capabilities","CAPABILITY_NAMED_IAM"))
+ exists=r.run(aws("cloudformation","describe-stacks","--stack-name",stack)).returncode==0
+ extra=["--parameters",*parameters] if parameters else []
+ run_json(r,aws("cloudformation","create-change-set","--stack-name",stack,"--change-set-name",name,"--change-set-type","UPDATE" if exists else "CREATE","--template-body",f"file://{template}","--role-arn",role,"--capabilities","CAPABILITY_NAMED_IAM",*extra))
  for _ in range(12):
   result=run_json(r,aws("cloudformation","describe-change-set","--stack-name",stack,"--change-set-name",name))
   if result.get("Status") in {"CREATE_COMPLETE","FAILED"}:
@@ -99,13 +100,14 @@ def deploy(r:Runner,key:str,sha:str,release_id:str,domain:str,email:str)->None:
 def main(argv=None, runner:Runner|None=None)->int:
  r=runner or SubprocessRunner(); p=argparse.ArgumentParser(); s=p.add_subparsers(dest="cmd",required=True)
  s.add_parser("identity"); s.add_parser("validate"); s.add_parser("outputs")
- for n in ("plan-bootstrap","plan-stack"): s.add_parser(n)
+ s.add_parser("plan-bootstrap")
  for n in ("execute-bootstrap","execute-change-set"):
   q=s.add_parser(n); q.add_argument("change_set_arn"); q.add_argument("--confirm-account",required=True)
  for n,prefix in (("upload-release","releases/"),("upload-study","studies/")):
   q=s.add_parser(n); q.add_argument("file"); q.add_argument("key"); q.set_defaults(prefix=prefix)
  for n in ("stop","start"):
   q=s.add_parser(n); q.add_argument("--confirm-instance",required=True)
+ q=s.add_parser("plan-stack"); q.add_argument("--domain-name",required=True); q.add_argument("--hosted-zone-id",required=True); q.add_argument("--certificate-email",required=True); q.add_argument("--alert-email",default=""); q.add_argument("--data-volume-gib",default="50"); q.add_argument("--data-snapshot-id",default="")
  q=s.add_parser("deploy-release"); q.add_argument("key"); q.add_argument("sha"); q.add_argument("release_id"); q.add_argument("domain"); q.add_argument("email")
  a=p.parse_args(argv)
  try:
@@ -116,7 +118,10 @@ def main(argv=None, runner:Runner|None=None)->int:
    run_json(r,aws("cloudformation","validate-template","--template-body",f"file://{root/'infra/aws/phase2a/template.yaml'}")); return 0
   if a.cmd=="outputs": print(json.dumps(outputs(r),sort_keys=True)); return 0
   if a.cmd=="plan-bootstrap": plan_bootstrap(r,str(Path(__file__).resolve().parents[1]/"infra/aws/bootstrap/template.yaml")); return 0
-  if a.cmd=="plan-stack": plan(r,APPLICATION_STACK,str(Path(__file__).resolve().parents[1]/"infra/aws/phase2a/template.yaml")); return 0
+  if a.cmd=="plan-stack":
+   if not re.fullmatch(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+",a.domain_name) or not re.fullmatch(r"Z[A-Z0-9]+",a.hosted_zone_id) or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+",a.certificate_email): raise OperatorError("invalid stack parameter")
+   vals={"DomainName":a.domain_name,"HostedZoneId":a.hosted_zone_id,"CertificateEmail":a.certificate_email,"AlertEmail":a.alert_email,"DataVolumeGiB":a.data_volume_gib,"DataSnapshotId":a.data_snapshot_id}
+   plan(r,APPLICATION_STACK,str(Path(__file__).resolve().parents[1]/"infra/aws/phase2a/template.yaml"),[f"ParameterKey={k},ParameterValue={v}" for k,v in vals.items()]); return 0
   if a.cmd=="execute-bootstrap": execute_bootstrap(r,a.change_set_arn,a.confirm_account); return 0
   if a.cmd=="execute-change-set": execute(r,a.change_set_arn,a.confirm_account); return 0
   if a.cmd.startswith("upload-"):
