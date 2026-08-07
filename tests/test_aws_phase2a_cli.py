@@ -55,3 +55,15 @@ def test_mutating_helpers_guard_identity_first():
  s=_source()
  for name in ("plan(","plan_bootstrap(","execute(","execute_bootstrap(","upload(","lifecycle(","deploy("):
   start=s.index("def "+name); assert "require_expected_identity(r)" in s[start:start+500]
+
+def test_plan_stack_parser_requires_application_parameters():
+ s=_source(); assert 'q.add_argument("--domain-name",required=True)' in s and 'q.add_argument("--hosted-zone-id",required=True)' in s and 'q.add_argument("--certificate-email",required=True)' in s
+def test_plan_stack_builds_cloudformation_parameter_values():
+ s=_source(); assert '"ParameterKey={k},ParameterValue={v}"' in s and '"DataSnapshotId":a.data_snapshot_id' in s
+def test_role_is_placed_only_on_application_change_set_create():
+ s=_source(); create=s[s.index('"create-change-set"'):s.index('"describe-change-set"')]; assert '"--role-arn",role' in create
+ assert 'describe-change-set","--stack-name",stack,"--change-set-name",name)' in s
+def test_ssm_poll_contract_retries_before_terminal_failure():
+ s=_source(); assert 'for _ in range(20)' in s and 'time.sleep(POLL_INTERVAL_SECONDS)' in s and '"TimedOut","Cancelled"' in s
+def test_change_set_poll_contract_sleeps_and_never_executes():
+ s=_source(); section=s[s.index("def plan("):s.index("def plan_bootstrap")]; assert 'time.sleep(POLL_INTERVAL_SECONDS)' in section and 'execute-change-set' not in section
