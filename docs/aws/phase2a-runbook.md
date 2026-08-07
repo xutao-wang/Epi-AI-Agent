@@ -2,9 +2,8 @@
 
 > **Warning:** do not execute a change set until an administrator has reviewed every action.
 
-Run `python scripts/aws_phase2a.py identity`, then `validate`. An administrator
-creates and reviews the bootstrap change set before its explicit execution;
-then use `plan-stack --domain-name epiagent.org --hosted-zone-id Z... --certificate-email ops@example.org`.
+After the administrator bootstrap, run `python scripts/aws_phase2a.py identity`
+and `validate`, then create the application plan with the executable variables below.
 Review every Add/Modify/Replace action before executing the exact change-set
 ARN. Confirm the certificate email and SNS subscription, invite the first
 Cognito user in the Cognito Console, upload release/study artifacts, deploy by
@@ -41,22 +40,12 @@ python scripts/aws_phase2a.py validate
 python scripts/aws_phase2a.py plan-stack --domain-name epiagent.org --hosted-zone-id "$HOSTED_ZONE_ID" --certificate-email "$CERT_EMAIL"
 ```
 
-In the AWS Console select **IAM → User groups → Developer** and verify the
-operator uses `xutao-dev`. Run:
-
-```sh
-python scripts/aws_phase2a.py identity
-python scripts/aws_phase2a.py validate
-python scripts/aws_phase2a.py plan-bootstrap
-```
-
 > **Warning:** inspect every CloudFormation **Add**, **Modify**, and especially
 > **Replace** action before executing the exact reviewed change-set ARN. Bootstrap
 > execution is an administrator action; it creates IAM authority.
 
-After bootstrap, use `plan-stack --domain-name epiagent.org --hosted-zone-id Z...`
-`--certificate-email ops@example.org`, review its actions, and execute only with
-the exact account confirmation. In **SNS → Subscriptions**, confirm the email.
+Review the application plan and execute only with the exact account confirmation.
+In **SNS → Subscriptions**, confirm the email.
 In **Cognito → User pools → epi-agent-phase2a → Users**, choose **Create user**
 to send the first invitation.
 
