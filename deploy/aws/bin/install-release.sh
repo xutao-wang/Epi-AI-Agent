@@ -172,7 +172,9 @@ archive_path="$staging_dir/release.tar.gz"
 release_payload="$staging_dir/release"
 mkdir -m 0755 "$release_payload"
 
-wait_for_drain
+if [ -L "$current_link" ]; then
+  wait_for_drain
+fi
 aws s3 cp "s3://$bucket/$release_key" "$archive_path"
 printf '%s  %s\n' "$release_sha256" "$archive_path" | sha256sum -c -
 validate_and_extract_archive

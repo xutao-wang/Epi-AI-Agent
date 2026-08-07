@@ -106,3 +106,24 @@ unchanged; it did not use AWS credentials or create resources.
   the required `t3.large` and 30 GiB.
 - The prerequisite bootstrap stack must have created
   `epi-agent-workload-boundary`, referenced by both new roles.
+
+## Reviewer remediation
+
+Follow-up review found deployment blockers and this revision addresses them:
+
+- The mandatory workload boundary now permits the constrained SSM managed-node
+  connection actions, CWAgent metric publication, and DLM snapshot actions;
+  the execution policy now has the exact instance-profile, SSM document,
+  metric-filter, and instance-attribute lifecycle actions required by Task 7.
+- AL2023 bootstrap installs and verifies Python 3.12 before SSM uses it, and
+  installs pinned `uv==0.6.14` via that interpreter.
+- First release activation skips the drain endpoint when no current release
+  exists. A generated HTTP-only ACME bootstrap server is active before Certbot;
+  the SSM document renders the domain into the TLS configuration before the
+  installer reloads Nginx after issuance.
+- CWAgent uses `drop_device: true` to match the data-disk alarm dimensions.
+  The log-stream ARN is explicit, SSM document updates use `NewVersion`, and
+  the stack outputs the instance ID and deployment-document name.
+
+Revalidation after remediation: both bootstrap and Phase 2A templates pass
+`cfn-lint==1.53.1`; infrastructure and host-asset tests report `31 passed`.

@@ -80,6 +80,37 @@ Resources:
               - ec2:DescribeSubnets
               - ec2:DescribeVpcs
             Resource: '*'
+          - Sid: ManageOwnSsmConnection
+            Effect: Allow
+            Action:
+              - ssm:UpdateInstanceInformation
+              - ssmmessages:CreateControlChannel
+              - ssmmessages:CreateDataChannel
+              - ssmmessages:OpenControlChannel
+              - ssmmessages:OpenDataChannel
+              - ec2messages:DeleteMessage
+              - ec2messages:FailMessage
+              - ec2messages:GetEndpoint
+              - ec2messages:GetMessages
+              - ec2messages:SendReply
+            Resource: '*'
+          - Sid: PublishBoundedHostMetrics
+            Effect: Allow
+            Action: cloudwatch:PutMetricData
+            Resource: '*'
+            Condition:
+              StringEquals:
+                cloudwatch:namespace: CWAgent
+          - Sid: ManageDataVolumeSnapshots
+            Effect: Allow
+            Action:
+              - ec2:CreateSnapshot
+              - ec2:CreateSnapshots
+              - ec2:DeleteSnapshot
+              - ec2:DescribeSnapshots
+              - ec2:DescribeVolumes
+              - ec2:CreateTags
+            Resource: '*'
 
   CloudFormationExecutionPolicy:
     Type: AWS::IAM::Policy
@@ -139,6 +170,7 @@ Resources:
               - ec2:DisassociateAddress
               - ec2:DisassociateRouteTable
               - ec2:ModifyNetworkInterfaceAttribute
+              - ec2:ModifyInstanceAttribute
               - ec2:ModifySubnetAttribute
               - ec2:ModifyVpcAttribute
               - ec2:ModifyVpcEndpoint
@@ -217,6 +249,9 @@ Resources:
               - logs:DeleteLogGroup
               - logs:DescribeLogGroups
               - logs:PutRetentionPolicy
+              - logs:PutMetricFilter
+              - logs:DeleteMetricFilter
+              - logs:DescribeMetricFilters
               - sns:CreateTopic
               - sns:DeleteTopic
               - sns:GetTopicAttributes
@@ -241,6 +276,23 @@ Resources:
               - dlm:TagResource
               - dlm:UpdateLifecyclePolicy
             Resource: '*'
+          - Sid: ManageEpiAgentSsmDocuments
+            Effect: Allow
+            Action:
+              - ssm:CreateDocument
+              - ssm:UpdateDocument
+              - ssm:DeleteDocument
+              - ssm:DescribeDocument
+            Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:document/epi-agent-*
+          - Sid: ManageEpiAgentInstanceProfiles
+            Effect: Allow
+            Action:
+              - iam:CreateInstanceProfile
+              - iam:DeleteInstanceProfile
+              - iam:GetInstanceProfile
+              - iam:AddRoleToInstanceProfile
+              - iam:RemoveRoleFromInstanceProfile
+            Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:instance-profile/epi-agent-*
           - Sid: ManageEpiAgentRoleReadAndDeletion
             Effect: Allow
             Action:

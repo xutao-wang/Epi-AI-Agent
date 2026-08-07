@@ -346,7 +346,7 @@ Resources:
                   - logs:CreateLogStream
                   - logs:DescribeLogStreams
                   - logs:PutLogEvents
-                Resource: !Sub ${ApplicationLogGroup.Arn}:*
+                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${ApplicationLogGroup}:log-stream:*
               - Sid: PublishHostMetrics
                 Effect: Allow
                 Action: cloudwatch:PutMetricData
@@ -399,7 +399,7 @@ Resources:
               "metrics_collected": {
                 "cpu": {"measurement": ["cpu_usage_idle", "cpu_usage_iowait"], "metrics_collection_interval": 60},
                 "mem": {"measurement": ["mem_used_percent"], "metrics_collection_interval": 60},
-                "disk": {"measurement": ["used_percent", "inodes_free"], "resources": ["/", "/srv/epi-agent"], "metrics_collection_interval": 60}
+                "disk": {"measurement": ["used_percent", "inodes_free"], "resources": ["/", "/srv/epi-agent"], "drop_device": true, "metrics_collection_interval": 60}
               }
             }
           }
@@ -446,7 +446,9 @@ Resources:
             }
             trap signal_failure ERR
 
-            dnf install -y awscli-2 amazon-cloudwatch-agent nginx certbot python3-certbot-nginx acl jq sudo uv
+            dnf install -y awscli-2 amazon-cloudwatch-agent nginx certbot python3-certbot-nginx python3.12 python3.12-pip acl jq sudo
+            /usr/bin/python3.12 -m pip install --upgrade 'uv==0.6.14'
+            /usr/bin/python3.12 --version
             getent group epi-agent-web >/dev/null || groupadd --system epi-agent-web
             id -u epi-agent-web >/dev/null 2>&1 || useradd --system --gid epi-agent-web --home-dir /nonexistent --shell /sbin/nologin epi-agent-web
             getent group epi-agent-exec >/dev/null || groupadd --system epi-agent-exec
@@ -494,6 +496,14 @@ Resources:
             EOF
             chown root:epi-agent-web /etc/epi-agent/app.env
             chmod 0640 /etc/epi-agent/app.env
+            cat > /etc/nginx/conf.d/epi-agent-bootstrap.conf <<EOF
+            server {
+              listen 80;
+              server_name ${DomainName};
+              location ^~ /.well-known/acme-challenge/ { root /var/www/certbot; }
+              location / { return 404; }
+            }
+            EOF
             systemctl enable nginx.service
             systemctl start nginx.service
             systemctl disable --now epi-agent.service || true
@@ -519,6 +529,7 @@ Resources:
       DocumentType: Command
       DocumentFormat: YAML
       Name: epi-agent-deploy-release
+      UpdateMethod: NewVersion
       Content:
         schemaVersion: '2.2'
         description: Install a verified Epi Agent release without shell-evaluating operator input.
@@ -573,7 +584,9 @@ Resources:
                   install -o root -g root -m 0644 "$staging_dir/release/deploy/aws/systemd/epi-agent.service" /etc/systemd/system/epi-agent.service
                   install -o root -g root -m 0644 "$staging_dir/release/deploy/aws/systemd/epi-agent-certificate-renew.service" /etc/systemd/system/epi-agent-certificate-renew.service
                   install -o root -g root -m 0644 "$staging_dir/release/deploy/aws/systemd/epi-agent-certificate-renew.timer" /etc/systemd/system/epi-agent-certificate-renew.timer
-                  install -o root -g root -m 0644 "$staging_dir/release/deploy/aws/nginx/epi-agent.conf" /etc/nginx/conf.d/epi-agent.conf
+                  sed "s/epiagent\\.org/$SSM_DomainName/g" "$staging_dir/release/deploy/aws/nginx/epi-agent.conf" > /etc/nginx/conf.d/epi-agent.conf
+                  chown root:root /etc/nginx/conf.d/epi-agent.conf
+                  chmod 0644 /etc/nginx/conf.d/epi-agent.conf
                   install -o root -g root -m 0640 "$staging_dir/release/deploy/aws/env/app.env.example" /etc/epi-agent/app.env.example
                   systemctl daemon-reload
                   systemctl enable --now nginx.service epi-agent-certificate-renew.timer
@@ -821,3 +834,9 @@ Outputs:
   RequestedRootVolumeGiB:
     Description: Root-volume size for the application-host component.
     Value: !Ref RootVolumeGiB
+  ApplicationInstanceId:
+    Description: SSM managed application-host instance ID.
+    Value: !Ref ApplicationInstance
+  DeployReleaseDocumentName:
+    Description: Name of the SSM Command document used to install releases.
+    Value: !Ref EpiAgentDeployReleaseDocument

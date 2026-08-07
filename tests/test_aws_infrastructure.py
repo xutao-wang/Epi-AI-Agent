@@ -106,6 +106,8 @@ def test_bootstrap_execution_policy_is_limited_to_phase_2a_services_and_resource
         "MutateEpiAgentRolePermissionsAndTrustWithBoundary",
         "PassEpiAgentRolesToApprovedServices",
         "ReadDnsChanges",
+        "ManageEpiAgentSsmDocuments",
+        "ManageEpiAgentInstanceProfiles",
     }
     assert "iam:PassRole" in next(
         statement["Action"]
@@ -190,7 +192,7 @@ def test_bootstrap_workload_boundary_limits_workload_roles_without_iam_or_sts() 
         )
     }
     assert actions
-    assert all(action.split(":", 1)[0] in {"ec2", "logs", "s3", "ssm"} for action in actions)
+    assert all(action.split(":", 1)[0] in {"cloudwatch", "ec2", "ec2messages", "logs", "s3", "ssm", "ssmmessages"} for action in actions)
     assert all(not action.startswith(("iam:", "sts:")) for action in actions)
 
 
@@ -247,6 +249,16 @@ def test_bootstrap_policy_supports_phase2a_endpoint_storage_and_cognito_domain_l
         "cognito-idp:UpdateUserPoolDomain",
     } <= actions
     assert "s3:DeleteBucketTagging" not in actions
+
+
+def test_bootstrap_boundary_and_execution_role_support_task7_without_broadening_iam() -> None:
+    template = bootstrap_template()
+    boundary = template["Resources"]["EpiAgentWorkloadBoundary"]["Properties"]["PolicyDocument"]["Statement"]
+    boundary_actions = {action for statement in boundary for action in ([statement["Action"]] if isinstance(statement["Action"], str) else statement["Action"])}
+    assert {"ssm:UpdateInstanceInformation", "ssmmessages:OpenDataChannel", "ec2messages:GetMessages", "cloudwatch:PutMetricData", "ec2:CreateSnapshot", "ec2:DescribeVolumes"} <= boundary_actions
+    execution = template["Resources"]["CloudFormationExecutionPolicy"]["Properties"]["PolicyDocument"]["Statement"]
+    execution_actions = {action for statement in execution for action in ([statement["Action"]] if isinstance(statement["Action"], str) else statement["Action"])}
+    assert {"iam:CreateInstanceProfile", "iam:AddRoleToInstanceProfile", "ssm:CreateDocument", "ssm:UpdateDocument", "logs:PutMetricFilter", "ec2:ModifyInstanceAttribute"} <= execution_actions
 
 
 def test_bootstrap_stack_exports_the_execution_role_arn() -> None:
@@ -564,6 +576,10 @@ def test_phase2a_userdata_is_guarded_idempotent_and_defers_application_start() -
     assert "REPORT_AGENT_COGNITO_USER_POOL_ID=${ApplicationUserPool}" in user_data
     assert "REPORT_AGENT_CORS_ALLOW_ORIGIN_REGEX=^https://$domain_regex$" in user_data
     assert "SECRET" not in user_data
+    assert "python3.12" in user_data
+    assert "uv==0.6.14" in user_data
+    assert "epi-agent-bootstrap.conf" in user_data
+    assert "location ^~ /.well-known/acme-challenge/" in user_data
     assert "systemctl disable --now epi-agent.service" in user_data
     assert "cfn-signal" in user_data
     assert "rm -rf /srv/epi-agent" not in user_data
@@ -587,6 +603,7 @@ def test_phase2a_ssm_release_document_uses_strict_environment_interpolation() ->
     assert "install -o root -g root -m 0750" in command
     assert "eval " not in command
     assert "bash -c" not in command
+    assert 'sed "s/epiagent\\\\.org/$SSM_DomainName/g"' in command
 
 
 def test_phase2a_backup_and_observability_cover_host_failure_modes() -> None:
@@ -614,4 +631,8 @@ def test_phase2a_backup_and_observability_cover_host_failure_modes() -> None:
     assert "/var/log/epi-agent/application.log" in configuration
     assert "mem_used_percent" in configuration
     assert "inodes_free" in configuration
+    assert '"drop_device": true' in configuration
     assert "/srv/epi-agent" in configuration
+    assert resources["EpiAgentDeployReleaseDocument"]["Properties"]["UpdateMethod"] == "NewVersion"
+    assert template["Outputs"]["ApplicationInstanceId"]["Value"] == {"Ref": "ApplicationInstance"}
+    assert template["Outputs"]["DeployReleaseDocumentName"]["Value"] == {"Ref": "EpiAgentDeployReleaseDocument"}
