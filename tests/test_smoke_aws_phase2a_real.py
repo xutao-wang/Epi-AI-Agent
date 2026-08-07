@@ -38,3 +38,13 @@ def test_login_and_byok_pass_secrets_only_to_request_layer(monkeypatch, capsys):
  smoke.login("https://epiagent.org","credential-secret",("credential-secret",))
  smoke.provider_key("https://epiagent.org","session","provider-secret",("provider-secret",))
  assert "provider-secret" not in capsys.readouterr().out and len(calls)==2
+
+def test_redirect_rejects_non_redirect_error_with_matching_location(monkeypatch):
+ from urllib.error import HTTPError
+ class Opener:
+  def open(self, *args, **kwargs):
+   raise HTTPError("http://epiagent.org", 500, "server error", {"Location": "https://epiagent.org/"}, None)
+ monkeypatch.setattr(smoke, "build_opener", lambda *_args: Opener())
+ import pytest
+ with pytest.raises(ValueError):
+  smoke.check_redirect("https://epiagent.org")
