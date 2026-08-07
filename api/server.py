@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -21,7 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from api.deployment import cors_allow_origin_regex
+from api.deployment import DeploymentState, cors_allow_origin_regex
 from api.auth import (
     LocalTokenVerifier,
     RequestIdentity,
@@ -49,11 +50,13 @@ from api.schemas import (
     DatasetPreview,
     DatasetProvenance,
     DatasetSchemaResponse,
+    DeploymentStatus,
     PublicAppConfig,
     ProviderKeyRequest,
     ProviderKeyStatus,
     ResetThreadResponse,
     RenameConversationRequest,
+    ReadinessStatus,
     ResumeInterruptRequest,
     RuntimeInfo,
     RuntimeOptions,
@@ -143,6 +146,7 @@ def create_app(
     token_verifier: TokenVerifier | None = None,
     credential_store: ProviderCredentialStore | None = None,
     provider_key_validator: ProviderKeyValidator | None = None,
+    deployment_state: DeploymentState | None = None,
 ) -> FastAPI:
     app = FastAPI(title="RePORT Agent API")
 
@@ -176,6 +180,7 @@ def create_app(
     )
     credential_store = credential_store or ProviderCredentialStore()
     provider_key_validator = provider_key_validator or OpenAIProviderKeyValidator()
+    deployment_state = deployment_state or DeploymentState.from_environ(os.environ)
     attachment_limits = runtime.attachment_limits
 
     @app.middleware("http")
@@ -184,6 +189,22 @@ def create_app(
         call_next,
     ) -> Response:
         credential_store.prune_expired()
+        return await call_next(request)
+
+    @app.middleware("http")
+    async def reject_unsafe_requests_during_maintenance(
+        request: Request,
+        call_next,
+    ) -> Response:
+        if (
+            deployment_state.maintenance_enabled()
+            and request.method not in {"GET", "HEAD", "OPTIONS"}
+        ):
+            return JSONResponse(
+                status_code=503,
+                headers={"Retry-After": "30"},
+                content={"detail": {"code": "DEPLOYMENT_MAINTENANCE"}},
+            )
         return await call_next(request)
 
     def provider_key_for_work(
@@ -216,6 +237,27 @@ def create_app(
     @app.get("/api/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/api/readiness", response_model=ReadinessStatus)
+    def readiness() -> ReadinessStatus | JSONResponse:
+        maintenance = deployment_state.maintenance_enabled()
+        status = ReadinessStatus(
+            status="maintenance" if maintenance else "ready",
+            release_id=deployment_state.release_id,
+        )
+        if maintenance:
+            return JSONResponse(status_code=503, content=status.model_dump())
+        return status
+
+    @app.get("/api/ops/deployment-status", response_model=DeploymentStatus)
+    def deployment_status() -> DeploymentStatus:
+        maintenance = deployment_state.maintenance_enabled()
+        return DeploymentStatus(
+            status="maintenance" if maintenance else "ready",
+            release_id=deployment_state.release_id,
+            maintenance=maintenance,
+            active_runs=runtime.active_run_count(),
+        )
 
     @app.get("/api/public-config", response_model=PublicAppConfig)
     def get_public_config() -> PublicAppConfig:

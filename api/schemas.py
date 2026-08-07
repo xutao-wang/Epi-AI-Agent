@@ -32,6 +32,16 @@ class ProviderKeyStatus(BaseModel):
     configured: bool
 
 
+class ReadinessStatus(BaseModel):
+    status: Literal["ready", "maintenance"]
+    release_id: str
+
+
+class DeploymentStatus(ReadinessStatus):
+    maintenance: bool
+    active_runs: int
+
+
 class RunStatus(BaseModel):
     state: RunState
     steps: int = 0

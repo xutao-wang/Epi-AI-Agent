@@ -2,10 +2,30 @@ from __future__ import annotations
 
 import os
 import tempfile
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 
 DEFAULT_CORS_ALLOW_ORIGIN_REGEX = r"^http://(127\.0\.0\.1|localhost):\d+$"
+
+
+@dataclass(frozen=True)
+class DeploymentState:
+    maintenance_file: Path | None
+    release_id: str
+
+    @classmethod
+    def from_environ(cls, environ: Mapping[str, str]) -> "DeploymentState":
+        configured = str(environ.get("REPORT_AGENT_MAINTENANCE_FILE", "")).strip()
+        release_id = str(environ.get("REPORT_AGENT_RELEASE_ID", "development")).strip()
+        return cls(
+            maintenance_file=Path(configured) if configured else None,
+            release_id=release_id or "development",
+        )
+
+    def maintenance_enabled(self) -> bool:
+        return self.maintenance_file is not None and self.maintenance_file.is_file()
 
 
 def required_secret_names(auth_mode: str = "local") -> tuple[str, ...]:

@@ -763,6 +763,15 @@ class ReportAgentApiRuntime:
         except Exception:
             return False
 
+    def active_run_count(self) -> int:
+        with self._lock:
+            threads = tuple(self._threads.items())
+        return sum(
+            1
+            for (_owner, thread_id), thread in threads
+            if self._thread_is_running(thread_id, thread)
+        )
+
     @staticmethod
     def _clear_graph(thread: ThreadRuntime) -> None:
         thread.app = None

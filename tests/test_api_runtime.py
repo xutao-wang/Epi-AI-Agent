@@ -27,6 +27,7 @@ from openai import (
 from api.runtime import (
     ApiGraphRunner,
     ReportAgentApiRuntime,
+    ThreadRuntime,
     ThreadAwaitingReviewError,
     ThreadAlreadyRunningError,
     _dataset_summary,
@@ -521,6 +522,37 @@ def test_runtime_create_thread_stores_default_settings() -> None:
     assert state.runtime_settings.max_steps == 4
     assert state.runtime_settings.timeout_seconds == 300
     assert state.runtime_settings_locked is False
+
+
+def test_active_run_count_ignores_idle_and_stale_threads() -> None:
+    class _StatusRunner:
+        def __init__(self, state: str | None = None, *, stale: bool = False) -> None:
+            self.state = state
+            self.stale = stale
+
+        def status(self, _thread_id: str) -> dict[str, str]:
+            if self.stale:
+                raise RuntimeError("stale runner")
+            return {"state": self.state or "idle"}
+
+    runtime = _runtime(_RuntimeFakeGraph(None))
+    settings = runtime._threads[("local-user", "thread-1")].settings
+    runtime._threads = {
+        ("owner-a", "running-thread"): ThreadRuntime(
+            settings=settings,
+            runner=_StatusRunner("running"),
+        ),
+        ("owner-b", "idle-thread"): ThreadRuntime(
+            settings=settings,
+            runner=_StatusRunner("idle"),
+        ),
+        ("owner-c", "stale-thread"): ThreadRuntime(
+            settings=settings,
+            runner=_StatusRunner(stale=True),
+        ),
+    }
+
+    assert runtime.active_run_count() == 1
 
 
 def test_runtime_reopens_saved_thread_with_its_persisted_model(tmp_path: Path) -> None:
