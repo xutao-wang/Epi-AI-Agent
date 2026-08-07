@@ -23,6 +23,7 @@ BUILD_FORMAT_VERSION = 1
 PYTHON_VERSION = "3.12"
 COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 EXCLUDED_TOP_LEVEL = {".git", "runtime", "study_data"}
+FRONTEND_MANIFEST_PATH = PurePosixPath("frontend/dist/build-manifest.json")
 
 
 class ReleaseBuildError(RuntimeError):
@@ -93,8 +94,10 @@ def fixed_tar_info(name: str, size: int, executable: bool) -> tarfile.TarInfo:
     return info
 
 
-def frontend_manifest_sha256(project_root: Path) -> str:
-    manifest_path = project_root / "frontend" / "dist" / "build-manifest.json"
+def frontend_manifest_sha256(project_root: Path, release_files: list[PurePosixPath]) -> str:
+    if FRONTEND_MANIFEST_PATH not in release_files:
+        raise ReleaseBuildError("frontend/dist/build-manifest.json must be a tracked regular file")
+    manifest_path = project_root / FRONTEND_MANIFEST_PATH
     if not manifest_path.is_file():
         raise ReleaseBuildError("frontend/dist/build-manifest.json must be a tracked regular file")
     return hashlib.sha256(manifest_path.read_bytes()).hexdigest()
@@ -140,7 +143,7 @@ def build_release(project_root: Path, output_dir: Path) -> tuple[Path, Path, Pat
         (safe_archive_path(value) for value in tracked if value), key=lambda path: path.as_posix()
     )
     release_files = [path for path in tracked_paths if include_path(path)]
-    manifest_hash = frontend_manifest_sha256(project_root)
+    manifest_hash = frontend_manifest_sha256(project_root, release_files)
     embedded_manifest = {
         "build_format_version": BUILD_FORMAT_VERSION,
         "commit_sha": commit_sha,

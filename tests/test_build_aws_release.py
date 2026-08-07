@@ -121,6 +121,17 @@ def test_dirty_tracked_files_are_rejected_with_exit_code_two(
     assert error.value.exit_code == 2
 
 
+def test_untracked_frontend_manifest_is_rejected(release_project: Path, tmp_path: Path) -> None:
+    builder = load_builder()
+    manifest_path = release_project / "frontend/dist/build-manifest.json"
+    git(release_project, "rm", "-q", manifest_path.relative_to(release_project).as_posix())
+    git(release_project, "commit", "-qm", "remove tracked frontend manifest")
+    manifest_path.write_text('{"assets": ["untracked.js"]}\n')
+
+    with pytest.raises(builder.ReleaseBuildError, match="tracked regular file"):
+        builder.build_release(release_project, tmp_path / "dist")
+
+
 def test_archive_members_are_root_relative_and_safe(release_project: Path, tmp_path: Path) -> None:
     builder = load_builder()
     archive_path, _, _ = builder.build_release(release_project, tmp_path / "dist")
