@@ -349,7 +349,7 @@ Resources:
               - Sid: DescribeHostLogStreams
                 Effect: Allow
                 Action: logs:DescribeLogStreams
-                Resource: !GetAtt ApplicationLogGroup.Arn
+                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${ApplicationLogGroup}
               - Sid: PublishHostMetrics
                 Effect: Allow
                 Action: cloudwatch:PutMetricData

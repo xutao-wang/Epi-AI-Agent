@@ -181,7 +181,9 @@ validate_and_extract_archive
 
 release_dir="$releases_root/$release_id"
 if [ -e "$release_dir" ]; then
-  [ "$force" = true ] || fail 'release already exists; use --force only to reactivate it'
+  if [ "$force" != true ] && { [ ! -L "$current_link" ] || [ "$(readlink -- "$current_link")" != "$release_dir" ]; }; then
+    fail 'release already exists; use --force only to activate a non-current release'
+  fi
 else
   venv_python="$release_payload/.venv/bin/python"
   (
@@ -219,10 +221,26 @@ fi
 readonly staged_nginx_config=/etc/nginx/staged/epi-agent.conf
 readonly live_nginx_config=/etc/nginx/conf.d/epi-agent.conf
 readonly bootstrap_nginx_config=/etc/nginx/conf.d/epi-agent-bootstrap.conf
-if [ -f "$staged_nginx_config" ]; then
-  install -d -m 0755 /etc/nginx/conf.d
+restore_nginx_config() {
+  rm -f -- "$live_nginx_config" "$bootstrap_nginx_config"
+  [ -f "$nginx_backup/live" ] && mv -Tf "$nginx_backup/live" "$live_nginx_config"
+  [ -f "$nginx_backup/bootstrap" ] && mv -Tf "$nginx_backup/bootstrap" "$bootstrap_nginx_config"
+  nginx -t && systemctl reload nginx.service || true
+}
+activate_staged_nginx_config() {
+  nginx_backup=$(mktemp -d /etc/nginx/.epi-agent-backup.XXXXXX)
+  [ -f "$live_nginx_config" ] && cp -p -- "$live_nginx_config" "$nginx_backup/live"
+  [ -f "$bootstrap_nginx_config" ] && cp -p -- "$bootstrap_nginx_config" "$nginx_backup/bootstrap"
   mv -Tf "$staged_nginx_config" "$live_nginx_config"
   rm -f -- "$bootstrap_nginx_config"
-  nginx -t
-  systemctl reload nginx.service
+  if nginx -t && systemctl reload nginx.service; then
+    rm -rf -- "$nginx_backup"
+    return 0
+  fi
+  restore_nginx_config
+  return 1
+}
+if [ -f "$staged_nginx_config" ]; then
+  install -d -m 0755 /etc/nginx/conf.d
+  activate_staged_nginx_config
 fi

@@ -144,6 +144,9 @@ def test_release_installer_enforces_a_safe_atomic_activation_contract() -> None:
     assert "readonly staged_nginx_config=/etc/nginx/staged/epi-agent.conf" in source
     assert 'rm -f -- "$bootstrap_nginx_config"' in source
     assert source.index("/usr/bin/certbot certonly") < source.index('mv -Tf "$staged_nginx_config" "$live_nginx_config"')
+    assert '"$(readlink -- "$current_link")" != "$release_dir"' in source
+    assert "activate_staged_nginx_config" in source
+    assert "restore_nginx_config" in source
 
 
 def test_study_installer_verifies_archive_and_preserves_prior_versions() -> None:

@@ -90,10 +90,12 @@ Resources:
               - ssm:GetDocument
               - ssm:GetManifest
               - ssm:ListAssociations
+              - ssm:ListInstanceAssociations
               - ssm:PutComplianceItems
               - ssm:PutConfigurePackageResult
               - ssm:PutInventory
               - ssm:UpdateAssociationStatus
+              - ssm:UpdateInstanceAssociationStatus
               - ssmmessages:CreateControlChannel
               - ssmmessages:CreateDataChannel
               - ssmmessages:OpenControlChannel

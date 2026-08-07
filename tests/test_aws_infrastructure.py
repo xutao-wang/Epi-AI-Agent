@@ -255,7 +255,7 @@ def test_bootstrap_boundary_and_execution_role_support_task7_without_broadening_
     template = bootstrap_template()
     boundary = template["Resources"]["EpiAgentWorkloadBoundary"]["Properties"]["PolicyDocument"]["Statement"]
     boundary_actions = {action for statement in boundary for action in ([statement["Action"]] if isinstance(statement["Action"], str) else statement["Action"])}
-    assert {"ssm:DescribeAssociation", "ssm:GetDocument", "ssm:GetDeployablePatchSnapshotForInstance", "ssm:PutInventory", "ssm:PutComplianceItems", "ssm:PutConfigurePackageResult", "ssm:UpdateAssociationStatus", "ssmmessages:OpenDataChannel", "ec2messages:AcknowledgeMessage", "cloudwatch:PutMetricData", "ec2:CreateSnapshot", "ec2:DescribeVolumes"} <= boundary_actions
+    assert {"ssm:DescribeAssociation", "ssm:ListInstanceAssociations", "ssm:UpdateInstanceAssociationStatus", "ssm:GetDocument", "ssm:GetDeployablePatchSnapshotForInstance", "ssm:PutInventory", "ssm:PutComplianceItems", "ssm:PutConfigurePackageResult", "ssm:UpdateAssociationStatus", "ssmmessages:OpenDataChannel", "ec2messages:AcknowledgeMessage", "cloudwatch:PutMetricData", "ec2:CreateSnapshot", "ec2:DescribeVolumes"} <= boundary_actions
     execution = template["Resources"]["CloudFormationExecutionPolicy"]["Properties"]["PolicyDocument"]["Statement"]
     execution_actions = {action for statement in execution for action in ([statement["Action"]] if isinstance(statement["Action"], str) else statement["Action"])}
     assert {"iam:CreateInstanceProfile", "iam:AddRoleToInstanceProfile", "ssm:CreateDocument", "ssm:UpdateDocument", "logs:PutMetricFilter", "ec2:ModifyInstanceAttribute"} <= execution_actions
