@@ -77,9 +77,8 @@ reported as a skip or pass. The smoke uses a local issuer because this project
 intentionally provisions no AWS resources. It does not replace the future
 launch smoke against the real Cognito pool and deployed browser UI.
 
-## Deferred AWS delivery
+## Phase 2A AWS delivery
 
-No public AWS URL exists from this foundation project. Cognito resources,
-application hosting, TLS/domain configuration, CloudFront, deployment secrets,
-monitoring, and a real-pool browser smoke belong to the next AWS infrastructure
-and delivery project.
+See the [Phase 2A runbook](aws/phase2a-runbook.md). Repository support does not
+mean a live stack exists until Task 11; local startup instructions above remain
+unchanged.

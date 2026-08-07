@@ -77,11 +77,10 @@ checkpoints, uploads, and generated artifacts persist across restarts in
 owner-specific storage; provider keys do not.
 
 The hosted working demo is invitation-only and accepts synthetic or fully
-de-identified data only. This repository does not create AWS resources or make
-a public URL available. Cognito provisioning, the application service,
-CloudFront, and deployment validation are deferred to the next AWS delivery
-project. See [docs/working-demo.md](docs/working-demo.md) for the operating
-boundary and acceptance smoke.
+de-identified data only. Phase 2A repository operations are documented in the
+[AWS runbook](docs/aws/phase2a-runbook.md); repository support does not mean a
+live stack exists until Task 11. See [docs/working-demo.md](docs/working-demo.md)
+for the operating boundary and acceptance smoke.
 
 ## Included demo data
 
