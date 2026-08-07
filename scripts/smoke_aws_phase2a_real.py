@@ -4,10 +4,13 @@ from __future__ import annotations
 import argparse, os, sys, ssl, json
 from urllib.parse import urlparse
 from urllib.request import Request, build_opener, HTTPRedirectHandler, urlopen
+from urllib.error import HTTPError
 PHASES=("tls","http_redirect","cognito_login","provider_key","owner_isolation","restart_persistence","stop_start","snapshot_restore")
 DEFAULT=("tls","http_redirect","cognito_login","provider_key","owner_isolation")
 class NoRedirect(HTTPRedirectHandler):
  def redirect_request(self,*args): return None
+class RequestError(ValueError):
+ def __init__(self,status,message): super().__init__(message); self.status=status
 def safe_error(error, secrets):
  text=str(error)
  for secret in secrets: text=text.replace(secret,"[REDACTED]")
@@ -16,7 +19,8 @@ def request_text(url, *, method="GET", headers=None, body=None, secrets=()):
  try:
   request=Request(url,data=body,headers=headers or {},method=method)
   with urlopen(request,timeout=15,context=ssl.create_default_context()) as response:return response.read().decode("utf-8")
- except Exception as error: raise ValueError(safe_error(error,secrets)) from None
+ except HTTPError as error: raise RequestError(error.code,safe_error(error,secrets)) from None
+ except Exception as error: raise RequestError(None,safe_error(error,secrets)) from None
 def request_json(url, **kwargs): return json.loads(request_text(url,**kwargs))
 def login(base_url, credential, secrets):
  request_json(base_url+"/api/session/provider-key",headers={"Authorization":"Bearer "+credential},secrets=secrets)
@@ -28,18 +32,20 @@ def owner_isolation(base_url, first, second, secrets):
  b=request_json(base_url+"/api/threads",method="POST",headers={"Authorization":"Bearer "+second},body=b"{}",secrets=secrets)
  if a.get("thread_id")==b.get("thread_id"): raise ValueError("owner isolation failed")
  try: request_json(base_url+"/api/threads/"+a["thread_id"]+"/state",headers={"Authorization":"Bearer "+second},secrets=secrets)
- except ValueError: return
+ except RequestError as error:
+  if error.status in {401,403,404}: return
+  raise
  raise ValueError("cross-owner state request was not denied")
 def check_https(base_url):
  request=Request(base_url,method="HEAD")
  with urlopen(request,timeout=15,context=ssl.create_default_context()) as response:
-  if response.geturl()!=base_url: raise ValueError("HTTPS target redirected unexpectedly")
+  if response.geturl().rstrip("/")!=base_url.rstrip("/"): raise ValueError("HTTPS target redirected unexpectedly")
 def check_redirect(base_url):
  request=Request("http://epiagent.org",method="HEAD")
  try: build_opener(NoRedirect).open(request,timeout=15)
  except Exception as error:
   location=getattr(error,"headers",{}).get("Location","")
-  if location!=base_url: raise ValueError("HTTP does not redirect to canonical HTTPS URL")
+  if location.rstrip("/")!=base_url.rstrip("/"): raise ValueError("HTTP does not redirect to canonical HTTPS URL")
 def parse_args(argv=None):
  p=argparse.ArgumentParser(description=__doc__); p.add_argument("--base-url",required=True); p.add_argument("--allow-live-aws",action="store_true")
  p.add_argument("--user-one-env",required=True); p.add_argument("--user-two-env",required=True)
@@ -62,6 +68,7 @@ def run(args):
    elif phase=="cognito_login": sessions=[login(args.base_url,secrets[0],secrets),login(args.base_url,secrets[1],secrets)]
    elif phase=="provider_key": provider_key(args.base_url,sessions[0].get("token",""),secrets[0],secrets)
    elif phase=="owner_isolation": owner_isolation(args.base_url,sessions[0].get("token",""),sessions[1].get("token",""),secrets)
+   elif phase=="restart_persistence": print("restart persistence target must be separately confirmed")
    elif phase in {"stop_start","snapshot_restore"}: print("target must be printed and separately confirmed")
   except Exception as error: raise ValueError(safe_error(error,secrets)) from None
  return 0
