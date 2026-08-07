@@ -26,6 +26,21 @@ never place provider keys on the command line.
 
 ## Beginner operator sequence
 
+For the one-time bootstrap, an MFA-protected administrator uses **CloudFormation
+→ Create stack → With new resources → Upload a template file**, selects
+`infra/aws/bootstrap/template.yaml`, names it `epi-agent-bootstrap`, enters
+`DeveloperGroupName=Developer`, acknowledges `CAPABILITY_NAMED_IAM`, reviews the
+IAM role, policy, and permissions-boundary resources, and only then creates the
+stack. The pinned developer CLI must not perform this administrator action.
+
+```sh
+HOSTED_ZONE_ID="Z123456789EXAMPLE"
+CERT_EMAIL="ops@example.org"
+python scripts/aws_phase2a.py identity
+python scripts/aws_phase2a.py validate
+python scripts/aws_phase2a.py plan-stack --domain-name epiagent.org --hosted-zone-id "$HOSTED_ZONE_ID" --certificate-email "$CERT_EMAIL"
+```
+
 In the AWS Console select **IAM → User groups → Developer** and verify the
 operator uses `xutao-dev`. Run:
 

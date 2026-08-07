@@ -51,6 +51,7 @@ def check_redirect(base_url):
   status=getattr(response,"status",response.getcode()); location=response.headers.get("Location","")
   if status not in {301,302,307,308} or location.rstrip("/")!=base_url.rstrip("/"): raise ValueError("HTTP does not redirect to canonical HTTPS URL")
  except Exception as error:
+  if not isinstance(error, HTTPError) or error.code not in {301,302,307,308}: raise ValueError("HTTP does not redirect to canonical HTTPS URL")
   location=getattr(error,"headers",{}).get("Location","")
   if location.rstrip("/")!=base_url.rstrip("/"): raise ValueError("HTTP does not redirect to canonical HTTPS URL")
 def parse_args(argv=None):
