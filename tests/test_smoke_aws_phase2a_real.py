@@ -24,3 +24,13 @@ def test_request_helper_redacts_mocked_transport_error(monkeypatch):
  try: smoke.request_text("https://epiagent.org",secrets=("token-123",))
  except ValueError as error: assert "token-123" not in str(error) and "[REDACTED]" in str(error)
  else: assert False
+def test_owner_isolation_rejects_same_owner(monkeypatch):
+ monkeypatch.setattr(smoke,"request_json",lambda *args,**kwargs:{"owner_id":"same"})
+ import pytest
+ with pytest.raises(ValueError): smoke.owner_isolation("https://epiagent.org","a","b",())
+def test_login_and_byok_pass_secrets_only_to_request_layer(monkeypatch, capsys):
+ calls=[]
+ monkeypatch.setattr(smoke,"request_json",lambda *args,**kwargs:calls.append((args,kwargs)) or {"token":"session"})
+ smoke.login("https://epiagent.org","credential-secret",("credential-secret",))
+ smoke.provider_key("https://epiagent.org","session","provider-secret",("provider-secret",))
+ assert "provider-secret" not in capsys.readouterr().out and len(calls)==2

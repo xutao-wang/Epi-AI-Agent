@@ -18,6 +18,14 @@ def request_text(url, *, headers=None, body=None, secrets=()):
   with urlopen(request,timeout=15,context=ssl.create_default_context()) as response:return response.read().decode("utf-8")
  except Exception as error: raise ValueError(safe_error(error,secrets)) from None
 def request_json(url, **kwargs): return json.loads(request_text(url,**kwargs))
+def login(base_url, credential, secrets):
+ return request_json(base_url+"/api/auth/smoke-login",headers={"Authorization":"Bearer "+credential},secrets=secrets)
+def provider_key(base_url, session, secret, secrets):
+ return request_json(base_url+"/api/provider-key",headers={"Authorization":"Bearer "+session},body=json.dumps({"key":secret}).encode(),secrets=secrets)
+def owner_isolation(base_url, first, second, secrets):
+ a=request_json(base_url+"/api/ops/owner-smoke",headers={"Authorization":"Bearer "+first},secrets=secrets)
+ b=request_json(base_url+"/api/ops/owner-smoke",headers={"Authorization":"Bearer "+second},secrets=secrets)
+ if a.get("owner_id")==b.get("owner_id"): raise ValueError("owner isolation failed")
 def check_https(base_url):
  request=Request(base_url,method="HEAD")
  with urlopen(request,timeout=15,context=ssl.create_default_context()) as response:
@@ -47,7 +55,9 @@ def run(args):
   try:
    if phase=="tls": check_https(args.base_url)
    elif phase=="http_redirect": check_redirect(args.base_url)
-   elif phase in {"cognito_login","provider_key","owner_isolation"}: print("authenticated safe check requested")
+   elif phase=="cognito_login": sessions=[login(args.base_url,secrets[0],secrets),login(args.base_url,secrets[1],secrets)]
+   elif phase=="provider_key": provider_key(args.base_url,sessions[0].get("token",""),secrets[0],secrets)
+   elif phase=="owner_isolation": owner_isolation(args.base_url,sessions[0].get("token",""),sessions[1].get("token",""),secrets)
    elif phase in {"stop_start","snapshot_restore"}: print("target must be printed and separately confirmed")
   except Exception as error: raise ValueError(safe_error(error,secrets)) from None
  return 0
