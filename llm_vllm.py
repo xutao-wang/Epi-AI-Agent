@@ -40,13 +40,16 @@ def build_openai_llm(
         )
     if profile is not None and profile.reasoning_effort is not None:
         kwargs["reasoning_effort"] = profile.reasoning_effort
-    if temperature is not None:
+    supports_sampling = (
+        profile is None or profile.supports_sampling_controls
+    )
+    if supports_sampling and temperature is not None:
         kwargs["temperature"] = temperature
-    elif profile is not None and profile.model_id == "gpt-5.4":
+    elif supports_sampling and profile is not None and profile.model_id == "gpt-5.4":
         kwargs["temperature"] = 0.0
-    if top_p is not None:
+    if supports_sampling and top_p is not None:
         kwargs["top_p"] = top_p
-    elif profile is not None and profile.model_id == "gpt-5.4":
+    elif supports_sampling and profile is not None and profile.model_id == "gpt-5.4":
         kwargs["top_p"] = 1.0
     return ChatOpenAI(**kwargs)
 

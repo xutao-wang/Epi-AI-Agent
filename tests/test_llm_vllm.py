@@ -9,8 +9,7 @@ from db_rag import vectorstore
 from db_rag.service import model_routing
 
 
-def test_build_openai_llm_passes_key_without_mutating_environment(monkeypatch) -> None:
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+def _capture_chat_openai(monkeypatch) -> dict[str, object]:
     captured: dict[str, object] = {}
 
     class FakeChatOpenAI:
@@ -18,11 +17,41 @@ def test_build_openai_llm_passes_key_without_mutating_environment(monkeypatch) -
             captured.update(kwargs)
 
     monkeypatch.setattr(llm_vllm, "ChatOpenAI", FakeChatOpenAI)
+    return captured
+
+
+def test_build_openai_llm_passes_key_without_mutating_environment(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    captured = _capture_chat_openai(monkeypatch)
     llm_vllm.build_openai_llm(model_name="gpt-test", api_key="session-key")
 
     assert str(captured["api_key"]) == "**********"
     assert captured["api_key"].get_secret_value() == "session-key"
     assert "OPENAI_API_KEY" not in os.environ
+
+
+def test_gpt56_omits_unsupported_sampling_kwargs(monkeypatch) -> None:
+    captured = _capture_chat_openai(monkeypatch)
+    llm_vllm.build_openai_llm(
+        model_name="gpt-5.6-sol",
+        api_key="session-key",
+        temperature=0.2,
+        top_p=0.8,
+    )
+    assert "temperature" not in captured
+    assert "top_p" not in captured
+
+
+def test_gpt54_preserves_supported_sampling_kwargs(monkeypatch) -> None:
+    captured = _capture_chat_openai(monkeypatch)
+    llm_vllm.build_openai_llm(
+        model_name="gpt-5.4",
+        api_key="session-key",
+        temperature=0.2,
+        top_p=0.8,
+    )
+    assert captured["temperature"] == 0.2
+    assert captured["top_p"] == 0.8
 
 
 def test_db_rag_model_factory_requires_and_forwards_explicit_key(monkeypatch) -> None:

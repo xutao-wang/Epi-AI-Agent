@@ -28,6 +28,7 @@ class ModelRuntimeProfile:
     label: str
     reasoning_tier: ReasoningTier
     reasoning_effort: ReasoningEffort | None
+    supports_sampling_controls: bool
     summary: str
     initial_output_tokens: int
     automatic_output_token_ceiling: int
@@ -56,6 +57,7 @@ class ModelRuntimeProfile:
             "id": self.model_id,
             "label": self.label,
             "reasoning_tier": self.reasoning_tier,
+            "supports_sampling_controls": self.supports_sampling_controls,
             "summary": self.summary,
             "initial_output_tokens": self.initial_output_tokens,
             "automatic_output_token_ceiling": (
@@ -78,6 +80,7 @@ MODEL_RUNTIME_PROFILES = {
         label="gpt-5.4 (Standard)",
         reasoning_tier="standard",
         reasoning_effort=None,
+        supports_sampling_controls=True,
         summary="Reliable general-purpose default.",
         initial_output_tokens=8_192,
         automatic_output_token_ceiling=16_384,
@@ -92,6 +95,7 @@ MODEL_RUNTIME_PROFILES = {
         label="gpt-5.6-luna (Low)",
         reasoning_tier="low",
         reasoning_effort="low",
+        supports_sampling_controls=False,
         summary=(
             "Fastest and lowest-cost tier for straightforward work."
         ),
@@ -108,6 +112,7 @@ MODEL_RUNTIME_PROFILES = {
         label="gpt-5.6-terra (Medium)",
         reasoning_tier="medium",
         reasoning_effort="medium",
+        supports_sampling_controls=False,
         summary="Balanced tier for moderately complex analysis.",
         initial_output_tokens=16_384,
         automatic_output_token_ceiling=32_768,
@@ -122,6 +127,7 @@ MODEL_RUNTIME_PROFILES = {
         label="gpt-5.6-sol (Medium)",
         reasoning_tier="medium",
         reasoning_effort="medium",
+        supports_sampling_controls=False,
         summary="Frontier-capability tier with balanced reasoning.",
         initial_output_tokens=25_000,
         automatic_output_token_ceiling=50_000,
@@ -140,6 +146,7 @@ INTERNAL_MODEL_RUNTIME_PROFILES = {
         label="gpt5.6-Luna-Light (Low)",
         reasoning_tier="low",
         reasoning_effort="low",
+        supports_sampling_controls=False,
         summary="Lightweight model for automatic titles and dataset names.",
         initial_output_tokens=8_192,
         automatic_output_token_ceiling=16_384,

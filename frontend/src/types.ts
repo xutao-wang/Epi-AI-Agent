@@ -60,6 +60,7 @@ export interface ModelOption {
   id: string;
   label: string;
   reasoning_tier: "standard" | "low" | "medium" | "high";
+  supports_sampling_controls: boolean;
   summary: string;
   initial_output_tokens: number;
   automatic_output_token_ceiling: number;

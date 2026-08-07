@@ -810,15 +810,17 @@ class ReportAgentApiRuntime:
             raise ValueError(
                 f"Unsupported model: {normalized.model_name}"
             )
+        profile = model_runtime_profile(normalized.model_name)
+        if not profile.supports_sampling_controls:
+            normalized.temperature = None
+            normalized.top_p = None
         if (
             settings
             and "model_name" in settings
             and "timeout_seconds" not in settings
         ):
             normalized.timeout_seconds = float(
-                model_runtime_profile(
-                    normalized.model_name
-                ).workflow_timeout_seconds
+                profile.workflow_timeout_seconds
             )
         if normalized.temperature is not None and not 0 <= normalized.temperature <= 1:
             raise ValueError("temperature must be between 0 and 1")

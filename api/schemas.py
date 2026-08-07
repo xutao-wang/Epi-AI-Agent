@@ -90,6 +90,7 @@ class ModelOption(BaseModel):
     id: str
     label: str
     reasoning_tier: Literal["standard", "low", "medium", "high"]
+    supports_sampling_controls: bool
     summary: str
     initial_output_tokens: int = Field(gt=0)
     automatic_output_token_ceiling: int = Field(gt=0)

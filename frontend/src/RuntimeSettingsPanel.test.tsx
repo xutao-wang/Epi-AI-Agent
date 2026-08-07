@@ -4,8 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 import RuntimeSettingsPanel from "./RuntimeSettingsPanel";
 import type { ModelOption, RuntimeOptions, RuntimeSettings } from "./types";
 
-const settings: RuntimeSettings = {
-  model_name: "gpt-5.6-luna",
+const standardSettings: RuntimeSettings = {
+  model_name: "gpt-5.4",
   temperature: 0.1,
   top_p: 0.9,
   max_steps: 4,
@@ -18,11 +18,13 @@ function modelOption(
   id: string,
   label: string,
   reasoning_tier: ModelOption["reasoning_tier"],
+  supportsSamplingControls: boolean,
 ): ModelOption {
   return {
     id,
     label,
     reasoning_tier,
+    supports_sampling_controls: supportsSamplingControls,
     summary: `${label} guidance.`,
     initial_output_tokens: 8_192,
     automatic_output_token_ceiling: 16_384,
@@ -36,7 +38,7 @@ function modelOption(
 }
 
 const options: RuntimeOptions = {
-  defaults: settings,
+  defaults: standardSettings,
   capabilities: {
     publication_knowledge: {
       status: "available",
@@ -48,10 +50,10 @@ const options: RuntimeOptions = {
     },
   },
   models: [
-    modelOption("gpt-5.4", "gpt-5.4 (Standard)", "standard"),
-    modelOption("gpt-5.6-luna", "gpt-5.6-luna (Low)", "low"),
-    modelOption("gpt-5.6-terra", "gpt-5.6-terra (Medium)", "medium"),
-    modelOption("gpt-5.6-sol", "gpt-5.6-sol (Medium)", "medium"),
+    modelOption("gpt-5.4", "gpt-5.4 (Standard)", "standard", true),
+    modelOption("gpt-5.6-luna", "gpt-5.6-luna (Low)", "low", false),
+    modelOption("gpt-5.6-terra", "gpt-5.6-terra (Medium)", "medium", false),
+    modelOption("gpt-5.6-sol", "gpt-5.6-sol (Medium)", "medium", false),
   ],
 };
 
@@ -62,7 +64,7 @@ describe("RuntimeSettingsPanel", () => {
         locked={false}
         onChange={vi.fn()}
         options={options}
-        settings={settings}
+        settings={standardSettings}
       />,
     );
 
@@ -78,14 +80,14 @@ describe("RuntimeSettingsPanel", () => {
     ).toBeInTheDocument();
   });
 
-  it("reports editable model and temperature changes", () => {
+  it("clears sampling values and hides sampling controls for unsupported models", () => {
     const onChange = vi.fn();
     render(
       <RuntimeSettingsPanel
         locked={false}
         onChange={onChange}
         options={options}
-        settings={settings}
+        settings={standardSettings}
       />,
     );
 
@@ -93,15 +95,35 @@ describe("RuntimeSettingsPanel", () => {
       target: { value: "gpt-5.6-luna" },
     });
     expect(onChange).toHaveBeenLastCalledWith({
-      ...settings,
+      ...standardSettings,
       model_name: "gpt-5.6-luna",
+      temperature: null,
+      top_p: null,
     });
+
+    expect(screen.queryByLabelText("Temperature")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Top probability")).not.toBeInTheDocument();
+    expect(
+      screen.getByText("Sampling controls are unavailable for this model."),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps sampling controls visible and editable for supported models", () => {
+    const onChange = vi.fn();
+    render(
+      <RuntimeSettingsPanel
+        locked={false}
+        onChange={onChange}
+        options={options}
+        settings={standardSettings}
+      />,
+    );
 
     fireEvent.change(screen.getByLabelText("Temperature"), {
       target: { value: "0.2" },
     });
     expect(onChange).toHaveBeenLastCalledWith({
-      ...settings,
+      ...standardSettings,
       temperature: 0.2,
     });
   });
@@ -112,7 +134,7 @@ describe("RuntimeSettingsPanel", () => {
         locked={true}
         onChange={vi.fn()}
         options={options}
-        settings={settings}
+        settings={standardSettings}
       />,
     );
 
@@ -132,7 +154,7 @@ describe("RuntimeSettingsPanel", () => {
         onChange={vi.fn()}
         options={options}
         settings={{
-          ...settings,
+          ...standardSettings,
           model_name: "unsupported-model",
         }}
       />,
@@ -149,7 +171,7 @@ describe("RuntimeSettingsPanel", () => {
         onChange={vi.fn()}
         options={options}
         settings={{
-          ...settings,
+          ...standardSettings,
           model_name: "unsupported-model",
         }}
       />,
@@ -165,7 +187,7 @@ describe("RuntimeSettingsPanel", () => {
         locked={false}
         onChange={onChange}
         options={options}
-        settings={settings}
+        settings={standardSettings}
       />,
     );
 
@@ -185,7 +207,7 @@ describe("RuntimeSettingsPanel", () => {
       target: { value: "" },
     });
     expect(onChange).toHaveBeenCalledWith({
-      ...settings,
+      ...standardSettings,
       max_steps: null,
     });
   });
