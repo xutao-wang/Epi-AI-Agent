@@ -141,6 +141,9 @@ def test_release_installer_enforces_a_safe_atomic_activation_contract() -> None:
     assert "eval " not in source
     assert "bash -c" not in source
     assert 'if [ -L "$current_link" ]; then\n  wait_for_drain\nfi' in source
+    assert "readonly staged_nginx_config=/etc/nginx/staged/epi-agent.conf" in source
+    assert 'rm -f -- "$bootstrap_nginx_config"' in source
+    assert source.index("/usr/bin/certbot certonly") < source.index('mv -Tf "$staged_nginx_config" "$live_nginx_config"')
 
 
 def test_study_installer_verifies_archive_and_preserves_prior_versions() -> None:

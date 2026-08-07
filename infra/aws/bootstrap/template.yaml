@@ -84,11 +84,22 @@ Resources:
             Effect: Allow
             Action:
               - ssm:UpdateInstanceInformation
+              - ssm:DescribeAssociation
+              - ssm:DescribeDocument
+              - ssm:GetDeployablePatchSnapshotForInstance
+              - ssm:GetDocument
+              - ssm:GetManifest
+              - ssm:ListAssociations
+              - ssm:PutComplianceItems
+              - ssm:PutConfigurePackageResult
+              - ssm:PutInventory
+              - ssm:UpdateAssociationStatus
               - ssmmessages:CreateControlChannel
               - ssmmessages:CreateDataChannel
               - ssmmessages:OpenControlChannel
               - ssmmessages:OpenDataChannel
               - ec2messages:DeleteMessage
+              - ec2messages:AcknowledgeMessage
               - ec2messages:FailMessage
               - ec2messages:GetEndpoint
               - ec2messages:GetMessages

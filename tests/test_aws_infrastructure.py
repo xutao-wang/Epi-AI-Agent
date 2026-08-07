@@ -255,7 +255,7 @@ def test_bootstrap_boundary_and_execution_role_support_task7_without_broadening_
     template = bootstrap_template()
     boundary = template["Resources"]["EpiAgentWorkloadBoundary"]["Properties"]["PolicyDocument"]["Statement"]
     boundary_actions = {action for statement in boundary for action in ([statement["Action"]] if isinstance(statement["Action"], str) else statement["Action"])}
-    assert {"ssm:UpdateInstanceInformation", "ssmmessages:OpenDataChannel", "ec2messages:GetMessages", "cloudwatch:PutMetricData", "ec2:CreateSnapshot", "ec2:DescribeVolumes"} <= boundary_actions
+    assert {"ssm:DescribeAssociation", "ssm:GetDocument", "ssm:GetDeployablePatchSnapshotForInstance", "ssm:PutInventory", "ssm:PutComplianceItems", "ssm:PutConfigurePackageResult", "ssm:UpdateAssociationStatus", "ssmmessages:OpenDataChannel", "ec2messages:AcknowledgeMessage", "cloudwatch:PutMetricData", "ec2:CreateSnapshot", "ec2:DescribeVolumes"} <= boundary_actions
     execution = template["Resources"]["CloudFormationExecutionPolicy"]["Properties"]["PolicyDocument"]["Statement"]
     execution_actions = {action for statement in execution for action in ([statement["Action"]] if isinstance(statement["Action"], str) else statement["Action"])}
     assert {"iam:CreateInstanceProfile", "iam:AddRoleToInstanceProfile", "ssm:CreateDocument", "ssm:UpdateDocument", "logs:PutMetricFilter", "ec2:ModifyInstanceAttribute"} <= execution_actions
@@ -604,6 +604,8 @@ def test_phase2a_ssm_release_document_uses_strict_environment_interpolation() ->
     assert "eval " not in command
     assert "bash -c" not in command
     assert 'sed "s/epiagent\\\\.org/$SSM_DomainName/g"' in command
+    assert "/etc/nginx/staged/epi-agent.conf" in command
+    assert "/etc/nginx/conf.d/epi-agent.conf" not in command
 
 
 def test_phase2a_backup_and_observability_cover_host_failure_modes() -> None:

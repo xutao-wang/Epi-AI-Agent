@@ -214,5 +214,15 @@ activated=false
 if [ ! -e "/etc/letsencrypt/live/$domain/fullchain.pem" ]; then
   /usr/bin/certbot certonly --webroot -w /var/www/certbot --non-interactive --agree-tos \
     --email "$certificate_email" -d "$domain"
+fi
+
+readonly staged_nginx_config=/etc/nginx/staged/epi-agent.conf
+readonly live_nginx_config=/etc/nginx/conf.d/epi-agent.conf
+readonly bootstrap_nginx_config=/etc/nginx/conf.d/epi-agent-bootstrap.conf
+if [ -f "$staged_nginx_config" ]; then
+  install -d -m 0755 /etc/nginx/conf.d
+  mv -Tf "$staged_nginx_config" "$live_nginx_config"
+  rm -f -- "$bootstrap_nginx_config"
+  nginx -t
   systemctl reload nginx.service
 fi

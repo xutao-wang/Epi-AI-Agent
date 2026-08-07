@@ -127,3 +127,13 @@ Follow-up review found deployment blockers and this revision addresses them:
 
 Revalidation after remediation: both bootstrap and Phase 2A templates pass
 `cfn-lint==1.53.1`; infrastructure and host-asset tests report `31 passed`.
+
+Final TLS/SSM re-review remediation: the SSM document stages the rendered TLS
+Nginx file outside `conf.d`; the installer first completes Certbot using the
+live HTTP ACME bootstrap, then moves the staged file into the live include,
+removes the bootstrap file, validates Nginx, and reloads. A failed Certbot
+therefore leaves the known-valid bootstrap configuration in place for retries.
+The boundary now also includes the complete managed-instance SSM and
+ec2messages action set, and host-log permissions split log-group describe from
+log-stream creation/writes. Final validation: both templates lint clean and
+the focused suite reports `31 passed`.

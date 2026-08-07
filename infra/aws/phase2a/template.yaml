@@ -344,9 +344,12 @@ Resources:
                 Effect: Allow
                 Action:
                   - logs:CreateLogStream
-                  - logs:DescribeLogStreams
                   - logs:PutLogEvents
                 Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${ApplicationLogGroup}:log-stream:*
+              - Sid: DescribeHostLogStreams
+                Effect: Allow
+                Action: logs:DescribeLogStreams
+                Resource: !GetAtt ApplicationLogGroup.Arn
               - Sid: PublishHostMetrics
                 Effect: Allow
                 Action: cloudwatch:PutMetricData
@@ -584,9 +587,10 @@ Resources:
                   install -o root -g root -m 0644 "$staging_dir/release/deploy/aws/systemd/epi-agent.service" /etc/systemd/system/epi-agent.service
                   install -o root -g root -m 0644 "$staging_dir/release/deploy/aws/systemd/epi-agent-certificate-renew.service" /etc/systemd/system/epi-agent-certificate-renew.service
                   install -o root -g root -m 0644 "$staging_dir/release/deploy/aws/systemd/epi-agent-certificate-renew.timer" /etc/systemd/system/epi-agent-certificate-renew.timer
-                  sed "s/epiagent\\.org/$SSM_DomainName/g" "$staging_dir/release/deploy/aws/nginx/epi-agent.conf" > /etc/nginx/conf.d/epi-agent.conf
-                  chown root:root /etc/nginx/conf.d/epi-agent.conf
-                  chmod 0644 /etc/nginx/conf.d/epi-agent.conf
+                  install -d -m 0755 /etc/nginx/staged
+                  sed "s/epiagent\\.org/$SSM_DomainName/g" "$staging_dir/release/deploy/aws/nginx/epi-agent.conf" > /etc/nginx/staged/epi-agent.conf
+                  chown root:root /etc/nginx/staged/epi-agent.conf
+                  chmod 0644 /etc/nginx/staged/epi-agent.conf
                   install -o root -g root -m 0640 "$staging_dir/release/deploy/aws/env/app.env.example" /etc/epi-agent/app.env.example
                   systemctl daemon-reload
                   systemctl enable --now nginx.service epi-agent-certificate-renew.timer
