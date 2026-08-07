@@ -214,6 +214,41 @@ def test_bootstrap_stack_scopes_route53_change_lookup_to_change_arns() -> None:
     }
 
 
+def test_bootstrap_policy_supports_phase2a_endpoint_storage_and_cognito_domain_lifecycle() -> None:
+    statements = bootstrap_template()["Resources"]["CloudFormationExecutionPolicy"]["Properties"][
+        "PolicyDocument"
+    ]["Statement"]
+    actions = {
+        action
+        for statement in statements
+        for action in ([statement["Action"]] if isinstance(statement["Action"], str) else statement["Action"])
+    }
+
+    assert {
+        "ec2:CreateVpcEndpoint",
+        "ec2:DeleteVpcEndpoints",
+        "ec2:DescribeVpcEndpoints",
+        "ec2:ModifyVpcEndpoint",
+        "ec2:AssociateRouteTable",
+        "ec2:DisassociateRouteTable",
+        "ec2:CreateTags",
+        "ec2:DeleteTags",
+        "s3:GetBucketVersioning",
+        "s3:PutBucketVersioning",
+        "s3:GetBucketOwnershipControls",
+        "s3:PutBucketOwnershipControls",
+        "s3:GetBucketPublicAccessBlock",
+        "s3:PutBucketPublicAccessBlock",
+        "s3:GetBucketTagging",
+        "s3:PutBucketTagging",
+        "cognito-idp:CreateUserPoolDomain",
+        "cognito-idp:DeleteUserPoolDomain",
+        "cognito-idp:DescribeUserPoolDomain",
+        "cognito-idp:UpdateUserPoolDomain",
+    } <= actions
+    assert "s3:DeleteBucketTagging" not in actions
+
+
 def test_bootstrap_stack_exports_the_execution_role_arn() -> None:
     outputs = bootstrap_template()["Outputs"]
 
@@ -324,6 +359,9 @@ def test_phase2a_retains_encrypted_data_volume_and_private_s3_bucket() -> None:
     bucket = resources["ApplicationBucket"]
     assert bucket["DeletionPolicy"] == "Retain"
     assert bucket["UpdateReplacePolicy"] == "Retain"
+    bucket_policy = resources["ApplicationBucketPolicy"]
+    assert bucket_policy["DeletionPolicy"] == "Retain"
+    assert bucket_policy["UpdateReplacePolicy"] == "Retain"
     properties = bucket["Properties"]
     assert properties["BucketEncryption"] == {
         "ServerSideEncryptionConfiguration": [
@@ -423,6 +461,10 @@ def test_phase2a_parameters_examples_and_pinned_linter_contract() -> None:
     assert template["Conditions"] == {
         "HasDataSnapshot": {"Fn::Not": [{"Fn::Equals": [{"Ref": "DataSnapshotId"}, ""]}]}
     }
+    assert template["Parameters"]["DataSnapshotId"]["Description"] == (
+        "Optional EBS snapshot ID used only when creating the data volume. "
+        "Changing it in-place is unsupported; use a separate restore/new-volume migration workflow."
+    )
     assert template["Resources"]["ApplicationElasticIp"]["Properties"]["Tags"] == [
         {"Key": "Name", "Value": "epi-agent-phase2a"},
         {"Key": "Project", "Value": "epi-agent"},

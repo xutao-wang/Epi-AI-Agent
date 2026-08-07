@@ -51,7 +51,7 @@ Parameters:
   DataSnapshotId:
     Type: String
     Default: ''
-    Description: Optional EBS snapshot ID from which to restore the data volume.
+    Description: Optional EBS snapshot ID used only when creating the data volume. Changing it in-place is unsupported; use a separate restore/new-volume migration workflow.
     AllowedPattern: '^$|^snap-[a-f0-9]+$'
 
 Conditions:
@@ -231,6 +231,8 @@ Resources:
 
   ApplicationBucketPolicy:
     Type: AWS::S3::BucketPolicy
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       Bucket: !Ref ApplicationBucket
       PolicyDocument:

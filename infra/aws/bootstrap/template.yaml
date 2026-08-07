@@ -95,6 +95,7 @@ Resources:
             Action:
               - ec2:AllocateAddress
               - ec2:AssociateAddress
+              - ec2:AssociateRouteTable
               - ec2:AttachInternetGateway
               - ec2:AttachVolume
               - ec2:AuthorizeSecurityGroupEgress
@@ -109,6 +110,7 @@ Resources:
               - ec2:CreateTags
               - ec2:CreateVolume
               - ec2:CreateVpc
+              - ec2:CreateVpcEndpoint
               - ec2:DeleteInternetGateway
               - ec2:DeleteNatGateway
               - ec2:DeleteNetworkInterface
@@ -119,6 +121,7 @@ Resources:
               - ec2:DeleteTags
               - ec2:DeleteVolume
               - ec2:DeleteVpc
+              - ec2:DeleteVpcEndpoints
               - ec2:DescribeAddresses
               - ec2:DescribeAvailabilityZones
               - ec2:DescribeInstances
@@ -130,12 +133,15 @@ Resources:
               - ec2:DescribeSubnets
               - ec2:DescribeVolumes
               - ec2:DescribeVpcs
+              - ec2:DescribeVpcEndpoints
               - ec2:DetachInternetGateway
               - ec2:DetachVolume
               - ec2:DisassociateAddress
+              - ec2:DisassociateRouteTable
               - ec2:ModifyNetworkInterfaceAttribute
               - ec2:ModifySubnetAttribute
               - ec2:ModifyVpcAttribute
+              - ec2:ModifyVpcEndpoint
               - ec2:ReleaseAddress
               - ec2:RevokeSecurityGroupEgress
               - ec2:RevokeSecurityGroupIngress
@@ -153,7 +159,11 @@ Resources:
               - s3:DeleteBucketPolicy
               - s3:DeleteObject
               - s3:GetBucketLocation
+              - s3:GetBucketOwnershipControls
               - s3:GetBucketPolicy
+              - s3:GetBucketPublicAccessBlock
+              - s3:GetBucketTagging
+              - s3:GetBucketVersioning
               - s3:GetEncryptionConfiguration
               - s3:GetLifecycleConfiguration
               - s3:GetObject
@@ -161,6 +171,10 @@ Resources:
               - s3:PutEncryptionConfiguration
               - s3:PutLifecycleConfiguration
               - s3:PutBucketPolicy
+              - s3:PutBucketOwnershipControls
+              - s3:PutBucketPublicAccessBlock
+              - s3:PutBucketTagging
+              - s3:PutBucketVersioning
               - s3:PutObject
               - s3:PutObjectTagging
             Resource:
@@ -171,13 +185,17 @@ Resources:
             Action:
               - cognito-idp:CreateUserPool
               - cognito-idp:CreateUserPoolClient
+              - cognito-idp:CreateUserPoolDomain
               - cognito-idp:DeleteUserPool
               - cognito-idp:DeleteUserPoolClient
+              - cognito-idp:DeleteUserPoolDomain
               - cognito-idp:DescribeUserPool
               - cognito-idp:DescribeUserPoolClient
+              - cognito-idp:DescribeUserPoolDomain
               - cognito-idp:ListUserPools
               - cognito-idp:UpdateUserPool
               - cognito-idp:UpdateUserPoolClient
+              - cognito-idp:UpdateUserPoolDomain
             Resource: '*'
           - Sid: ManageDnsRecords
             Effect: Allow
