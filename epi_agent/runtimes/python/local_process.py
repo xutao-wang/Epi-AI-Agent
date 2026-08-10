@@ -20,6 +20,7 @@ from epi_agent.runtimes.python.models import (
     PythonRuntimeFailure,
 )
 from tools.execution_policy import validate_generated_code
+from utils.run_cancellation import RunCancelled, cancellation_point
 
 
 MAX_STDOUT_BYTES = 100_000
@@ -336,9 +337,26 @@ class LocalPythonRuntime:
                         memory_limit_bytes=self._memory_limit_bytes,
                     ),
                 )
-                _child_stdout, child_stderr = process.communicate(
-                    timeout=self._timeout_seconds
-                )
+                deadline = started + self._timeout_seconds
+                while True:
+                    cancellation_point()
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(
+                            command,
+                            self._timeout_seconds,
+                        )
+                    try:
+                        _child_stdout, child_stderr = process.communicate(
+                            timeout=min(0.1, remaining),
+                        )
+                        cancellation_point()
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
+            except RunCancelled:
+                _terminate_process_group(process)
+                raise
             except subprocess.TimeoutExpired as exc:
                 _terminate_process_group(process)
                 raise _failure(

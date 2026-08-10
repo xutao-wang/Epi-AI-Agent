@@ -44,6 +44,7 @@ from graph.conversation_events import (
 from graph.state import LangChainAgentState
 from graph.state import MetaKeys
 from utils.model_runtime_profiles import ModelRuntimeProfile
+from utils.run_cancellation import cancellation_point
 from utils.runtime_defaults import DEFAULT_EPI_AGENT_MAX_ITERATIONS
 
 
@@ -372,16 +373,21 @@ def _call_model(
     agent_config: EpiAgentRuntimeConfig,
     model: Any,
 ) -> dict[str, Any]:
+    cancellation_point()
     prepared = _prepare_model_request(state, agent_config=agent_config)
     if isinstance(prepared, dict):
         return prepared
     iteration_count, output_state, phase, messages, budget = prepared
     started_at = time.perf_counter()
-    answer = model.bind_tools(agent_config.registry.model_schemas()).invoke(
-        messages,
-        config=config,
-        max_completion_tokens=budget,
-    )
+    cancellation_point()
+    try:
+        answer = model.bind_tools(agent_config.registry.model_schemas()).invoke(
+            messages,
+            config=config,
+            max_completion_tokens=budget,
+        )
+    finally:
+        cancellation_point()
     duration_ms = max(
         0,
         int((time.perf_counter() - started_at) * 1_000),
@@ -404,18 +410,23 @@ async def _acall_model(
     agent_config: EpiAgentRuntimeConfig,
     model: Any,
 ) -> dict[str, Any]:
+    cancellation_point()
     prepared = _prepare_model_request(state, agent_config=agent_config)
     if isinstance(prepared, dict):
         return prepared
     iteration_count, output_state, phase, messages, budget = prepared
     started_at = time.perf_counter()
-    answer = await model.bind_tools(
-        agent_config.registry.model_schemas()
-    ).ainvoke(
-        messages,
-        config=config,
-        max_completion_tokens=budget,
-    )
+    cancellation_point()
+    try:
+        answer = await model.bind_tools(
+            agent_config.registry.model_schemas()
+        ).ainvoke(
+            messages,
+            config=config,
+            max_completion_tokens=budget,
+        )
+    finally:
+        cancellation_point()
     duration_ms = max(
         0,
         int((time.perf_counter() - started_at) * 1_000),
@@ -842,6 +853,7 @@ def _execute_tools(
     clarification_exchanges: list[dict[str, str]] = []
     tool_state_patch: dict[str, Any] = {}
     for call in calls:
+        cancellation_point()
         name = call["name"]
         arguments = call["args"]
         if (
@@ -873,7 +885,15 @@ def _execute_tools(
             terminal_error = _terminal_error(error.code, str(error))
             break
         try:
-            result = agent_config.registry.invoke(name, arguments, context=context)
+            cancellation_point()
+            try:
+                result = agent_config.registry.invoke(
+                    name,
+                    arguments,
+                    context=context,
+                )
+            finally:
+                cancellation_point()
         except GraphInterrupt:
             raise
         except ToolExecutionError as error:
