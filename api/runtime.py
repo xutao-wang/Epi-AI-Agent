@@ -656,21 +656,27 @@ class ApiGraphRunner:
             job.transition_complete.set()
             return True
         except Exception as exc:
-            if on_initial_payload_error is not None:
-                on_initial_payload_error()
             error_code, user_message = _run_failure(exc)
-            with self._lock:
-                cancelled = job.token.cancelled
-                if self._jobs.get(thread_id) is job and not cancelled:
-                    job.status.update(
-                        {
-                            "state": "error",
-                            "error": f"{type(exc).__name__}: {exc}",
-                            "error_code": error_code,
-                            "user_message": user_message,
-                            "updated_at": time.time(),
-                        }
-                    )
+            cancelled = False
+            try:
+                with self._lock:
+                    cancelled = job.token.cancelled
+                    if self._jobs.get(thread_id) is job and not cancelled:
+                        if on_initial_payload_error is not None:
+                            try:
+                                on_initial_payload_error()
+                            except Exception:
+                                pass
+                        job.status.update(
+                            {
+                                "state": "error",
+                                "error": f"{type(exc).__name__}: {exc}",
+                                "error_code": error_code,
+                                "user_message": user_message,
+                                "updated_at": time.time(),
+                            }
+                        )
+            finally:
                 job.transition_complete.set()
             if cancelled:
                 return True

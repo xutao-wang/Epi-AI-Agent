@@ -99,6 +99,19 @@ class FactoryBoundaryGraph:
         self.invoke_calls += 1
 
 
+class FailingInitialBoundaryGraph(FactoryBoundaryGraph):
+    def __init__(self) -> None:
+        super().__init__()
+        self.invoke_started = threading.Event()
+        self.release_invoke = threading.Event()
+
+    def invoke(self, _payload, _config, **_kwargs):
+        self.invoke_calls += 1
+        self.invoke_started.set()
+        assert self.release_invoke.wait(timeout=2)
+        raise RuntimeError("initial checkpoint failed")
+
+
 def test_cancel_waits_for_payload_factory_and_never_starts_cancelled_input() -> None:
     app = FactoryBoundaryGraph()
     runner = ApiGraphRunner(app)
@@ -143,6 +156,67 @@ def test_cancel_waits_for_payload_factory_and_never_starts_cancelled_input() -> 
         "checkpoint-before-turn"
     )
     assert runner.status("thread-factory")["state"] == "cancelled"
+
+
+def test_cancel_owns_restore_when_initial_checkpoint_fails_concurrently() -> None:
+    app = FailingInitialBoundaryGraph()
+    runner = ApiGraphRunner(app)
+    cancel_finished = threading.Event()
+    initial_errors: list[str] = []
+    restored: list[dict[str, Any]] = []
+
+    starter = threading.Thread(
+        target=lambda: runner.start_background_from_factory(
+            thread_id="thread-factory",
+            payload_factory=lambda: {"messages": []},
+            restore=lambda config: restored.append(deepcopy(config)),
+            max_steps=3,
+            timeout_seconds=5,
+            on_initial_payload_error=lambda: initial_errors.append("rejected"),
+        )
+    )
+    starter.start()
+    assert app.invoke_started.wait(timeout=1)
+    canceller = threading.Thread(
+        target=lambda: (
+            runner.cancel("thread-factory"),
+            cancel_finished.set(),
+        )
+    )
+    canceller.start()
+    assert not cancel_finished.wait(timeout=0.05)
+
+    app.release_invoke.set()
+    starter.join(timeout=1)
+    canceller.join(timeout=1)
+
+    assert not starter.is_alive()
+    assert not canceller.is_alive()
+    assert initial_errors == []
+    assert restored[0]["configurable"]["checkpoint_id"] == (
+        "checkpoint-before-turn"
+    )
+    assert runner.status("thread-factory")["state"] == "cancelled"
+
+
+def test_initial_checkpoint_cleanup_error_still_finishes_transition() -> None:
+    app = FailingInitialBoundaryGraph()
+    app.release_invoke.set()
+    runner = ApiGraphRunner(app)
+
+    assert runner.start_background_from_factory(
+        thread_id="thread-factory",
+        payload_factory=lambda: {"messages": []},
+        restore=lambda _config: None,
+        max_steps=3,
+        timeout_seconds=5,
+        on_initial_payload_error=lambda: (_ for _ in ()).throw(
+            RuntimeError("cleanup failed")
+        ),
+    )
+
+    assert runner.status("thread-factory")["state"] == "error"
+    assert runner._jobs["thread-factory"].transition_complete.is_set()
 
 
 def test_runner_cancels_active_job_and_uses_captured_checkpoint() -> None:
