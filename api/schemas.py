@@ -5,7 +5,15 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
-RunState = Literal["idle", "running", "interrupted", "done", "error", "timeout"]
+RunState = Literal[
+    "idle",
+    "running",
+    "interrupted",
+    "done",
+    "cancelled",
+    "error",
+    "timeout",
+]
 
 
 class RunStatus(BaseModel):

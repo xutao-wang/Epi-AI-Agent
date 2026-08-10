@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+from collections.abc import Callable
+from copy import deepcopy
 import csv
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -14,6 +16,7 @@ import uuid
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 import httpx
 from openai import (
@@ -80,6 +83,11 @@ from utils.review_interrupts import (
     validate_resume_decision,
 )
 from utils.model_runtime_profiles import model_runtime_profile
+from utils.run_cancellation import (
+    CancellationToken,
+    RunCancelled,
+    bind_cancellation,
+)
 
 
 _ACTIVE_INTERRUPT_ADAPTER = TypeAdapter(ActiveInterrupt)
@@ -355,17 +363,202 @@ def _matches_pending_analysis_linked_output(
     )
 
 
+@dataclass(frozen=True)
+class CancelledTurn:
+    message_id: str
+    text: str
+    turn_hash: str
+    attachment_ids: tuple[str, ...]
+
+
+@dataclass
+class GraphJob:
+    status: dict[str, Any]
+    token: CancellationToken
+    durable_config: RunnableConfig | None
+    restore: Callable[[RunnableConfig], None] | None = None
+
+
+class CancellationRestoreError(RuntimeError):
+    pass
+
+
+def _cancelled_turn_from_values(values: dict[str, Any]) -> CancelledTurn:
+    events = list(
+        dict(values.get("artifacts") or {}).get("conversation_events") or []
+    )
+    user_event = next(
+        (
+            event
+            for event in reversed(events)
+            if isinstance(event, dict) and event.get("type") == "user"
+        ),
+        None,
+    )
+    if user_event is None:
+        raise CancellationRestoreError(
+            "The active run has no user turn to retain."
+        )
+    turn_hash = str(user_event.get("user_turn_hash") or "")
+    user_event_id = str(user_event.get("event_id") or "")
+    attachment_ids = tuple(
+        dict.fromkeys(
+            str(event.get("artifact_id") or "")
+            for event in events
+            if isinstance(event, dict)
+            and event.get("type") == "attachment"
+            and event.get("relationship") == "input"
+            and (
+                str(event.get("parent_event_id") or "") == user_event_id
+                or str(event.get("user_turn_hash") or "") == turn_hash
+            )
+            and str(event.get("artifact_id") or "")
+        )
+    )
+    message_id = user_event_id
+    for message in reversed(list(values.get("messages") or [])):
+        if isinstance(message, HumanMessage):
+            message_id = str(message.id or user_event_id)
+            break
+    return CancelledTurn(
+        message_id=message_id,
+        text=str(user_event.get("text") or ""),
+        turn_hash=turn_hash,
+        attachment_ids=attachment_ids,
+    )
+
+
+def _cancelled_turn_patch(
+    durable_values: dict[str, Any],
+    *,
+    turn: CancelledTurn,
+    manifests: list[dict[str, Any]],
+) -> dict[str, Any]:
+    event_state = ensure_conversation_state(
+        {
+            "artifacts": durable_values.get("artifacts"),
+            "meta": durable_values.get("meta"),
+        }
+    )
+    artifacts = dict(event_state.get("artifacts") or {})
+    events = list(artifacts.get("conversation_events") or [])
+    user_event_id = ""
+    for event in events:
+        if (
+            isinstance(event, dict)
+            and event.get("type") == "user"
+            and str(event.get("user_turn_hash") or "") == turn.turn_hash
+        ):
+            event["status"] = "cancelled"
+            user_event_id = str(event.get("event_id") or "")
+            break
+    if not user_event_id:
+        event_state = append_conversation_event(
+            event_state,
+            build_user_event(
+                actor="human",
+                user_turn_hash=turn.turn_hash,
+                text=turn.text,
+                status="cancelled",
+            ),
+        )
+        artifacts = dict(event_state.get("artifacts") or {})
+        events = list(artifacts.get("conversation_events") or [])
+        user_event_id = str(events[-1]["event_id"])
+    else:
+        artifacts["conversation_events"] = events
+        event_state = {**event_state, "artifacts": artifacts}
+
+    linked_input_ids = {
+        str(event.get("artifact_id") or "")
+        for event in list(
+            dict(event_state.get("artifacts") or {}).get(
+                "conversation_events"
+            )
+            or []
+        )
+        if isinstance(event, dict)
+        and event.get("type") == "attachment"
+        and event.get("relationship") == "input"
+        and str(event.get("user_turn_hash") or "") == turn.turn_hash
+    }
+    for attachment_id in turn.attachment_ids:
+        if attachment_id in linked_input_ids:
+            continue
+        event_state = append_conversation_event(
+            event_state,
+            build_attachment_event(
+                actor="api",
+                user_turn_hash=turn.turn_hash,
+                artifact_id=attachment_id,
+                relationship="input",
+                parent_event_id=user_event_id,
+            ),
+        )
+
+    artifacts = dict(event_state.get("artifacts") or {})
+    attachments = dict(artifacts.get("attachments") or {})
+    available_ids: set[str] = set()
+    for manifest in manifests:
+        attachment_id = str(manifest.get("id") or "")
+        if not attachment_id or manifest.get("status") != "available":
+            continue
+        attachments[attachment_id] = dict(manifest)
+        available_ids.add(attachment_id)
+    artifacts["attachments"] = attachments
+    meta = dict(event_state.get("meta") or {})
+    meta[MetaKeys.LAST_USER_MESSAGE_HASH] = turn.turn_hash
+    authorized_attachment_ids = sorted(
+        {
+            *[
+                str(attachment_id)
+                for attachment_id in list(
+                    durable_values.get("authorized_attachment_ids") or []
+                )
+                if str(attachment_id)
+            ],
+            *available_ids,
+        }
+    )
+    return {
+        "artifacts": artifacts,
+        "meta": meta,
+        "authorized_attachment_ids": authorized_attachment_ids,
+        "current_turn_artifact_refs": [],
+        "current_turn_output_artifact_refs": [],
+        "terminal_error": None,
+        "final_response": None,
+        "completion_blocked": False,
+        "terminal_control": {
+            "status": "cancelled",
+            "reason": "User cancelled the active run.",
+        },
+        "cancelled_turn": {
+            "message_id": turn.message_id,
+            "text": turn.text,
+            "turn_hash": turn.turn_hash,
+            "attachment_ids": list(turn.attachment_ids),
+        },
+    }
+
+
 @dataclass
 class ApiGraphRunner:
     app: Any
-    _jobs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    _jobs: dict[str, GraphJob] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def status(self, thread_id: str) -> dict[str, Any]:
         with self._lock:
-            return dict(self._jobs.get(thread_id) or _idle_status())
+            job = self._jobs.get(thread_id)
+            return dict(job.status) if job is not None else _idle_status()
 
-    def _reserve_run(self, thread_id: str) -> tuple[bool, dict[str, Any]]:
+    def _durable_config(self, thread_id: str) -> RunnableConfig | None:
+        snapshot = self.app.get_state(graph_config(thread_id), subgraphs=True)
+        saved = getattr(snapshot, "config", None)
+        return deepcopy(saved) if isinstance(saved, dict) else None
+
+    def _reserve_run(self, thread_id: str) -> tuple[bool, GraphJob]:
         started_at = time.time()
         status = {
             "state": "running",
@@ -378,10 +571,15 @@ class ApiGraphRunner:
         }
         with self._lock:
             current = self._jobs.get(thread_id)
-            if current and current.get("state") == "running":
-                return False, dict(current)
-            self._jobs[thread_id] = dict(status)
-        return True, status
+            if current and current.status.get("state") == "running":
+                return False, current
+            job = GraphJob(
+                status=status,
+                token=CancellationToken(),
+                durable_config=self._durable_config(thread_id),
+            )
+            self._jobs[thread_id] = job
+        return True, job
 
     def start_background(
         self,
@@ -391,7 +589,7 @@ class ApiGraphRunner:
         max_steps: int,
         timeout_seconds: float,
     ) -> bool:
-        started, status = self._reserve_run(thread_id)
+        started, job = self._reserve_run(thread_id)
         if not started:
             return False
         thread = threading.Thread(
@@ -401,7 +599,7 @@ class ApiGraphRunner:
                 "initial_payload": initial_payload,
                 "max_steps": max_steps,
                 "timeout_seconds": timeout_seconds,
-                "status": status,
+                "job": job,
                 "monotonic_started_at": time.monotonic(),
             },
             daemon=True,
@@ -416,17 +614,20 @@ class ApiGraphRunner:
         payload_factory: Any,
         max_steps: int,
         timeout_seconds: float,
+        restore: Callable[[RunnableConfig], None],
         on_initial_payload_error: Any | None = None,
         on_initial_payload_success: Any | None = None,
     ) -> bool:
-        started, status = self._reserve_run(thread_id)
+        started, job = self._reserve_run(thread_id)
         if not started:
             return False
+        job.restore = restore
         try:
             initial_payload = payload_factory()
         except Exception:
             with self._lock:
-                self._jobs.pop(thread_id, None)
+                if self._jobs.get(thread_id) is job:
+                    self._jobs.pop(thread_id, None)
             raise
         thread = threading.Thread(
             target=self._run_reserved,
@@ -435,10 +636,60 @@ class ApiGraphRunner:
                 "initial_payload": initial_payload,
                 "max_steps": max_steps,
                 "timeout_seconds": timeout_seconds,
-                "status": status,
+                "job": job,
                 "monotonic_started_at": time.monotonic(),
                 "on_initial_payload_error": on_initial_payload_error,
                 "on_initial_payload_success": on_initial_payload_success,
+            },
+            daemon=True,
+        )
+        thread.start()
+        return True
+
+    def start_background_after_durable_resume(
+        self,
+        *,
+        thread_id: str,
+        initial_payload: Any,
+        restore: Callable[[RunnableConfig], None],
+        max_steps: int,
+        timeout_seconds: float,
+    ) -> bool:
+        started, job = self._reserve_run(thread_id)
+        if not started:
+            return False
+        job.restore = restore
+        try:
+            with bind_cancellation(job.token):
+                self.app.invoke(
+                    initial_payload,
+                    graph_config(thread_id),
+                    interrupt_after=["tools", "model_output_gate"],
+                )
+        except RunCancelled:
+            return True
+        except Exception:
+            with self._lock:
+                if self._jobs.get(thread_id) is job:
+                    self._jobs.pop(thread_id, None)
+            raise
+        snapshot = self.app.get_state(
+            graph_config(thread_id),
+            subgraphs=True,
+        )
+        if isinstance(getattr(snapshot, "config", None), dict):
+            job.durable_config = deepcopy(snapshot.config)
+        job.status["steps"] += 1
+        job.status["updated_at"] = time.time()
+        thread = threading.Thread(
+            target=self._run_reserved,
+            kwargs={
+                "thread_id": thread_id,
+                "initial_payload": None,
+                "max_steps": max_steps,
+                "timeout_seconds": timeout_seconds,
+                "job": job,
+                "monotonic_started_at": time.monotonic(),
             },
             daemon=True,
         )
@@ -454,15 +705,15 @@ class ApiGraphRunner:
         timeout_seconds: float,
     ) -> dict[str, Any]:
         monotonic_started_at = time.monotonic()
-        started, status = self._reserve_run(thread_id)
+        started, job = self._reserve_run(thread_id)
         if not started:
-            return status
+            return dict(job.status)
         return self._run_reserved(
             thread_id=thread_id,
             initial_payload=initial_payload,
             max_steps=max_steps,
             timeout_seconds=timeout_seconds,
-            status=status,
+            job=job,
             monotonic_started_at=monotonic_started_at,
         )
 
@@ -473,7 +724,7 @@ class ApiGraphRunner:
         initial_payload: Any | None,
         max_steps: int,
         timeout_seconds: float,
-        status: dict[str, Any],
+        job: GraphJob,
         monotonic_started_at: float,
         on_initial_payload_error: Any | None = None,
         on_initial_payload_success: Any | None = None,
@@ -485,7 +736,8 @@ class ApiGraphRunner:
 
         def store() -> None:
             with self._lock:
-                self._jobs[thread_id] = dict(status)
+                if self._jobs.get(thread_id) is job:
+                    job.status["updated_at"] = time.time()
 
         def finish(
             state: str,
@@ -494,17 +746,17 @@ class ApiGraphRunner:
             error_code: str | None = None,
             user_message: str | None = None,
         ) -> dict[str, Any]:
-            status["state"] = state
-            status["error"] = error
-            status["error_code"] = error_code
-            status["user_message"] = user_message
-            status["updated_at"] = time.time()
+            job.status["state"] = state
+            job.status["error"] = error
+            job.status["error_code"] = error_code
+            job.status["user_message"] = user_message
+            job.status["updated_at"] = time.time()
             store()
-            return dict(status)
+            return dict(job.status)
 
         def update_step() -> None:
-            status["steps"] += 1
-            status["updated_at"] = time.time()
+            job.status["steps"] += 1
+            job.status["updated_at"] = time.time()
             store()
 
         def finish_for_snapshot(snapshot: Any) -> dict[str, Any] | None:
@@ -517,7 +769,7 @@ class ApiGraphRunner:
             if not list(getattr(snapshot, "next", None) or []):
                 return finish("done")
 
-            if status["steps"] >= max_steps:
+            if job.status["steps"] >= max_steps:
                 return finish(
                     "timeout",
                     f"Graph run reached max_steps={max_steps}",
@@ -545,7 +797,10 @@ class ApiGraphRunner:
 
             if initial_payload is not None:
                 try:
-                    self.app.invoke(initial_payload, config)
+                    with bind_cancellation(job.token):
+                        self.app.invoke(initial_payload, config)
+                except RunCancelled:
+                    raise
                 except Exception:
                     if on_initial_payload_error is not None:
                         on_initial_payload_error()
@@ -571,8 +826,11 @@ class ApiGraphRunner:
                 if result is not None:
                     return result
 
-                self.app.invoke({}, config)
+                with bind_cancellation(job.token):
+                    self.app.invoke({}, config)
                 update_step()
+        except RunCancelled:
+            return self.status(thread_id)
         except Exception as exc:
             error_code, user_message = _run_failure(exc)
             return finish(
@@ -582,15 +840,54 @@ class ApiGraphRunner:
                 user_message=user_message,
             )
 
+    def cancel(self, thread_id: str) -> dict[str, Any]:
+        with self._lock:
+            job = self._jobs.get(thread_id)
+            if job is None or job.status.get("state") != "running":
+                return dict(job.status) if job is not None else _idle_status()
+            if job.restore is None or job.durable_config is None:
+                raise CancellationRestoreError(
+                    "The active run has no durable cancellation boundary."
+                )
+            job.token.cancel()
+            restore = job.restore
+            durable_config = deepcopy(job.durable_config)
+
+        try:
+            restore(durable_config)
+        except Exception as exc:
+            raise CancellationRestoreError(
+                "Unable to restore the last durable checkpoint."
+            ) from exc
+
+        with self._lock:
+            current = self._jobs.get(thread_id)
+            if current is not job:
+                return (
+                    dict(current.status)
+                    if current is not None
+                    else _idle_status()
+                )
+            job.status.update(
+                {
+                    "state": "cancelled",
+                    "error": None,
+                    "error_code": None,
+                    "user_message": None,
+                    "updated_at": time.time(),
+                }
+            )
+            return dict(job.status)
+
 
 def _initial_graph_state(
     thread_id: str,
-    message: HumanMessage,
+    message: HumanMessage | None,
     *,
     active_study_id: str | None = None,
 ) -> dict[str, Any]:
     state = {
-        "messages": [message],
+        "messages": [message] if message is not None else [],
         "output": {},
         "artifacts": {
             "datasets": {},
@@ -1057,6 +1354,22 @@ class ReportAgentApiRuntime:
             graph_config(thread_id),
             subgraphs=True,
         )
+        if not _projection_values(snapshot) and callable(
+            getattr(app, "update_state", None)
+        ):
+            app.update_state(
+                graph_config(thread_id),
+                _initial_graph_state(
+                    thread_id,
+                    None,
+                    active_study_id=active_study_id,
+                ),
+                as_node="finish",
+            )
+            snapshot = app.get_state(
+                graph_config(thread_id),
+                subgraphs=True,
+            )
         if _has_blocking_interrupt(snapshot):
             raise ThreadAwaitingReviewError(thread_id)
         manifests = [
@@ -1078,6 +1391,33 @@ class ReportAgentApiRuntime:
             id=f"user-{uuid.uuid4().hex}",
             additional_kwargs={"attachment_ids": attachment_ids},
         )
+        turn = CancelledTurn(
+            message_id=str(message.id),
+            text=str(message.content or ""),
+            turn_hash=self._message_turn_hash(message),
+            attachment_ids=tuple(attachment_ids),
+        )
+
+        def restore_cancelled(durable_config: RunnableConfig) -> None:
+            base = app.get_state(durable_config, subgraphs=True)
+            current_manifests = [
+                self.attachment_store.require(thread_id, attachment_id)
+                for attachment_id in turn.attachment_ids
+            ]
+            self._commit_binding_manifests(thread_id, current_manifests)
+            committed_manifests = [
+                self.attachment_store.require(thread_id, attachment_id)
+                for attachment_id in turn.attachment_ids
+            ]
+            patch = _cancelled_turn_patch(
+                _projection_values(base),
+                turn=turn,
+                manifests=committed_manifests,
+            )
+            app.update_state(durable_config, patch, as_node="finish")
+            if self.history_store is not None:
+                self.history_store.promote_pending(thread_id)
+
         created_pending = False
         if self.history_store is not None and self.history_store.get(thread_id) is None:
             _record, created_pending = self.history_store.create_pending(
@@ -1096,6 +1436,7 @@ class ReportAgentApiRuntime:
                 ),
                 max_steps=thread.settings.max_steps or 1,
                 timeout_seconds=thread.settings.timeout_seconds or 1,
+                restore=restore_cancelled,
                 on_initial_payload_error=lambda: self._reject_initial_turn(
                     thread_id,
                     thread,
@@ -1131,6 +1472,22 @@ class ReportAgentApiRuntime:
                 elif text.strip():
                     self._title_executor.submit(self._generate_title, thread_id, text)
         thread.locked = True
+
+    def cancel_run(self, thread_id: str) -> ApiThreadState:
+        with self._lock:
+            known_in_memory = thread_id in self._threads
+        known_in_history = (
+            self.history_store is not None
+            and self.history_store.get(thread_id) is not None
+        )
+        if not known_in_memory and not known_in_history:
+            raise KeyError(thread_id)
+        thread = self._thread(thread_id)
+        _app, runner = self._ensure_graph(thread)
+        runner.cancel(thread_id)
+        if self.history_store is not None:
+            self.history_store.touch(thread_id)
+        return self.state(thread_id)
 
     def _generate_title(self, thread_id: str, text: str) -> None:
         try:
@@ -1356,9 +1713,32 @@ class ReportAgentApiRuntime:
         )
         if resume_payload.get("action") == "answer":
             resume_payload["_clarification_interrupt_id"] = interrupt_id
-        started = runner.start_background(
+        turn = _cancelled_turn_from_values(values)
+
+        def restore_cancelled(durable_config: RunnableConfig) -> None:
+            base = app.get_state(durable_config, subgraphs=True)
+            current_manifests = [
+                self.attachment_store.require(thread_id, attachment_id)
+                for attachment_id in turn.attachment_ids
+            ]
+            self._commit_binding_manifests(thread_id, current_manifests)
+            committed_manifests = [
+                self.attachment_store.require(thread_id, attachment_id)
+                for attachment_id in turn.attachment_ids
+            ]
+            patch = _cancelled_turn_patch(
+                _projection_values(base),
+                turn=turn,
+                manifests=committed_manifests,
+            )
+            app.update_state(durable_config, patch, as_node="finish")
+            if self.history_store is not None:
+                self.history_store.promote_pending(thread_id)
+
+        started = runner.start_background_after_durable_resume(
             thread_id=thread_id,
             initial_payload=Command(resume={interrupt_id: resume_payload}),
+            restore=restore_cancelled,
             max_steps=thread.settings.max_steps or 1,
             timeout_seconds=thread.settings.timeout_seconds or 1,
         )
@@ -1937,6 +2317,12 @@ def project_thread_state(
             started_at=status.started_at,
             updated_at=status.updated_at,
         )
+    elif (
+        dict(values.get("terminal_control") or {}).get("status")
+        == "cancelled"
+        and status.state != "running"
+    ):
+        status.state = "cancelled"
     elif interrupt is not None and status.state in {"idle", "done"}:
         status.state = "interrupted"
     elif (
