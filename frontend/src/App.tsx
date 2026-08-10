@@ -1060,9 +1060,10 @@ export default function App({
                       ))}
                     </select>
                   )}
-                  {isRunInFlight ? (
+                  {isRunInFlight || isCancelling ? (
                     <button
                       aria-label={isCancelling ? "Cancelling run" : "Cancel run"}
+                      className="cancel-run-button"
                       disabled={isCancelling}
                       onClick={() => void cancelActiveRun()}
                       type="button"

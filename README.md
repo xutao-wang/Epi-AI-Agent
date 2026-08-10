@@ -30,6 +30,12 @@ is verified, the app prints the following local address:
 
 <http://127.0.0.1:8000/>
 
+While the agent is working, **Cancel** stops the active request and returns the
+conversation to its latest completed or approved save point. The cancelled
+request and its original attachments remain visible and can be retried later;
+unfinished model, tool, and Python output is discarded. **New conversation**
+continues to open a separate blank conversation and does not cancel work.
+
 ## Included demo data
 
 The study uses a synthetic RePORT India database, its schema

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
+import sqlite3
 from types import SimpleNamespace
 import threading
 import time
@@ -9,6 +10,7 @@ from typing import Annotated, Any, TypedDict
 
 from langchain_core.messages import BaseMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.types import Command
@@ -274,9 +276,27 @@ class CancellationGraphState(TypedDict, total=False):
     draft_value: str
 
 
+class InvocationTrackingGraph:
+    def __init__(self, app: Any, finished: threading.Event) -> None:
+        self._app = app
+        self._finished = finished
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._app, name)
+
+    def invoke(self, *args: Any, **kwargs: Any) -> Any:
+        try:
+            return self._app.invoke(*args, **kwargs)
+        finally:
+            self._finished.set()
+
+
 def _blocking_app(
     started: threading.Event,
     release: threading.Event,
+    *,
+    checkpointer: Any | None = None,
+    finished: threading.Event | None = None,
 ):
     def tools(_state: CancellationGraphState) -> dict[str, Any]:
         started.set()
@@ -299,7 +319,10 @@ def _blocking_app(
     builder.add_edge(START, "tools")
     builder.add_edge("tools", "finish")
     builder.add_edge("finish", END)
-    return builder.compile(checkpointer=InMemorySaver())
+    app = builder.compile(checkpointer=checkpointer or InMemorySaver())
+    if finished is not None:
+        return InvocationTrackingGraph(app, finished)
+    return app
 
 
 def _runtime(tmp_path: Path, app) -> ReportAgentApiRuntime:
@@ -357,6 +380,79 @@ def test_runtime_cancellation_restores_pre_turn_checkpoint_with_attachment(
         for message in snapshot.values.get("messages", [])
     )
     assert [item.thread_id for item in runtime.list_conversations()] == [thread_id]
+
+
+def test_cancel_is_idempotent_and_terminal_after_sqlite_restart(
+    tmp_path: Path,
+) -> None:
+    checkpoint_path = tmp_path / "checkpoints.db"
+    first_connection = sqlite3.connect(
+        checkpoint_path,
+        check_same_thread=False,
+    )
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    first_app = _blocking_app(
+        started,
+        release,
+        checkpointer=SqliteSaver(first_connection),
+        finished=finished,
+    )
+    runtime = _runtime(tmp_path, first_app)
+    thread_id = runtime.create_thread()
+    upload = runtime.stage_attachments(
+        thread_id,
+        [("cohort.csv", "text/csv", b"participant_id\n1\n")],
+    )
+    attachment_id = upload.attachments[0].id
+    runtime.submit_message(
+        thread_id,
+        "Analyze the attached cohort",
+        [attachment_id],
+    )
+    assert started.wait(timeout=1)
+
+    first_cancel = runtime.cancel_run(thread_id)
+    second_cancel = runtime.cancel_run(thread_id)
+    assert second_cancel == first_cancel
+
+    snapshot = first_app.get_state(graph_config(thread_id))
+    events = snapshot.values["artifacts"]["conversation_events"]
+    assert sum(
+        event.get("type") == "user" and event.get("status") == "cancelled"
+        for event in events
+    ) == 1
+    assert sum(
+        event.get("type") == "attachment"
+        and event.get("relationship") == "input"
+        and event.get("artifact_id") == attachment_id
+        for event in events
+    ) == 1
+
+    release.set()
+    assert finished.wait(timeout=1)
+    first_connection.close()
+
+    restarted_connection = sqlite3.connect(
+        checkpoint_path,
+        check_same_thread=False,
+    )
+    restarted_app = _blocking_app(
+        threading.Event(),
+        threading.Event(),
+        checkpointer=SqliteSaver(restarted_connection),
+    )
+    restarted_runtime = _runtime(tmp_path, restarted_app)
+
+    restored = restarted_runtime.state(thread_id)
+    assert restored.run.state == "cancelled"
+    assert restored.conversation[-1].status == "cancelled"
+    assert restored.conversation[-1].attachments[0].id == attachment_id
+    thread = restarted_runtime._thread(thread_id)
+    _app, restarted_runner = restarted_runtime._ensure_graph(thread)
+    assert restarted_runner.status(thread_id)["state"] == "idle"
+    restarted_connection.close()
 
 
 def test_cancelled_event_projects_message_status_and_attachment() -> None:

@@ -58,6 +58,10 @@ describe("ConversationMessage", () => {
     );
 
     expect(screen.getByText("Analyze the attached cohort")).toBeInTheDocument();
+    expect(screen.getByText("Cancelled")).toHaveAttribute(
+      "aria-label",
+      "Message status: Cancelled",
+    );
     expect(screen.getByText("Cancelled")).toHaveClass("message-status-cancelled");
     expect(screen.getByText("Analyze the attached cohort").closest("li"))
       .toHaveClass("message-cancelled");

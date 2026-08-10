@@ -394,7 +394,12 @@ export default function ConversationMessage({
       <div className="message-bubble message-bubble-bounded">
         <span className="message-role">{message.role}</span>
         {message.status === "cancelled" ? (
-          <span className="message-status-cancelled">Cancelled</span>
+          <span
+            aria-label="Message status: Cancelled"
+            className="message-status message-status-cancelled"
+          >
+            Cancelled
+          </span>
         ) : null}
         <div className="message-body">
           {parts.map((part, index) => {

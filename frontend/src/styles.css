@@ -891,17 +891,29 @@ select {
 }
 
 .message-status-cancelled {
+  display: inline-flex;
+  align-items: center;
   align-self: flex-start;
-  border: 1px solid #aeb6c0;
   border-radius: 999px;
-  color: #6b7280;
-  font-size: 0.72rem;
-  font-weight: 600;
-  padding: 0.15rem 0.45rem;
+  width: fit-content;
+  background: #fff1f0;
+  color: #a40e26;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 2px 8px;
 }
 
 .message-cancelled .message-bubble {
   opacity: 0.78;
+}
+
+.message-form .cancel-run-button {
+  border-color: #cf222e;
+  background: #cf222e;
+}
+
+.message-form .cancel-run-button:hover:not(:disabled) {
+  background: #a40e26;
 }
 
 .message p {
