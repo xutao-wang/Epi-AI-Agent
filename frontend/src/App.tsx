@@ -165,6 +165,7 @@ export default function App({
   const [runFailureMessage, setRunFailureMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isResuming, setIsResuming] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
   const [stagedAttachments, setStagedAttachments] = useState<
     AttachmentManifestSummary[]
   >([]);
@@ -415,7 +416,7 @@ export default function App({
   }
 
   useEffect(() => {
-    if (!threadId || state?.run.state !== "running") {
+    if (!threadId || state?.run.state !== "running" || isCancelling) {
       return;
     }
 
@@ -455,7 +456,7 @@ export default function App({
         window.clearTimeout(timeoutId);
       }
     };
-  }, [apiClient, state?.run.state, threadId]);
+  }, [apiClient, isCancelling, state?.run.state, threadId]);
 
   async function handleRequestError(
     requestError: unknown,
@@ -692,6 +693,25 @@ export default function App({
     }
   }
 
+  async function cancelActiveRun() {
+    if (!threadId || state?.run.state !== "running" || isCancelling) {
+      return;
+    }
+
+    const activeThreadId = threadId;
+    pollGenerationRef.current += 1;
+    setIsCancelling(true);
+    try {
+      const nextState = await apiClient.cancelRun(activeThreadId);
+      applyThreadState(nextState);
+      setError(null);
+    } catch (cancelError) {
+      await handleRequestError(cancelError, activeThreadId);
+    } finally {
+      setIsCancelling(false);
+    }
+  }
+
   function newConversation() {
     if (isBusy) {
       return;
@@ -708,6 +728,7 @@ export default function App({
     setStagedAttachments([]);
     setAttachmentErrors([]);
     setIsUploadingAttachments(false);
+    setIsCancelling(false);
     setSubmittedClarifications({});
     setIsModelLockHintVisible(false);
   }
@@ -728,6 +749,7 @@ export default function App({
   const isBusy =
     isSubmitting ||
     isResuming ||
+    isCancelling ||
     isUploadingAttachments ||
     isRunInFlight;
   const isComposerDisabled =
@@ -749,13 +771,17 @@ export default function App({
     ? "Submitting your message"
     : isResuming
       ? "Sending your review decision"
+      : isCancelling
+        ? "Cancelling current run"
       : isUploadingAttachments
         ? "Uploading your files"
         : isRunInFlight
           ? "Agent is working"
           : "";
   const activityDetail = isRunInFlight
-    ? workflowStatus || "Running the workflow and checking for the next result."
+    ? isCancelling
+      ? "Restoring the latest durable checkpoint."
+      : workflowStatus || "Running the workflow and checking for the next result."
     : isSubmitting
       ? "Creating or updating the thread, then handing your message to the backend."
       : isResuming
@@ -1034,7 +1060,18 @@ export default function App({
                       ))}
                     </select>
                   )}
-                  <button disabled={isSendDisabled} type="submit">Send</button>
+                  {isRunInFlight ? (
+                    <button
+                      aria-label={isCancelling ? "Cancelling run" : "Cancel run"}
+                      disabled={isCancelling}
+                      onClick={() => void cancelActiveRun()}
+                      type="button"
+                    >
+                      {isCancelling ? "Cancelling…" : "Cancel"}
+                    </button>
+                  ) : (
+                    <button disabled={isSendDisabled} type="submit">Send</button>
+                  )}
                 </>
               }
               disabled={isComposerDisabled}

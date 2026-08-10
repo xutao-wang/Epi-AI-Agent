@@ -386,11 +386,16 @@ export default function ConversationMessage({
 
   return (
     <li
-      className={`message message-bounded message-${message.role}`}
+      className={`message message-bounded message-${message.role}${
+        message.status === "cancelled" ? " message-cancelled" : ""
+      }`}
       id={`message-${message.id}`}
     >
       <div className="message-bubble message-bubble-bounded">
         <span className="message-role">{message.role}</span>
+        {message.status === "cancelled" ? (
+          <span className="message-status-cancelled">Cancelled</span>
+        ) : null}
         <div className="message-body">
           {parts.map((part, index) => {
             if (part.type === "code") {

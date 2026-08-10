@@ -3,6 +3,7 @@ export type RunState =
   | "running"
   | "interrupted"
   | "done"
+  | "cancelled"
   | "error"
   | "timeout";
 
@@ -112,6 +113,7 @@ export interface ConversationMessage {
   id: string;
   role: "user" | "assistant" | "system";
   text: string;
+  status?: "cancelled" | null;
   created_at?: string | null;
   attachments?: ConversationAttachment[];
   clarifications?: ClarificationExchange[];

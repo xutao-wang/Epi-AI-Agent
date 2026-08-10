@@ -12,6 +12,7 @@ import {
   listConversations,
   markConversationOpened,
   archiveConversation,
+  cancelRun,
   renameConversation,
   restoreConversation,
   getRuntimeInfo,
@@ -248,6 +249,22 @@ describe("apiClient", () => {
     ).resolves.toEqual(threadState);
 
     expect(fetchMock).toHaveBeenCalledWith("/api/threads/thread-1/state");
+  });
+
+  it("cancels the active run and returns the restored thread state", async () => {
+    const cancelledState = {
+      ...threadState,
+      run: { ...threadState.run, state: "cancelled" as const },
+    };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(cancelledState));
+
+    await expect(
+      cancelRun(fetchMock, "http://api.test", "thread with/slash"),
+    ).resolves.toEqual(cancelledState);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://api.test/api/threads/thread%20with%2Fslash/cancel",
+      { method: "POST" },
+    );
   });
 
   it("gets runtime info", async () => {

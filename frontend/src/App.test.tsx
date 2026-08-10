@@ -1509,6 +1509,147 @@ describe("App", () => {
     );
   });
 
+  it("cancels a running turn, retains its message, and re-enables the composer", async () => {
+    const cancelResponse = deferred<Response>();
+    const runningState = threadState({
+      run: {
+        state: "running",
+        steps: 1,
+        error: null,
+        started_at: null,
+        updated_at: null,
+      },
+      conversation: [
+        { id: "user-1", role: "user", text: "Analyze the cohort" },
+      ],
+    });
+    const cancelledState = threadState({
+      run: {
+        state: "cancelled",
+        steps: 1,
+        error: null,
+        started_at: null,
+        updated_at: null,
+      },
+      conversation: [
+        {
+          id: "user-1",
+          role: "user",
+          text: "Analyze the cohort",
+          status: "cancelled",
+        },
+      ],
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(runtimeOptionsResponse())
+      .mockResolvedValueOnce(createThreadResponse())
+      .mockResolvedValueOnce(jsonResponse(runningState))
+      .mockReturnValueOnce(cancelResponse.promise);
+
+    render(<App apiBase="http://api.test" fetchImpl={fetchMock} loadConversationHistory={false} />);
+
+    fireEvent.change(await screen.findByLabelText("Ask a question about your dataset!"), {
+      target: { value: "Analyze the cohort" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel run" }));
+
+    expect(screen.getByRole("button", { name: "Cancelling run" })).toBeDisabled();
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "http://api.test/api/threads/thread-1/cancel",
+      { method: "POST" },
+    );
+
+    cancelResponse.resolve(jsonResponse(cancelledState));
+
+    expect(await screen.findByText("Cancelled")).toBeInTheDocument();
+    expect(screen.getByLabelText("Ask a question about your dataset!")).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("Ask a question about your dataset!"), {
+      target: { value: "Continue where we left off" },
+    });
+    expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+  });
+
+  it("ignores a poll response that finishes after cancellation", async () => {
+    vi.useFakeTimers();
+    const firstPoll = deferred<Response>();
+    const runningState = threadState({
+      run: {
+        state: "running",
+        steps: 1,
+        error: null,
+        started_at: null,
+        updated_at: null,
+      },
+      conversation: [{ id: "user-1", role: "user", text: "Analyze the cohort" }],
+    });
+    const cancelledState = threadState({
+      run: {
+        state: "cancelled",
+        steps: 1,
+        error: null,
+        started_at: null,
+        updated_at: null,
+      },
+      conversation: [
+        {
+          id: "user-1",
+          role: "user",
+          text: "Analyze the cohort",
+          status: "cancelled",
+        },
+      ],
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(runtimeOptionsResponse())
+      .mockResolvedValueOnce(createThreadResponse())
+      .mockResolvedValueOnce(jsonResponse(runningState))
+      .mockReturnValueOnce(firstPoll.promise)
+      .mockResolvedValueOnce(jsonResponse(cancelledState));
+
+    render(<App apiBase="http://api.test" fetchImpl={fetchMock} loadConversationHistory={false} />);
+    await act(async () => Promise.resolve());
+    fireEvent.change(screen.getByLabelText("Ask a question about your dataset!"), {
+      target: { value: "Analyze the cohort" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await act(async () => Promise.resolve());
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel run" }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByText("Cancelled")).toBeInTheDocument();
+
+    await act(async () => {
+      firstPoll.resolve(
+        jsonResponse(
+          threadState({
+            run: {
+              state: "done",
+              steps: 4,
+              error: null,
+              started_at: null,
+              updated_at: null,
+            },
+            conversation: [
+              { id: "user-1", role: "user", text: "Analyze the cohort" },
+              { id: "assistant-late", role: "assistant", text: "Late result" },
+            ],
+          }),
+        ),
+      );
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText("Late result")).not.toBeInTheDocument();
+    expect(screen.getByText("Cancelled")).toBeInTheDocument();
+  });
+
   it("keeps generated figure previews stable when polling repeats the same visible state", async () => {
     vi.useFakeTimers();
     const runningState = threadState({
@@ -2025,7 +2166,7 @@ describe("App", () => {
     expect(screen.getByText("Let the agent decide.")).toBeInTheDocument();
   });
 
-  it("disables submit and review controls while a run is in flight", async () => {
+  it("disables composer and review controls while keeping cancellation available", async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(runtimeOptionsResponse())
@@ -2072,7 +2213,8 @@ describe("App", () => {
     expect(screen.getByLabelText("Agent activity")).toHaveTextContent(
       "Agent is working",
     );
-    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Send" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel run" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Request revision" })).toBeDisabled();
     expect(
       screen.getByRole("button", { name: "Approve plan and extract" }),
