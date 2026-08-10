@@ -206,6 +206,7 @@ def test_bootstrap_stack_scopes_route53_change_lookup_to_change_arns() -> None:
     changes = next(statement for statement in statements if statement["Sid"] == "ReadDnsChanges")
     assert records["Action"] == [
         "route53:ChangeResourceRecordSets",
+        "route53:GetHostedZone",
         "route53:ListResourceRecordSets",
     ]
     assert records["Resource"] == {"Fn::Sub": "arn:${AWS::Partition}:route53:::hostedzone/*"}
@@ -647,6 +648,7 @@ def test_phase2a_backup_and_observability_cover_host_failure_modes() -> None:
     resources = template["Resources"]
 
     lifecycle = resources["ApplicationDataVolumeLifecyclePolicy"]["Properties"]
+    assert re.fullmatch(r"[0-9A-Za-z _-]+", lifecycle["Description"])
     assert lifecycle["State"] == "ENABLED"
     schedule = lifecycle["PolicyDetails"]["Schedules"][0]
     assert schedule["CreateRule"]["Interval"] == 24

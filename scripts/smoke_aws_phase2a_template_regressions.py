@@ -38,8 +38,14 @@ def main() -> None:
     required_tag_actions = {"cognito-idp:TagResource", "cognito-idp:UntagResource"}
     if not required_tag_actions <= set(cognito["Action"]):
         raise AssertionError("CloudFormation cannot manage the tagged Cognito user pool")
+    route53 = next(statement for statement in statements if statement["Sid"] == "ManageDnsRecords")
+    if "route53:GetHostedZone" not in route53["Action"]:
+        raise AssertionError("CloudFormation cannot verify the hosted zone before changing DNS")
 
     phase2a = _load("infra/aws/phase2a/template.yaml")
+    lifecycle = phase2a["Resources"]["ApplicationDataVolumeLifecyclePolicy"]["Properties"]
+    if not re.fullmatch(r"[0-9A-Za-z _-]+", lifecycle["Description"]):
+        raise AssertionError("the DLM description contains characters rejected by AWS")
     parameters = phase2a["Resources"]["EpiAgentDeployReleaseDocument"]["Properties"]["Content"][
         "parameters"
     ]

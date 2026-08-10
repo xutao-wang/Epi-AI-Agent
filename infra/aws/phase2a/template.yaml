@@ -625,7 +625,7 @@ Resources:
   ApplicationDataVolumeLifecyclePolicy:
     Type: AWS::DLM::LifecyclePolicy
     Properties:
-      Description: Daily retained snapshots of the Epi Agent data volume.
+      Description: Daily retained snapshots of the Epi Agent data volume
       State: ENABLED
       ExecutionRoleArn: !GetAtt ApplicationDataVolumeLifecycleRole.Arn
       PolicyDetails:
