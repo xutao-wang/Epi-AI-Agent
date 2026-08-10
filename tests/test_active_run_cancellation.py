@@ -18,7 +18,12 @@ from fastapi.testclient import TestClient
 
 from api.conversation_history import ConversationHistoryStore
 from api import runtime as api_runtime
-from api.runtime import ApiGraphRunner, ReportAgentApiRuntime, graph_config
+from api.runtime import (
+    ApiGraphRunner,
+    CancellationRestoreError,
+    ReportAgentApiRuntime,
+    graph_config,
+)
 from api.schemas import ApiThreadState, RunStatus
 from api.server import create_app
 from graph.conversation_events import (
@@ -63,10 +68,81 @@ class BlockingGraph:
         assert subgraphs is True
         return self.snapshot
 
-    def invoke(self, _payload, _config, **_kwargs):
+    def invoke(self, _payload, _config, **kwargs):
+        if kwargs.get("interrupt_before"):
+            return
         self.started.set()
         assert self.release.wait(timeout=2)
         cancellation_point()
+
+
+class FactoryBoundaryGraph:
+    def __init__(self) -> None:
+        self.snapshot = SimpleNamespace(
+            config={
+                "configurable": {
+                    "thread_id": "thread-factory",
+                    "checkpoint_id": "checkpoint-before-turn",
+                }
+            },
+            interrupts=[],
+            next=(),
+            values={},
+        )
+        self.invoke_calls = 0
+
+    def get_state(self, _config, *, subgraphs: bool = False):
+        assert subgraphs is True
+        return self.snapshot
+
+    def invoke(self, _payload, _config, **_kwargs):
+        self.invoke_calls += 1
+
+
+def test_cancel_waits_for_payload_factory_and_never_starts_cancelled_input() -> None:
+    app = FactoryBoundaryGraph()
+    runner = ApiGraphRunner(app)
+    factory_started = threading.Event()
+    release_factory = threading.Event()
+    cancel_finished = threading.Event()
+    restored: list[dict[str, Any]] = []
+
+    def payload_factory() -> dict[str, Any]:
+        factory_started.set()
+        assert release_factory.wait(timeout=2)
+        return {"messages": []}
+
+    starter = threading.Thread(
+        target=lambda: runner.start_background_from_factory(
+            thread_id="thread-factory",
+            payload_factory=payload_factory,
+            restore=lambda config: restored.append(deepcopy(config)),
+            max_steps=3,
+            timeout_seconds=5,
+        )
+    )
+    starter.start()
+    assert factory_started.wait(timeout=1)
+    canceller = threading.Thread(
+        target=lambda: (
+            runner.cancel("thread-factory"),
+            cancel_finished.set(),
+        )
+    )
+    canceller.start()
+    assert not cancel_finished.wait(timeout=0.05)
+
+    release_factory.set()
+    starter.join(timeout=1)
+    canceller.join(timeout=1)
+
+    assert not starter.is_alive()
+    assert not canceller.is_alive()
+    assert app.invoke_calls == 0
+    assert restored[0]["configurable"]["checkpoint_id"] == (
+        "checkpoint-before-turn"
+    )
+    assert runner.status("thread-factory")["state"] == "cancelled"
 
 
 def test_runner_cancels_active_job_and_uses_captured_checkpoint() -> None:
@@ -165,6 +241,92 @@ def test_review_resume_updates_the_durable_cancellation_boundary() -> None:
     assert status["state"] == "cancelled"
     assert restored[0]["configurable"]["checkpoint_id"] == "checkpoint-approved"
     assert app.interrupt_after == ["tools", "model_output_gate"]
+
+
+class ReviewPromotionRaceGraph:
+    def __init__(self) -> None:
+        self.resume_committed = threading.Event()
+        self.promotion_started = threading.Event()
+        self.release_promotion = threading.Event()
+        self.background_started = threading.Event()
+        self.get_state_calls = 0
+        self.snapshot = SimpleNamespace(
+            config={
+                "configurable": {
+                    "thread_id": "thread-review-race",
+                    "checkpoint_id": "checkpoint-before-review",
+                }
+            },
+            interrupts=[],
+            next=("tools",),
+            values={},
+        )
+
+    def get_state(self, _config, *, subgraphs: bool = False):
+        assert subgraphs is True
+        self.get_state_calls += 1
+        if self.get_state_calls == 2:
+            self.promotion_started.set()
+            assert self.release_promotion.wait(timeout=2)
+        return self.snapshot
+
+    def invoke(self, payload, _config, **_kwargs):
+        if isinstance(payload, Command):
+            self.snapshot = SimpleNamespace(
+                config={
+                    "configurable": {
+                        "thread_id": "thread-review-race",
+                        "checkpoint_id": "checkpoint-approved",
+                    }
+                },
+                interrupts=[],
+                next=("model",),
+                values={"approved_value": "dataset-1"},
+            )
+            self.resume_committed.set()
+            return
+        self.background_started.set()
+
+
+def test_cancel_after_review_commit_uses_promoted_boundary_without_worker() -> None:
+    app = ReviewPromotionRaceGraph()
+    runner = ApiGraphRunner(app)
+    restored: list[dict[str, Any]] = []
+    cancel_finished = threading.Event()
+    starter = threading.Thread(
+        target=lambda: runner.start_background_after_durable_resume(
+            thread_id="thread-review-race",
+            initial_payload=Command(
+                resume={"review-1": {"action": "approve"}}
+            ),
+            restore=lambda config: restored.append(deepcopy(config)),
+            max_steps=3,
+            timeout_seconds=5,
+        )
+    )
+    starter.start()
+    assert app.resume_committed.wait(timeout=1)
+    assert app.promotion_started.wait(timeout=1)
+
+    canceller = threading.Thread(
+        target=lambda: (
+            runner.cancel("thread-review-race"),
+            cancel_finished.set(),
+        )
+    )
+    canceller.start()
+    assert not cancel_finished.wait(timeout=0.05)
+    app.release_promotion.set()
+    starter.join(timeout=1)
+    canceller.join(timeout=1)
+
+    assert not starter.is_alive()
+    assert not canceller.is_alive()
+    assert restored[0]["configurable"]["checkpoint_id"] == (
+        "checkpoint-approved"
+    )
+    assert app.background_started.is_set() is False
+    assert runner.status("thread-review-race")["state"] == "cancelled"
 
 
 def test_cancelled_turn_patch_keeps_boundary_and_retains_user_input() -> None:
@@ -491,14 +653,22 @@ def test_cancelled_event_projects_message_status_and_attachment() -> None:
 class CancelApiRuntime:
     attachment_limits = AttachmentLimits()
 
-    def __init__(self, *, missing: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        missing: bool = False,
+        restore_failure: bool = False,
+    ) -> None:
         self.missing = missing
+        self.restore_failure = restore_failure
         self.cancelled_threads: list[str] = []
 
     def cancel_run(self, thread_id: str) -> ApiThreadState:
         self.cancelled_threads.append(thread_id)
         if self.missing:
             raise KeyError(thread_id)
+        if self.restore_failure:
+            raise CancellationRestoreError("restore failed")
         return ApiThreadState(
             thread_id=thread_id,
             run=RunStatus(state="cancelled"),
@@ -522,3 +692,17 @@ def test_cancel_endpoint_returns_not_found_for_unknown_thread() -> None:
     response = client.post("/api/threads/missing/cancel")
 
     assert response.status_code == 404
+
+
+def test_cancel_endpoint_returns_structured_restore_failure() -> None:
+    client = TestClient(
+        create_app(runtime=CancelApiRuntime(restore_failure=True))
+    )
+
+    response = client.post("/api/threads/thread-1/cancel")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "CANCELLATION_RESTORE_FAILED",
+        "message": "restore failed",
+    }

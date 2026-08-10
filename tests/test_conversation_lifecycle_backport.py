@@ -25,7 +25,7 @@ class Graph:
     def get_state(self, _config, *, subgraphs: bool = False):
         return self.snapshot
 
-    def invoke(self, payload, _config) -> None:
+    def invoke(self, payload, _config, **_kwargs) -> None:
         if self.fail:
             raise RuntimeError("first invoke failed")
         self.snapshot = SimpleNamespace(values=payload, next=(), interrupts=[])

@@ -377,6 +377,7 @@ class GraphJob:
     token: CancellationToken
     durable_config: RunnableConfig | None
     restore: Callable[[RunnableConfig], None] | None = None
+    transition_complete: threading.Event = field(default_factory=threading.Event)
 
 
 class CancellationRestoreError(RuntimeError):
@@ -558,7 +559,12 @@ class ApiGraphRunner:
         saved = getattr(snapshot, "config", None)
         return deepcopy(saved) if isinstance(saved, dict) else None
 
-    def _reserve_run(self, thread_id: str) -> tuple[bool, GraphJob]:
+    def _reserve_run(
+        self,
+        thread_id: str,
+        *,
+        restore: Callable[[RunnableConfig], None] | None = None,
+    ) -> tuple[bool, GraphJob]:
         started_at = time.time()
         status = {
             "state": "running",
@@ -577,6 +583,7 @@ class ApiGraphRunner:
                 status=status,
                 token=CancellationToken(),
                 durable_config=self._durable_config(thread_id),
+                restore=restore,
             )
             self._jobs[thread_id] = job
         return True, job
@@ -592,6 +599,7 @@ class ApiGraphRunner:
         started, job = self._reserve_run(thread_id)
         if not started:
             return False
+        job.transition_complete.set()
         thread = threading.Thread(
             target=self._run_reserved,
             kwargs={
@@ -618,69 +626,55 @@ class ApiGraphRunner:
         on_initial_payload_error: Any | None = None,
         on_initial_payload_success: Any | None = None,
     ) -> bool:
-        started, job = self._reserve_run(thread_id)
+        started, job = self._reserve_run(thread_id, restore=restore)
         if not started:
             return False
-        job.restore = restore
         try:
             initial_payload = payload_factory()
         except Exception:
             with self._lock:
-                if self._jobs.get(thread_id) is job:
+                cancelled = job.token.cancelled
+                if self._jobs.get(thread_id) is job and not cancelled:
                     self._jobs.pop(thread_id, None)
+                job.transition_complete.set()
+            if cancelled:
+                return True
             raise
-        thread = threading.Thread(
-            target=self._run_reserved,
-            kwargs={
-                "thread_id": thread_id,
-                "initial_payload": initial_payload,
-                "max_steps": max_steps,
-                "timeout_seconds": timeout_seconds,
-                "job": job,
-                "monotonic_started_at": time.monotonic(),
-                "on_initial_payload_error": on_initial_payload_error,
-                "on_initial_payload_success": on_initial_payload_success,
-            },
-            daemon=True,
-        )
-        thread.start()
-        return True
-
-    def start_background_after_durable_resume(
-        self,
-        *,
-        thread_id: str,
-        initial_payload: Any,
-        restore: Callable[[RunnableConfig], None],
-        max_steps: int,
-        timeout_seconds: float,
-    ) -> bool:
-        started, job = self._reserve_run(thread_id)
-        if not started:
-            return False
-        job.restore = restore
+        if job.token.cancelled:
+            job.transition_complete.set()
+            return True
         try:
             with bind_cancellation(job.token):
                 self.app.invoke(
                     initial_payload,
                     graph_config(thread_id),
-                    interrupt_after=["tools", "model_output_gate"],
+                    interrupt_before=["model", "tools", "model_output_gate"],
                 )
+            if on_initial_payload_success is not None:
+                on_initial_payload_success()
         except RunCancelled:
+            job.transition_complete.set()
             return True
-        except Exception:
+        except Exception as exc:
+            if on_initial_payload_error is not None:
+                on_initial_payload_error()
+            error_code, user_message = _run_failure(exc)
             with self._lock:
-                if self._jobs.get(thread_id) is job:
-                    self._jobs.pop(thread_id, None)
-            raise
-        snapshot = self.app.get_state(
-            graph_config(thread_id),
-            subgraphs=True,
-        )
-        if isinstance(getattr(snapshot, "config", None), dict):
-            job.durable_config = deepcopy(snapshot.config)
-        job.status["steps"] += 1
-        job.status["updated_at"] = time.time()
+                cancelled = job.token.cancelled
+                if self._jobs.get(thread_id) is job and not cancelled:
+                    job.status.update(
+                        {
+                            "state": "error",
+                            "error": f"{type(exc).__name__}: {exc}",
+                            "error_code": error_code,
+                            "user_message": user_message,
+                            "updated_at": time.time(),
+                        }
+                    )
+                job.transition_complete.set()
+            if cancelled:
+                return True
+            return True
         thread = threading.Thread(
             target=self._run_reserved,
             kwargs={
@@ -693,7 +687,68 @@ class ApiGraphRunner:
             },
             daemon=True,
         )
-        thread.start()
+        with self._lock:
+            if self._jobs.get(thread_id) is job and not job.token.cancelled:
+                thread.start()
+            job.transition_complete.set()
+        return True
+
+    def start_background_after_durable_resume(
+        self,
+        *,
+        thread_id: str,
+        initial_payload: Any,
+        restore: Callable[[RunnableConfig], None],
+        max_steps: int,
+        timeout_seconds: float,
+    ) -> bool:
+        started, job = self._reserve_run(thread_id, restore=restore)
+        if not started:
+            return False
+        try:
+            with bind_cancellation(job.token):
+                self.app.invoke(
+                    initial_payload,
+                    graph_config(thread_id),
+                    interrupt_after=["tools", "model_output_gate"],
+                )
+            snapshot = self.app.get_state(
+                graph_config(thread_id),
+                subgraphs=True,
+            )
+        except RunCancelled:
+            job.transition_complete.set()
+            return True
+        except Exception:
+            with self._lock:
+                cancelled = job.token.cancelled
+                if self._jobs.get(thread_id) is job and not cancelled:
+                    self._jobs.pop(thread_id, None)
+                job.transition_complete.set()
+            if cancelled:
+                return True
+            raise
+        with self._lock:
+            if isinstance(getattr(snapshot, "config", None), dict):
+                job.durable_config = deepcopy(snapshot.config)
+            job.status["steps"] += 1
+            job.status["updated_at"] = time.time()
+        thread = threading.Thread(
+            target=self._run_reserved,
+            kwargs={
+                "thread_id": thread_id,
+                "initial_payload": None,
+                "max_steps": max_steps,
+                "timeout_seconds": timeout_seconds,
+                "job": job,
+                "monotonic_started_at": time.monotonic(),
+            },
+            daemon=True,
+        )
+        with self._lock:
+            if self._jobs.get(thread_id) is job and not job.token.cancelled:
+                thread.start()
+            job.transition_complete.set()
         return True
 
     def run_until_blocked(
@@ -708,6 +763,7 @@ class ApiGraphRunner:
         started, job = self._reserve_run(thread_id)
         if not started:
             return dict(job.status)
+        job.transition_complete.set()
         return self._run_reserved(
             thread_id=thread_id,
             initial_payload=initial_payload,
@@ -850,6 +906,20 @@ class ApiGraphRunner:
                     "The active run has no durable cancellation boundary."
                 )
             job.token.cancel()
+            transition_complete = job.transition_complete
+
+        transition_complete.wait()
+
+        with self._lock:
+            current = self._jobs.get(thread_id)
+            if current is not job or job.status.get("state") != "running":
+                return (
+                    dict(current.status)
+                    if current is not None
+                    else _idle_status()
+                )
+            assert job.restore is not None
+            assert job.durable_config is not None
             restore = job.restore
             durable_config = deepcopy(job.durable_config)
 

@@ -14,6 +14,7 @@ from epi_agent.protocol import ToolContext, ToolResult, ToolSpec
 from epi_agent.agent import build_epi_agent_context_prompt
 from epi_agent.registry import ToolRegistry
 import epi_agent.runtimes.python.local_process as local_process
+import epi_agent.runtime as epi_runtime
 from epi_agent.runtimes.python import PythonExecutionRequest
 from epi_agent.runtime import (
     EpiAgentRuntimeConfig,
@@ -240,3 +241,26 @@ def test_context_omits_cancelled_turn_guidance_when_none_exists() -> None:
     )
 
     assert "Most recent cancelled user turn" not in prompt
+
+
+def test_model_output_gate_does_not_resume_after_active_run_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    token = CancellationToken()
+    token.cancel()
+    interrupt_called = False
+
+    def resume_decision(_payload: dict[str, Any]) -> dict[str, str]:
+        nonlocal interrupt_called
+        interrupt_called = True
+        return {"action": "continue"}
+
+    monkeypatch.setattr(epi_runtime, "interrupt", resume_decision)
+
+    with bind_cancellation(token), pytest.raises(RunCancelled):
+        epi_runtime._model_output_gate(
+            {"model_output_state": {"phase": "awaiting_user"}},
+            agent_config=_runtime_config(ToolRegistry([])),
+        )
+
+    assert interrupt_called is False

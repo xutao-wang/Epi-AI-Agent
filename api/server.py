@@ -469,7 +469,13 @@ def create_app(
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Conversation not found") from exc
         except CancellationRestoreError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "CANCELLATION_RESTORE_FAILED",
+                    "message": str(exc),
+                },
+            ) from exc
 
     @app.post("/api/threads/{thread_id}/interrupts/{interrupt_id}/resume")
     def resume_interrupt(

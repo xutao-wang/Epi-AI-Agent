@@ -701,30 +701,34 @@ def _model_output_gate(
     *,
     agent_config: EpiAgentRuntimeConfig,
 ) -> dict[str, Any]:
+    cancellation_point()
     profile = agent_config.model_profile
-    decision = interrupt(
-        {
-            "type": "model_output_limit",
-            "model_id": profile.model_id,
-            "model_label": profile.label,
-            "automatic_token_ceiling": (
-                profile.automatic_output_token_ceiling
-            ),
-            "continuation_tokens": profile.user_output_token_increment,
-            "additional_output_cost": (
-                profile.incremental_output_cost_display
-            ),
-            "message": (
-                f"{profile.label} reached its "
-                f"{profile.automatic_output_token_ceiling:,}-token turn "
-                "limit. Continuing with another "
-                f"{profile.user_output_token_increment:,} tokens may cost "
-                "up to an additional "
-                f"{profile.incremental_output_cost_display} in output charges."
-            ),
-            "actions": ["continue", "cancel"],
-        }
-    )
+    try:
+        decision = interrupt(
+            {
+                "type": "model_output_limit",
+                "model_id": profile.model_id,
+                "model_label": profile.label,
+                "automatic_token_ceiling": (
+                    profile.automatic_output_token_ceiling
+                ),
+                "continuation_tokens": profile.user_output_token_increment,
+                "additional_output_cost": (
+                    profile.incremental_output_cost_display
+                ),
+                "message": (
+                    f"{profile.label} reached its "
+                    f"{profile.automatic_output_token_ceiling:,}-token turn "
+                    "limit. Continuing with another "
+                    f"{profile.user_output_token_increment:,} tokens may cost "
+                    "up to an additional "
+                    f"{profile.incremental_output_cost_display} in output charges."
+                ),
+                "actions": ["continue", "cancel"],
+            }
+        )
+    finally:
+        cancellation_point()
     output_state = dict(state.get("model_output_state") or {})
     if decision == {"action": "cancel"}:
         output_state.update(
