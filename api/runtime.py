@@ -2060,6 +2060,13 @@ def _message_created_at(message: Any) -> str | None:
     return None
 
 
+def _message_status(message: Any) -> str | None:
+    additional_kwargs = dict(getattr(message, "additional_kwargs", {}) or {})
+    if additional_kwargs.get("status") == "cancelled":
+        return "cancelled"
+    return None
+
+
 def _message_attachments(message: Any) -> list[ConversationAttachment]:
     additional_kwargs = dict(getattr(message, "additional_kwargs", {}) or {})
     attachments = additional_kwargs.get("attachments")
@@ -2126,6 +2133,7 @@ def _conversation(values: dict[str, Any]) -> list[ConversationMessage]:
                 id=str(getattr(message, "id", "") or f"message-{index}"),
                 role=_message_role(message),
                 text=text,
+                status=_message_status(message),
                 created_at=_message_created_at(message),
                 attachments=attachments,
                 clarifications=clarifications,

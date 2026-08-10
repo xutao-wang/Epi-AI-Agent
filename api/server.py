@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from api.deployment import cors_allow_origin_regex
 from api.runtime import (
+    CancellationRestoreError,
     StaleInterruptError,
     ThreadAlreadyRunningError,
     ThreadAwaitingReviewError,
@@ -460,6 +461,15 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return runtime.state(thread_id)
+
+    @app.post("/api/threads/{thread_id}/cancel")
+    def cancel_run(thread_id: str) -> ApiThreadState:
+        try:
+            return runtime.cancel_run(thread_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Conversation not found") from exc
+        except CancellationRestoreError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/api/threads/{thread_id}/interrupts/{interrupt_id}/resume")
     def resume_interrupt(

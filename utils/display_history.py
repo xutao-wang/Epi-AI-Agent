@@ -161,6 +161,8 @@ def _message_kwargs_for_event(event: dict) -> dict:
     created_at = event.get("created_at")
     if isinstance(created_at, str) and created_at.strip():
         additional_kwargs["created_at"] = created_at
+    if event.get("status") == "cancelled":
+        additional_kwargs["status"] = "cancelled"
     return additional_kwargs
 
 

@@ -79,6 +79,7 @@ class GenericEpiAgentState(LangChainAgentState):
     completion_blocked: NotRequired[bool]
     agent_status: NotRequired[dict[str, Any]]
     model_output_state: NotRequired[dict[str, Any]]
+    cancelled_turn: NotRequired[dict[str, Any]]
 
 
 ToolContextFactory = Callable[

@@ -113,6 +113,7 @@ class ConversationMessage(BaseModel):
     id: str
     role: Literal["user", "assistant", "system"]
     text: str
+    status: Literal["cancelled"] | None = None
     created_at: str | None = None
     attachments: list[ConversationAttachment] = Field(default_factory=list)
     clarifications: list[ClarificationExchange] = Field(default_factory=list)

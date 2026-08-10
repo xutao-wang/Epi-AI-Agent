@@ -312,10 +312,34 @@ def build_epi_agent_context_prompt(
             sort_keys=True,
         )
     )
+    contexts = [artifact_context]
+    cancelled_turn = dict(state.get("cancelled_turn") or {})
+    cancelled_text = _bounded_text(cancelled_turn.get("text"))
+    cancelled_attachment_ids = _bounded_strings(
+        cancelled_turn.get("attachment_ids")
+    )
+    if cancelled_text or cancelled_attachment_ids:
+        cancelled_context = {
+            "text": cancelled_text,
+            "attachment_ids": cancelled_attachment_ids,
+        }
+        contexts.append(
+            "Most recent cancelled user turn. This record is inactive: do not "
+            "continue it unless the latest user message explicitly asks to retry, "
+            "continue, or refer to that work. Restart tools from the latest approved "
+            "state; never claim to resume a partial tool execution. If a referenced "
+            "attachment cannot be inspected, ask the user to reattach it:\n"
+            + json.dumps(
+                cancelled_context,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
     design_context = str(study_design_context or "").strip()
     if design_context:
-        return f"{artifact_context}\n\n{design_context}"
-    return artifact_context
+        contexts.append(design_context)
+    return "\n\n".join(contexts)
 
 
 def _unique_strings(value: object) -> list[str]:

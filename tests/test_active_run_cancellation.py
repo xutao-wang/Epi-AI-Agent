@@ -12,10 +12,13 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.types import Command
+from fastapi.testclient import TestClient
 
 from api.conversation_history import ConversationHistoryStore
 from api import runtime as api_runtime
 from api.runtime import ApiGraphRunner, ReportAgentApiRuntime, graph_config
+from api.schemas import ApiThreadState, RunStatus
+from api.server import create_app
 from graph.conversation_events import (
     append_conversation_event,
     build_attachment_event,
@@ -23,6 +26,7 @@ from graph.conversation_events import (
     ensure_conversation_state,
 )
 from graph.state import MetaKeys
+from utils.attachment_artifacts import AttachmentLimits
 from utils.run_cancellation import cancellation_point
 
 
@@ -353,3 +357,72 @@ def test_runtime_cancellation_restores_pre_turn_checkpoint_with_attachment(
         for message in snapshot.values.get("messages", [])
     )
     assert [item.thread_id for item in runtime.list_conversations()] == [thread_id]
+
+
+def test_cancelled_event_projects_message_status_and_attachment() -> None:
+    turn = api_runtime.CancelledTurn(
+        message_id="user-1",
+        text="Analyze the attached cohort",
+        turn_hash="turn-hash-1",
+        attachment_ids=("attachment-1",),
+    )
+    values = api_runtime._cancelled_turn_patch(
+        ensure_conversation_state(
+            {"artifacts": {}, "meta": {MetaKeys.THREAD_ID: "thread-1"}}
+        ),
+        turn=turn,
+        manifests=[
+            {
+                "id": "attachment-1",
+                "filename": "cohort.csv",
+                "kind": "table",
+                "mime": "text/csv",
+                "byte_size": 12,
+                "status": "available",
+            }
+        ],
+    )
+    state = api_runtime.project_thread_state(
+        thread_id="thread-1",
+        snapshot=SimpleNamespace(values=values, next=(), interrupts=[]),
+        run_status={"state": "cancelled", "steps": 1},
+    )
+
+    assert state.conversation[-1].status == "cancelled"
+    assert state.conversation[-1].attachments[0].id == "attachment-1"
+
+
+class CancelApiRuntime:
+    attachment_limits = AttachmentLimits()
+
+    def __init__(self, *, missing: bool = False) -> None:
+        self.missing = missing
+        self.cancelled_threads: list[str] = []
+
+    def cancel_run(self, thread_id: str) -> ApiThreadState:
+        self.cancelled_threads.append(thread_id)
+        if self.missing:
+            raise KeyError(thread_id)
+        return ApiThreadState(
+            thread_id=thread_id,
+            run=RunStatus(state="cancelled"),
+        )
+
+
+def test_cancel_endpoint_returns_the_cancelled_thread_state() -> None:
+    runtime = CancelApiRuntime()
+    client = TestClient(create_app(runtime=runtime))
+
+    response = client.post("/api/threads/thread-1/cancel")
+
+    assert response.status_code == 200
+    assert response.json()["run"]["state"] == "cancelled"
+    assert runtime.cancelled_threads == ["thread-1"]
+
+
+def test_cancel_endpoint_returns_not_found_for_unknown_thread() -> None:
+    client = TestClient(create_app(runtime=CancelApiRuntime(missing=True)))
+
+    response = client.post("/api/threads/missing/cancel")
+
+    assert response.status_code == 404

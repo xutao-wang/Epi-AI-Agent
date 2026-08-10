@@ -11,6 +11,7 @@ from pydantic import BaseModel
 import pytest
 
 from epi_agent.protocol import ToolContext, ToolResult, ToolSpec
+from epi_agent.agent import build_epi_agent_context_prompt
 from epi_agent.registry import ToolRegistry
 import epi_agent.runtimes.python.local_process as local_process
 from epi_agent.runtimes.python import PythonExecutionRequest
@@ -204,3 +205,38 @@ def test_python_process_is_terminated_when_run_is_cancelled(
 
     assert fake_process.terminated is True
     assert list(tmp_path.iterdir()) == []
+
+
+def test_cancelled_turn_is_bounded_inactive_context_for_a_later_turn() -> None:
+    prompt = build_epi_agent_context_prompt(
+        {
+            "messages": [HumanMessage(content="Continue where we left off")],
+            "artifacts": {},
+            "authorized_attachment_ids": [],
+            "current_turn_artifact_refs": [],
+            "cancelled_turn": {
+                "text": "Analyze the attached cohort",
+                "attachment_ids": ["attachment-cohort"],
+            },
+        }
+    )
+
+    assert "Analyze the attached cohort" in prompt
+    assert "attachment-cohort" in prompt
+    assert "inactive" in prompt
+    assert "explicitly asks to retry, continue, or refer" in prompt
+    assert "restart tools" in prompt.lower()
+    assert "reattach" in prompt.lower()
+
+
+def test_context_omits_cancelled_turn_guidance_when_none_exists() -> None:
+    prompt = build_epi_agent_context_prompt(
+        {
+            "messages": [HumanMessage(content="Start a new analysis")],
+            "artifacts": {},
+            "authorized_attachment_ids": [],
+            "current_turn_artifact_refs": [],
+        }
+    )
+
+    assert "Most recent cancelled user turn" not in prompt
