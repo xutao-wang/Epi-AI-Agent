@@ -492,18 +492,10 @@ real-shell harness, and focused smoke changes; the commit succeeds.
 
 ## Post-Implementation Deployment Gate
 
-After task review, final feature review, and fresh local verification, build a
-new immutable release with:
-
-```bash
-/Users/xutaowang/Desktop/RA\ work/Epi-Agent/Epi-AI-Agent/.venv/bin/python \
-  scripts/build_aws_release.py --output-dir dist/aws
-```
-
-Verify the emitted manifest, checksum, embedded installer, clean `aws-test`
-commit, stopped EC2 state, and unchanged EBS identities. Stop and request
-explicit authorization containing the exact new commit, archive SHA-256, S3
-release key, EC2 instance `i-0f9ed9c133ea2358b`, one application deployment,
-one corrected invocation of the already-uploaded study object, and one service
-restart. Do not upload, start EC2, deploy, reinstall, or restart before that
-authorization.
+Do not build or deploy from this plan alone. Final review established that the
+current application cannot pass the release installer's drain/health gates
+until retained study ownership is repaired. Complete and review the dedicated
+recovery work specified by
+`docs/superpowers/specs/2026-08-11-aws-study-access-recovery-design.md`, then
+follow its corrected live recovery order. Do not upload, start EC2, deploy,
+reinstall, or restart before the resulting explicit authorization gate.

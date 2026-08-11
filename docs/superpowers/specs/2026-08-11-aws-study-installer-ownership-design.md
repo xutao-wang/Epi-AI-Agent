@@ -153,23 +153,11 @@ for the study installer. Tests must prove:
 
 ## Deployment and Recovery Boundary
 
-No CloudFormation, EC2 user data, EBS configuration, systemd unit, SQLite
-schema, application service identity, study manifest, or uploaded study object
-changes are required.
-
-After a clean reviewed source commit:
-
-1. build a new immutable application release and checksum;
-2. upload it under a new `releases/<commit>.tar.gz` key and verify S3 metadata;
-3. start only EC2 instance `i-0f9ed9c133ea2358b` and require SSM Online;
-4. deploy the new release exactly once so it refreshes
-   `/usr/local/sbin/install-study.sh`;
-5. invoke the corrected study installer once against the existing verified
-   `studies/report-india-synthetic-0.2.0.tar.gz` object;
-6. restart `epi-agent.service` once; and
-7. verify the active registry, study ID/version, service-user ownership,
-   Chroma collection counts, runtime capabilities, local/public health and
-   readiness, TLS, alarms, and unchanged EC2/EBS identities.
+The original deploy-first sequence for this correction is superseded by
+`2026-08-11-aws-study-access-recovery-design.md`. The current application
+cannot pass the release installer's drain/health gates until retained study
+ownership is repaired, so the dedicated recovery document must succeed before
+another release deployment is attempted.
 
 Do not re-upload the study object and do not retry a failed SSM command ID. On
 any new live failure, collect evidence once and stop EC2 again. The current
