@@ -92,12 +92,7 @@ def lifecycle(r:Runner, action:str, confirm:str)->None:
  print("stop preserves EBS cost but removes availability" if action=="stop" else "start restores availability and EC2 cost")
  p=r.run(aws("ec2",action+"-instances","--instance-ids",instance))
  if p.returncode: raise OperatorError(p.stderr)
-def deploy(r:Runner,key:str,sha:str,release_id:str,domain:str,email:str)->None:
- if not key.startswith("releases/") or ".." in key or not re.fullmatch(r"[0-9a-f]{64}",sha) or not re.fullmatch(r"[0-9a-f]{40}",release_id) or not re.fullmatch(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+",domain) or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+",email): raise OperatorError("invalid release deployment input")
- require_expected_identity(r); o=outputs(r); document=o.get("DeployReleaseDocumentName",""); instance=o.get("ApplicationInstanceId","")
- if not document or not instance: raise OperatorError("required deployment outputs missing")
- params=json.dumps({"Bucket":[o["ApplicationBucketName"]],"ReleaseKey":[key],"ReleaseSha256":[sha],"ReleaseId":[release_id],"DomainName":[domain],"CertificateEmail":[email]})
- sent=run_json(r,aws("ssm","send-command","--document-name",document,"--instance-ids",instance,"--parameters",params)); command=sent["Command"]["CommandId"]
+def wait_for_ssm_command(r:Runner,command:str,instance:str,operation:str)->None:
  deadline=time.monotonic()+DEPLOY_TIMEOUT_SECONDS; last_status="pending"
  while time.monotonic()<deadline:
   try: result=run_json(r,aws("ssm","get-command-invocation","--command-id",command,"--instance-id",instance))
@@ -106,9 +101,22 @@ def deploy(r:Runner,key:str,sha:str,release_id:str,domain:str,email:str)->None:
    raise
   status=result.get("Status"); last_status=status or last_status
   if status=="Success": return
-  if status in {"Failed","TimedOut","Cancelled"}: raise OperatorError("deployment command did not succeed")
+  if status in {"Failed","TimedOut","Cancelled"}: raise OperatorError(f"{operation} command did not succeed")
   time.sleep(POLL_INTERVAL_SECONDS)
- raise OperatorError(f"deployment command {command} timed out with last status {last_status}")
+ raise OperatorError(f"{operation} command {command} timed out with last status {last_status}")
+def deploy(r:Runner,key:str,sha:str,release_id:str,domain:str,email:str)->None:
+ if not key.startswith("releases/") or ".." in key or not re.fullmatch(r"[0-9a-f]{64}",sha) or not re.fullmatch(r"[0-9a-f]{40}",release_id) or not re.fullmatch(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+",domain) or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+",email): raise OperatorError("invalid release deployment input")
+ require_expected_identity(r); o=outputs(r); document=o.get("DeployReleaseDocumentName",""); instance=o.get("ApplicationInstanceId","")
+ if not document or not instance: raise OperatorError("required deployment outputs missing")
+ params=json.dumps({"Bucket":[o["ApplicationBucketName"]],"ReleaseKey":[key],"ReleaseSha256":[sha],"ReleaseId":[release_id],"DomainName":[domain],"CertificateEmail":[email]})
+ sent=run_json(r,aws("ssm","send-command","--document-name",document,"--instance-ids",instance,"--parameters",params)); command=sent["Command"]["CommandId"]
+ wait_for_ssm_command(r,command,instance,"deployment")
+def recover_study_access(r:Runner,confirm:str)->None:
+ require_expected_identity(r); o=outputs(r); document=o.get("RecoverStudyAccessDocumentName",""); instance=o.get("ApplicationInstanceId","")
+ if not document or not instance: raise OperatorError("required recovery outputs missing")
+ if confirm!=instance: raise OperatorError("confirm the exact stack instance ID")
+ sent=run_json(r,aws("ssm","send-command","--document-name",document,"--instance-ids",instance)); command=sent["Command"]["CommandId"]
+ wait_for_ssm_command(r,command,instance,"study access recovery")
 def main(argv=None, runner:Runner|None=None)->int:
  r=runner or SubprocessRunner(); p=argparse.ArgumentParser(); s=p.add_subparsers(dest="cmd",required=True)
  s.add_parser("identity"); s.add_parser("validate"); s.add_parser("outputs")
@@ -119,6 +127,7 @@ def main(argv=None, runner:Runner|None=None)->int:
   q=s.add_parser(n); q.add_argument("file"); q.add_argument("key"); q.set_defaults(prefix=prefix)
  for n in ("stop","start"):
   q=s.add_parser(n); q.add_argument("--confirm-instance",required=True)
+ q=s.add_parser("recover-study-access"); q.add_argument("--confirm-instance",required=True)
  q=s.add_parser("plan-stack"); q.add_argument("--domain-name",required=True); q.add_argument("--hosted-zone-id",required=True); q.add_argument("--certificate-email",required=True); q.add_argument("--alert-email",default=""); q.add_argument("--data-volume-gib",default="50"); q.add_argument("--data-snapshot-id",default="")
  q=s.add_parser("deploy-release"); q.add_argument("key"); q.add_argument("sha"); q.add_argument("release_id"); q.add_argument("domain"); q.add_argument("email")
  a=p.parse_args(argv)
@@ -140,6 +149,7 @@ def main(argv=None, runner:Runner|None=None)->int:
    if not a.key.startswith(a.prefix) or ".." in a.key: raise OperatorError("unsafe artifact key")
    upload(r,a.file,a.key); return 0
   if a.cmd in ("stop","start"): lifecycle(r,a.cmd,a.confirm_instance); return 0
+  if a.cmd=="recover-study-access": recover_study_access(r,a.confirm_instance); return 0
   if a.cmd=="deploy-release": deploy(r,a.key,a.sha,a.release_id,a.domain,a.email); return 0
   raise OperatorError("subcommand requires explicit operator arguments")
  except OperatorError as e: print(f"error: {e}",file=sys.stderr); return 2

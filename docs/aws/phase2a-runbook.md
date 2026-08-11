@@ -52,9 +52,15 @@ In **Cognito → User pools → epi-agent-phase2a → Users**, choose **Create u
 to send the first invitation.
 
 Upload immutable packages with `upload-release RELEASE releases/ID.tar.gz` and
-`upload-study STUDY studies/ID.tar.gz`; invoke `deploy-release` with the exact
-key, SHA-256, release ID, domain, and certificate email. In **CloudWatch →
-Alarms/Logs**, check status, CPU, credits, memory, disk, and service errors.
+`upload-study STUDY studies/ID.tar.gz`. When retained study permissions prevent
+the current application from starting, first create, inspect, approve, and
+execute the change set that adds `epi-agent-recover-study-access`. Start the
+exact stack instance, invoke `recover-study-access` with its exact instance
+confirmation, and require SSM `Success` plus healthy local endpoints before
+invoking `deploy-release`. Never deploy first and plan to repair the retained
+study afterward: the release installer's current-service gate will fail closed.
+In **CloudWatch → Alarms/Logs**, check status, CPU, credits, memory, disk, and
+service errors.
 
 > **Warning:** terminate, retained bucket/volume cleanup, and snapshot deletion
 > are separate destructive actions. Stopping the instance retains EBS/EIP cost;
@@ -73,8 +79,15 @@ CloudWatch logs/alarms, SNS, Cognito, Route 53 hosted-zone and DNS-query charges
 python scripts/aws_phase2a.py execute-change-set CHANGE_SET_ARN --confirm-account 641379499556
 python scripts/aws_phase2a.py upload-release dist/aws/epi-agent-SHA.tar.gz releases/SHA.tar.gz
 python scripts/aws_phase2a.py upload-study study.tar.gz studies/STUDY.tar.gz
+python scripts/aws_phase2a.py recover-study-access --confirm-instance i-0f9ed9c133ea2358b
 python scripts/aws_phase2a.py deploy-release releases/SHA.tar.gz SHA256 RELEASE_SHA epiagent.org ops@example.org
 ```
+
+`recover-study-access` is a separately authorized, parameter-free recovery
+operation. Run it only after its CloudFormation change set is complete and the
+instance is SSM Online. Record its new command ID; on any non-success terminal
+state, inspect that invocation once, do not retry the command ID, stop the
+instance, and return to source diagnosis.
 
 Replace only the uppercase placeholders after reviewing the matching change set
 or immutable release metadata; never paste a provider key into a command.

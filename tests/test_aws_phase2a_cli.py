@@ -58,11 +58,14 @@ def test_all_aws_commands_use_immutable_target_flags():
  s=_source(); assert 'EXPECTED_PROFILE="xutao-dev"' in s and 'EXPECTED_REGION="us-east-1"' in s and '"--profile",EXPECTED_PROFILE,"--region",EXPECTED_REGION' in s
 def test_mutating_helpers_guard_identity_first():
  s=_source()
- for name in ("plan(","plan_bootstrap(","execute(","execute_bootstrap(","upload(","lifecycle(","deploy("):
+ for name in ("plan(","plan_bootstrap(","execute(","execute_bootstrap(","upload(","lifecycle(","deploy(","recover_study_access("):
   start=s.index("def "+name); assert "require_expected_identity(r)" in s[start:start+500]
 
 def test_plan_stack_parser_requires_application_parameters():
  s=_source(); assert 'q.add_argument("--domain-name",required=True)' in s and 'q.add_argument("--hosted-zone-id",required=True)' in s and 'q.add_argument("--certificate-email",required=True)' in s
+def test_recover_study_access_parser_requires_exact_instance_confirmation():
+ s=_source(); start=s.index('s.add_parser("recover-study-access")'); end=s.index('q=s.add_parser("plan-stack")'); section=s[start:end]
+ assert 'q.add_argument("--confirm-instance",required=True)' in section
 def test_plan_stack_builds_cloudformation_parameter_values():
  s=_source(); assert '"ParameterKey={k},ParameterValue={v}"' in s and '"DataSnapshotId":a.data_snapshot_id' in s
 def test_role_is_placed_only_on_application_change_set_create():
@@ -104,3 +107,50 @@ def test_plan_rejects_access_denied_before_change_set(monkeypatch):
 
 def test_plan_requires_validation_error_and_nonexistence_phrase():
  s=_source(); assert '"does not exist" not in (probe.stderr or "").lower() or "validationerror" not in (probe.stderr or "").lower()' in s
+
+def test_recover_study_access_uses_stack_document_without_parameters(monkeypatch):
+ import subprocess
+ calls=[]
+ class SequenceRunner:
+  def run(self,argv,*,capture_output=True):
+   calls.append(list(argv))
+   if "get-caller-identity" in argv:return subprocess.CompletedProcess(argv,0,'{"Account":"641379499556","Arn":"arn:aws:iam::641379499556:user/xutao-dev"}',"")
+   if "send-command" in argv:return subprocess.CompletedProcess(argv,0,'{"Command":{"CommandId":"new-recovery-command"}}',"")
+   if "get-command-invocation" in argv:return subprocess.CompletedProcess(argv,0,'{"Status":"Success"}',"")
+   raise AssertionError(argv)
+ monkeypatch.setattr(cli,"outputs",lambda r:{"ApplicationInstanceId":"i-0f9ed9c133ea2358b","RecoverStudyAccessDocumentName":"epi-agent-recover-study-access"})
+ cli.recover_study_access(SequenceRunner(),"i-0f9ed9c133ea2358b")
+ sent=next(call for call in calls if "send-command" in call)
+ assert sent[sent.index("--document-name")+1]=="epi-agent-recover-study-access"
+ assert sent[sent.index("--instance-ids")+1]=="i-0f9ed9c133ea2358b"
+ assert "--parameters" not in sent
+ polled=next(call for call in calls if "get-command-invocation" in call)
+ assert polled[polled.index("--command-id")+1]=="new-recovery-command"
+
+def test_recover_study_access_rejects_wrong_instance_before_send(monkeypatch):
+ import pytest, subprocess
+ calls=[]
+ class IdentityRunner:
+  def run(self,argv,*,capture_output=True):
+   calls.append(list(argv))
+   return subprocess.CompletedProcess(argv,0,'{"Account":"641379499556","Arn":"arn:aws:iam::641379499556:user/xutao-dev"}',"")
+ monkeypatch.setattr(cli,"outputs",lambda r:{"ApplicationInstanceId":"i-0f9ed9c133ea2358b","RecoverStudyAccessDocumentName":"epi-agent-recover-study-access"})
+ with pytest.raises(cli.OperatorError,match="confirm the exact stack instance ID"):
+  cli.recover_study_access(IdentityRunner(),"i-wrong")
+ assert not any("send-command" in call for call in calls)
+
+def test_recover_study_access_fails_closed_on_new_terminal_failure(monkeypatch):
+ import pytest, subprocess
+ calls=[]
+ class FailedRunner:
+  def run(self,argv,*,capture_output=True):
+   calls.append(list(argv))
+   if "get-caller-identity" in argv:return subprocess.CompletedProcess(argv,0,'{"Account":"641379499556","Arn":"arn:aws:iam::641379499556:user/xutao-dev"}',"")
+   if "send-command" in argv:return subprocess.CompletedProcess(argv,0,'{"Command":{"CommandId":"failed-new-command"}}',"")
+   if "get-command-invocation" in argv:return subprocess.CompletedProcess(argv,0,'{"Status":"Failed"}',"")
+   raise AssertionError(argv)
+ monkeypatch.setattr(cli,"outputs",lambda r:{"ApplicationInstanceId":"i-0f9ed9c133ea2358b","RecoverStudyAccessDocumentName":"epi-agent-recover-study-access"})
+ with pytest.raises(cli.OperatorError,match="study access recovery command did not succeed"):
+  cli.recover_study_access(FailedRunner(),"i-0f9ed9c133ea2358b")
+ assert sum("send-command" in call for call in calls)==1
+ assert sum("get-command-invocation" in call for call in calls)==1
