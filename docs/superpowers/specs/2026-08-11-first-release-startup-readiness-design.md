@@ -49,9 +49,10 @@ larger architectural change than Phase 2A requires.
 
 ## First Release and Rollback Behavior
 
-For a first release, failure removes `current` and stops the service, preserving
-the current safe behavior. For an update, failure restores and restarts the
-previous release. The installer does not delete release directories or any EBS
+For a first release, failure removes `current` and disables and stops the
+service, preserving the safe pre-release state even across a reboot. For an
+update, failure restores and restarts the previous release while keeping the
+service enabled. The installer does not delete release directories or any EBS
 runtime data.
 
 The failed inactive release directory
