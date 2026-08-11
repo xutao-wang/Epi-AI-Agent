@@ -12,6 +12,7 @@ def main() -> int:
     tests = [
         "tests/test_aws_host_assets.py::test_release_installer_waits_for_delayed_first_service_startup",
         "tests/test_aws_host_assets.py::test_release_installer_disables_service_after_failed_first_startup",
+        "tests/test_aws_host_assets.py::test_release_installer_repairs_runtime_ownership_before_service_activation",
     ]
     completed = subprocess.run(
         [sys.executable, "-m", "pytest", *tests, "-q"],
@@ -20,7 +21,7 @@ def main() -> int:
     )
     if completed.returncode:
         return completed.returncode
-    print("AWS first-release startup smoke passed")
+    print("AWS release installer smoke passed")
     return 0
 
 

@@ -182,6 +182,7 @@ trap 'exit $?' ERR
 
 install -d -m 0755 /opt/epi-agent "$releases_root"
 install -d -m 0750 -o root -g epi-agent-web /run/epi-agent
+install -d -m 0750 -o epi-agent-web -g epi-agent-web /srv/epi-agent/runtime
 install -m 0640 -o root -g epi-agent-web /dev/null "$maintenance_file"
 
 staging_dir=$(mktemp -d /opt/epi-agent/staging.XXXXXX)

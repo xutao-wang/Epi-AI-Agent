@@ -225,7 +225,24 @@ def _release_harness(
         "id": "printf '%s\\n' 0\n",
         "aws": 'cp "$TEST_ARCHIVE" "$4"\n',
         "sha256sum": "exit 0\n",
-        "systemctl": """printf "%s\\n" "$*" >> "$TEST_SYSTEMCTL_LOG"
+        "install": """printf 'install %s\\n' "$*" >> "$TEST_OPERATION_LOG"
+args=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o|-g)
+      [ "$#" -ge 2 ] || exit 64
+      shift 2
+      ;;
+    *)
+      args+=("$1")
+      shift
+      ;;
+  esac
+done
+/usr/bin/install "${args[@]}"
+""",
+        "systemctl": """printf 'systemctl %s\\n' "$*" >> "$TEST_OPERATION_LOG"
+printf "%s\\n" "$*" >> "$TEST_SYSTEMCTL_LOG"
 if [ "${1:-}" = is-active ] && [ "$TEST_SERVICE_INACTIVE" = 1 ]; then
   exit 3
 fi
@@ -278,10 +295,12 @@ fi
     source = _asset("deploy/aws/bin/install-release.sh")
     source = source.replace("/opt/epi-agent", str(root / "opt" / "epi-agent"))
     source = source.replace("/run/epi-agent", str(root / "run" / "epi-agent"))
+    source = source.replace(
+        "/srv/epi-agent/runtime", str(root / "srv" / "epi-agent" / "runtime")
+    )
     source = source.replace("/etc/letsencrypt", str(root / "etc" / "letsencrypt"))
     source = source.replace("/var/www/certbot", str(root / "var" / "www" / "certbot"))
     source = source.replace("/usr/bin/python3.12", "python3")
-    source = source.replace(" -o root -g epi-agent-web", "")
     source = source.replace(
         "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         f"PATH={fake_bin}:/usr/bin:/bin",
@@ -301,6 +320,7 @@ fi
         "TEST_ARCHIVE": str(archive_path),
         "TEST_PYTHON": str(Path(os.sys.executable)),
         "TEST_SYSTEMCTL_LOG": str(systemctl_log),
+        "TEST_OPERATION_LOG": str(tmp_path / "operation.log"),
         "TEST_READINESS_FAILS": "1" if readiness_fails else "0",
         "TEST_STAGING_FAILS": "1" if staging_fails else "0",
         "TEST_HEALTH_FAILURES": str(health_failures),
@@ -366,6 +386,36 @@ def test_release_installer_waits_for_delayed_first_service_startup(
     systemctl_calls = systemctl_log.read_text(encoding="utf-8").splitlines()
     assert "enable epi-agent.service" in systemctl_calls
     assert systemctl_calls.count("restart epi-agent.service") == 1
+
+
+def test_release_installer_repairs_runtime_ownership_before_service_activation(
+    tmp_path: Path,
+) -> None:
+    completed, _, _, _, _ = _release_harness(
+        tmp_path,
+        invalid_archive=False,
+        readiness_fails=False,
+        previous_release_exists=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    source = _asset("deploy/aws/bin/install-release.sh")
+    repair = (
+        "install -d -m 0750 -o epi-agent-web -g epi-agent-web "
+        "/srv/epi-agent/runtime"
+    )
+    assert repair in source
+    assert source.index(repair) < source.index("systemctl enable epi-agent.service")
+
+    operations = (tmp_path / "operation.log").read_text(encoding="utf-8").splitlines()
+    harness_repair = (
+        "install -d -m 0750 -o epi-agent-web -g epi-agent-web "
+        f"{tmp_path / 'host' / 'srv' / 'epi-agent' / 'runtime'}"
+    )
+    assert harness_repair in operations
+    assert operations.index(harness_repair) < operations.index(
+        "systemctl enable epi-agent.service"
+    )
 
 
 def test_release_installer_disables_service_after_failed_first_startup(
