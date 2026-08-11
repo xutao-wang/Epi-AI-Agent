@@ -54,6 +54,11 @@ def test_web_service_runs_the_api_with_least_privilege() -> None:
     assert "User=epi-agent-web" in source
     assert "Group=epi-agent-web" in source
     assert "EnvironmentFile=/etc/epi-agent/app.env" in source
+    assert (
+        "ExecStart=/opt/epi-agent/current/.venv/bin/python -m uvicorn "
+        "api.app:app --host 127.0.0.1 --port 8000 --workers 1"
+    ) in source
+    assert "api.server:app" not in source
     assert "--host 127.0.0.1 --port 8000" in source
     assert "--workers 1" in source
     assert "StandardOutput=append:/var/log/epi-agent/application.log" in source
