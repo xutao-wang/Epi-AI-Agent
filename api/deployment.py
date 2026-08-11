@@ -23,7 +23,7 @@ def python_worker_launcher(environ: Mapping[str, str]) -> tuple[str, ...] | None
         launcher = tuple(shlex.split(configured))
     except ValueError as exc:
         raise ValueError("REPORT_AGENT_PYTHON_WORKER_LAUNCHER is invalid") from exc
-    if launcher != (_PYTHON_WORKER_PATH,):
+    if launcher not in {(_PYTHON_WORKER_PATH,), _PYTHON_WORKER_LAUNCHER}:
         raise ValueError(
             "REPORT_AGENT_PYTHON_WORKER_LAUNCHER must be the fixed worker path"
         )

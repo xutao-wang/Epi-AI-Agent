@@ -43,6 +43,14 @@ from utils.model_runtime_profiles import model_runtime_profile
                 "/usr/local/libexec/epi-agent-python-worker",
             ),
         ),
+        (
+            "/usr/bin/sudo -n /usr/local/libexec/epi-agent-python-worker",
+            (
+                "/usr/bin/sudo",
+                "-n",
+                "/usr/local/libexec/epi-agent-python-worker",
+            ),
+        ),
     ],
 )
 def test_python_worker_launcher_reads_the_hosted_launcher_setting(
@@ -62,7 +70,6 @@ def test_python_worker_launcher_reads_the_hosted_launcher_setting(
         "/usr/local/worker\x00",
         "/usr/local/libexec/alternate-worker",
         "/usr/local/libexec/epi-agent-python-worker --fixed-option",
-        "/usr/bin/sudo -n /usr/local/libexec/epi-agent-python-worker",
     ],
 )
 def test_python_worker_launcher_rejects_unsafe_hosted_configuration(

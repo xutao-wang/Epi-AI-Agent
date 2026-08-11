@@ -65,7 +65,9 @@ def main() -> int:
                 "REPORT_AGENT_CHECKPOINT_DB_PATH": str(isolated_root / "runtime" / "agent_memory_fastapi.db"),
                 "REPORT_AGENT_STUDY_ROOT": str(isolated_root / "study_data"),
                 "REPORT_AGENT_STATIC_DIR": str(root / "frontend" / "dist"),
-                "REPORT_AGENT_PYTHON_WORKER_LAUNCHER": "",
+                "REPORT_AGENT_PYTHON_WORKER_LAUNCHER": (
+                    "/usr/bin/sudo -n /usr/local/libexec/epi-agent-python-worker"
+                ),
                 "DB_RAG_EMBEDDING_MODEL": "OpenAI/text-embedding-3-large",
                 "DB_RAG_RERANKER_MODEL": "",
             }
