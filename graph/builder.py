@@ -7,6 +7,7 @@ from typing import Any
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from db_rag.readiness import DbRagReadiness, resolve_db_rag_readiness
+from epi_agent.activity import ActivitySink, NULL_ACTIVITY_SINK
 from epi_agent.agent import build_general_epi_agent_graph
 from epi_agent.runtimes.python import LocalPythonRuntime
 from epi_agent.studies import StudyRegistry
@@ -42,6 +43,7 @@ def build_graph(
     db_rag_readiness: DbRagReadiness | None = None,
     db_rag_embedding_model: str | None = None,
     max_iterations: int = DEFAULT_EPI_AGENT_MAX_ITERATIONS,
+    activity_sink: ActivitySink = NULL_ACTIVITY_SINK,
 ):
     """Compile the single checkpointed EpiAgent used by FastAPI."""
 
@@ -82,6 +84,7 @@ def build_graph(
         include_db_rag=readiness.available,
         checkpointer=SqliteSaver(connection),
         max_iterations=max_iterations,
+        activity_sink=activity_sink,
     )
 
 

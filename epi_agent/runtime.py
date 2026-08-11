@@ -21,6 +21,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import RunnableConfig, interrupt
 
+from epi_agent.activity import ActivitySink, NULL_ACTIVITY_SINK, notify_activity
 from epi_agent.artifacts import StateArtifactStore
 from epi_agent.model_responses import (
     ModelResponseProtocolError,
@@ -110,6 +111,7 @@ class EpiAgentRuntimeConfig:
     studies: StudyRegistry
     context_factory: ToolContextFactory
     model_profile: ModelRuntimeProfile
+    activity_sink: ActivitySink = NULL_ACTIVITY_SINK
     completion_issues: CompletionIssues = lambda _state: []
     context_prompt_factory: ContextPromptFactory = lambda _state: ""
     tool_success_state_reducer: ToolSuccessStateReducer = (
@@ -381,6 +383,10 @@ def _call_model(
     iteration_count, output_state, phase, messages, budget = prepared
     started_at = time.perf_counter()
     cancellation_point()
+    thread_id = str(
+        dict(config.get("configurable") or {}).get("thread_id") or ""
+    )
+    notify_activity(agent_config.activity_sink, "model_started", thread_id)
     try:
         answer = model.bind_tools(agent_config.registry.model_schemas()).invoke(
             messages,
@@ -393,7 +399,7 @@ def _call_model(
         0,
         int((time.perf_counter() - started_at) * 1_000),
     )
-    return _model_answer_patch(
+    patch = _model_answer_patch(
         state,
         agent_config=agent_config,
         answer=answer,
@@ -402,6 +408,8 @@ def _call_model(
         output_state=output_state,
         phase=phase,
     )
+    notify_activity(agent_config.activity_sink, "model_completed", thread_id)
+    return patch
 
 
 async def _acall_model(
@@ -418,6 +426,10 @@ async def _acall_model(
     iteration_count, output_state, phase, messages, budget = prepared
     started_at = time.perf_counter()
     cancellation_point()
+    thread_id = str(
+        dict(config.get("configurable") or {}).get("thread_id") or ""
+    )
+    notify_activity(agent_config.activity_sink, "model_started", thread_id)
     try:
         answer = await model.bind_tools(
             agent_config.registry.model_schemas()
@@ -432,7 +444,7 @@ async def _acall_model(
         0,
         int((time.perf_counter() - started_at) * 1_000),
     )
-    return _model_answer_patch(
+    patch = _model_answer_patch(
         state,
         agent_config=agent_config,
         answer=answer,
@@ -441,6 +453,8 @@ async def _acall_model(
         output_state=output_state,
         phase=phase,
     )
+    notify_activity(agent_config.activity_sink, "model_completed", thread_id)
+    return patch
 
 
 def _model_answer_patch(
@@ -813,6 +827,9 @@ def _execute_tools(
     agent_config: EpiAgentRuntimeConfig,
 ) -> dict[str, Any]:
     calls = list(list(state.get("messages") or [])[-1].tool_calls)
+    thread_id = str(
+        dict(config.get("configurable") or {}).get("thread_id") or ""
+    )
     artifact_store = StateArtifactStore.from_state(state)
     context = agent_config.context_factory(state, config, artifact_store)
     failures = list(state.get("failure_signatures") or [])
@@ -861,6 +878,7 @@ def _execute_tools(
         cancellation_point()
         name = call["name"]
         arguments = call["args"]
+        activity_started = False
         if (
             name == _SQL_REPAIR_TOOL_NAME
             and _sql_repair_budget_exhausted(failures)
@@ -891,6 +909,15 @@ def _execute_tools(
             break
         try:
             cancellation_point()
+            agent_config.registry.spec(name)
+            activity_started = True
+            notify_activity(
+                agent_config.activity_sink,
+                "tool_started",
+                thread_id,
+                call["id"],
+                name,
+            )
             try:
                 result = agent_config.registry.invoke(
                     name,
@@ -937,8 +964,22 @@ def _execute_tools(
             if not error.recoverable:
                 terminal_error = _terminal_error(error.code, str(error))
                 break
+            if activity_started:
+                notify_activity(
+                    agent_config.activity_sink,
+                    "tool_recoverable_failure",
+                    thread_id,
+                    call["id"],
+                )
             continue
 
+        notify_activity(
+            agent_config.activity_sink,
+            "tool_completed",
+            thread_id,
+            call["id"],
+            name,
+        )
         failures = (
             []
             if name == _SQL_REPAIR_TOOL_NAME

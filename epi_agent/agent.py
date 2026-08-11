@@ -9,6 +9,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import RunnableConfig
 from langchain_core.messages import HumanMessage
 
+from epi_agent.activity import ActivitySink, NULL_ACTIVITY_SINK
 from epi_agent.artifacts import StateArtifactStore
 from epi_agent.attachments.tools import build_attachment_tool_registry
 from epi_agent.db_rag.prompt import DB_RAG_SYSTEM_PROMPT
@@ -440,6 +441,7 @@ def build_general_epi_agent_graph(
     include_db_rag: bool = True,
     checkpointer: Any | None = None,
     max_iterations: int = DEFAULT_EPI_AGENT_MAX_ITERATIONS,
+    activity_sink: ActivitySink = NULL_ACTIVITY_SINK,
 ) -> CompiledStateGraph:
     include_study_design = any(
         isinstance(study.study_design, SearchableStudyDesignProvider)
@@ -509,6 +511,7 @@ def build_general_epi_agent_graph(
             registry=registry,
             studies=studies,
             context_factory=context_factory,
+            activity_sink=activity_sink,
             completion_issues=epi_agent_completion_issues,
             context_prompt_factory=context_prompt_factory,
             model_profile=model_profile,
