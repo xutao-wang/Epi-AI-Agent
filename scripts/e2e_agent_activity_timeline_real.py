@@ -98,6 +98,7 @@ def _wait_for_dataset_plan_review(
     deadline: float,
     state_reader: Any = _thread_state,
 ) -> None:
+    answered_interrupt_ids: set[str] = set()
     while time.monotonic() < deadline:
         heading = page.get_by_role(
             "heading",
@@ -140,6 +141,36 @@ def _wait_for_dataset_plan_review(
                 "Agent run ended before dataset-plan review: "
                 f"{message} Error: {error_code}"
             )
+
+        interrupt = state.get("active_interrupt") or {}
+        interrupt_id = str(interrupt.get("id") or "")
+        if (
+            interrupt.get("type") == "agent_clarification"
+            and interrupt_id not in answered_interrupt_ids
+        ):
+            options = list(interrupt.get("options") or [])
+            preferred = next(
+                (
+                    option
+                    for option in options
+                    if option.get("id") == "medication_proxy"
+                ),
+                options[0] if options else None,
+            )
+            if preferred is None:
+                raise RuntimeError(
+                    "Agent requested clarification without selectable options."
+                )
+            page.get_by_label(
+                str(preferred["label"]),
+                exact=True,
+            ).check()
+            page.get_by_role(
+                "button",
+                name="Continue",
+                exact=True,
+            ).click()
+            answered_interrupt_ids.add(interrupt_id)
         time.sleep(0.25)
     raise TimeoutError("Timed out waiting for dataset-plan review.")
 

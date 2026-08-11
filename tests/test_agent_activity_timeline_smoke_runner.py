@@ -101,6 +101,66 @@ def test_review_wait_accepts_the_initial_stepwise_review_controls() -> None:
     )
 
 
+def test_review_wait_answers_expected_diabetes_clarification() -> None:
+    events: list[str] = []
+
+    class InteractiveLocator:
+        def __init__(self, action: str):
+            self.action = action
+
+        def is_visible(self, *, timeout: int) -> bool:
+            assert timeout == 100
+            return self.action == "review" and "continue" in events
+
+        def check(self) -> None:
+            events.append(self.action)
+
+        def click(self) -> None:
+            events.append(self.action)
+
+    class ClarificationPage:
+        def get_by_role(self, role: str, *, name: str, exact: bool):
+            assert exact is True
+            if role == "heading" and name == "Review dataset plan":
+                return InteractiveLocator("review")
+            if role == "button" and name == "Approve & continue":
+                return InteractiveLocator("review")
+            if role == "button" and name == "Approve plan and extract":
+                return HiddenLocator()
+            if role == "button" and name == "Continue":
+                return InteractiveLocator("continue")
+            raise AssertionError((role, name))
+
+        def get_by_label(self, name: str, *, exact: bool):
+            assert exact is True
+            assert name == "Use medication as the diabetes proxy"
+            return InteractiveLocator("medication_proxy")
+
+    state = {
+        "run": {"state": "interrupted"},
+        "active_interrupt": {
+            "id": "clarification-1",
+            "type": "agent_clarification",
+            "options": [
+                {
+                    "id": "medication_proxy",
+                    "label": "Use medication as the diabetes proxy",
+                },
+                {"id": "omit_diabetes", "label": "Omit diabetes"},
+            ],
+        },
+    }
+
+    smoke._wait_for_dataset_plan_review(
+        ClarificationPage(),
+        api_url="http://unused.test",
+        deadline=time.monotonic() + 0.5,
+        state_reader=lambda _url: state,
+    )
+
+    assert events == ["medication_proxy", "continue"]
+
+
 def test_timeline_label_wait_accepts_repeated_matching_rows() -> None:
     wait_for_label = getattr(smoke, "_wait_for_timeline_label", None)
     assert wait_for_label is not None
