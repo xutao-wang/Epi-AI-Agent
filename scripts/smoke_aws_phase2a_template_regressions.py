@@ -3,7 +3,12 @@
 
 from __future__ import annotations
 
+import io
 import re
+import subprocess
+import sys
+import tarfile
+import tempfile
 from pathlib import Path
 
 import yaml
@@ -27,6 +32,43 @@ CloudFormationLoader.add_multi_constructor("!", _intrinsic)
 def _load(relative_path: str) -> dict:
     path = ROOT / relative_path
     return yaml.load(path.read_text(encoding="utf-8"), Loader=CloudFormationLoader)
+
+
+def assert_release_archive_extractor_works(template: dict) -> None:
+    """Run the release archive extractor embedded in the Phase 2A SSM document."""
+    run_command = template["Resources"]["EpiAgentDeployReleaseDocument"]["Properties"][
+        "Content"
+    ]["mainSteps"][0]["inputs"]["runCommand"]
+    command = "\n".join(run_command)
+    marker = '/usr/bin/python3.12 - "$staging_dir/release.tar.gz" "$staging_dir/release" <<\'PY\''
+    source_start = command.find(marker)
+    if source_start == -1:
+        raise AssertionError("release archive extractor heredoc is missing")
+    source_start += len(marker)
+    source_end = command.find("\nPY\n", source_start)
+    if source_end == -1:
+        raise AssertionError("release archive extractor heredoc terminator is missing")
+    source = command[source_start:source_end]
+
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        temporary_path = Path(temporary_directory)
+        archive_path = temporary_path / "release.tar.gz"
+        destination = temporary_path / "release"
+        payload = b"extractor-ok\n"
+        with tarfile.open(archive_path, "w:gz") as archive:
+            member = tarfile.TarInfo("payload.txt")
+            member.size = len(payload)
+            archive.addfile(member, io.BytesIO(payload))
+        completed = subprocess.run(
+            [sys.executable, "-", str(archive_path), str(destination)],
+            input=source,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        payload_path = destination / "payload.txt"
+        if completed.returncode != 0 or not payload_path.is_file() or payload_path.read_bytes() != payload:
+            raise AssertionError(completed.stderr)
 
 
 def main() -> None:
@@ -56,6 +98,7 @@ def main() -> None:
         raise AssertionError("SSM document lifecycle permissions must remain scoped to epi-agent documents")
 
     phase2a = _load("infra/aws/phase2a/template.yaml")
+    assert_release_archive_extractor_works(phase2a)
     lifecycle = phase2a["Resources"]["ApplicationDataVolumeLifecyclePolicy"]["Properties"]
     if not re.fullmatch(r"[0-9A-Za-z _-]+", lifecycle["Description"]):
         raise AssertionError("the DLM description contains characters rejected by AWS")

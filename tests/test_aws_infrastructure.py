@@ -9,6 +9,8 @@ from pathlib import Path
 
 import yaml
 
+from scripts.smoke_aws_phase2a_template_regressions import assert_release_archive_extractor_works
+
 
 ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAP_TEMPLATE = ROOT / "infra" / "aws" / "bootstrap" / "template.yaml"
@@ -654,6 +656,10 @@ def test_phase2a_ssm_release_document_uses_strict_environment_interpolation() ->
     assert 'sed "s/epiagent\\\\.org/$SSM_DomainName/g"' in command
     assert "/etc/nginx/staged/epi-agent.conf" in command
     assert "/etc/nginx/conf.d/epi-agent.conf" not in command
+
+
+def test_phase2a_ssm_release_archive_extractor_runs_before_tarfile_closes() -> None:
+    assert_release_archive_extractor_works(phase2a_template())
 
 
 def test_phase2a_ssm_release_document_patterns_are_re2_compatible() -> None:

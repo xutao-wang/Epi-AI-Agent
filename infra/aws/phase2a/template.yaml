@@ -583,7 +583,7 @@ Resources:
                           path = PurePosixPath(member.name)
                           if member.issym() or member.islnk() or path.is_absolute() or ".." in path.parts:
                               raise SystemExit("unsafe release archive")
-                  source.extractall(destination, members=members, filter="data")
+                      source.extractall(destination, members=members, filter="data")
                   PY
                   install -d -m 0755 /usr/local/libexec
                   install -o root -g root -m 0750 "$staging_dir/release/deploy/aws/bin/install-release.sh" /usr/local/sbin/install-release.sh
