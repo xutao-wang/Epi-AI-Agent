@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import logging
 import os
 
+from api.activity_store import SqliteActivityStore
 from api.conversation_history import ConversationHistoryStore, OpenAIConversationTitleGenerator
 from api.deployment import checkpoint_db_path, runtime_root, static_dir, study_root
 from api.runtime import ReportAgentApiRuntime
@@ -12,6 +14,7 @@ from db_rag.config import (
     resolve_db_rag_reranker_model,
 )
 from db_rag.readiness import DbRagReadiness, resolve_db_rag_readiness
+from epi_agent.activity import NULL_ACTIVITY_SINK
 from epi_agent.studies import StudyRegistry
 from utils.env_loader import load_app_environment
 from graph.builder import build_graph
@@ -32,6 +35,7 @@ _NO_STUDY_MESSAGE = "No study package is installed."
 _STUDY_SELECTION_REQUIRED_MESSAGE = (
     "Multiple study packages are installed. Select an active study."
 )
+_LOGGER = logging.getLogger(__name__)
 
 
 def _unselected_study_message(studies: StudyRegistry) -> str:
@@ -88,6 +92,11 @@ max_iterations = configured_epi_agent_max_iterations(os.environ)
 api_key = os.getenv("OPENAI_API_KEY", "")
 runtime_root_path = runtime_root()
 db_path = checkpoint_db_path(runtime_root_path)
+try:
+    activity_store: SqliteActivityStore | None = SqliteActivityStore(db_path)
+except Exception:
+    _LOGGER.exception("Agent activity persistence is unavailable")
+    activity_store = None
 studies = discover_studies(study_root() / "studies")
 default_study_id = studies.sole_study_id()
 default_study = studies.get(default_study_id) if default_study_id else None
@@ -115,6 +124,7 @@ def graph_factory(settings):
         db_rag_readiness=db_rag_readiness,
         db_rag_embedding_model=db_rag_embedding_model,
         max_iterations=max_iterations,
+        activity_sink=activity_store or NULL_ACTIVITY_SINK,
     )
 
 
@@ -139,6 +149,7 @@ runtime = ReportAgentApiRuntime(
     title_generator=OpenAIConversationTitleGenerator(
         build_openai_llm(model_name=title_model, api_key=api_key)
     ),
+    activity_store=activity_store,
     capabilities=RuntimeCapabilities(
         publication_knowledge=_capability(
             default_study,

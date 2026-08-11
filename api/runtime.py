@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 import hashlib
 import io
 import json
+import logging
 from pathlib import Path
 import threading
 import time
@@ -33,6 +34,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from api.schemas import (
     ActiveInterrupt,
+    ActivityRun,
     ApiThreadState,
     AttachmentManifestSummary,
     AttachmentUploadError,
@@ -55,6 +57,7 @@ from api.schemas import (
     RuntimeSettings,
     TablePreview,
 )
+from api.activity_store import SqliteActivityStore
 from api.conversation_history import ConversationHistoryStore, OpenAIConversationTitleGenerator
 from epi_agent.analysis_artifacts import AnalysisRun
 from graph.conversation_events import (
@@ -91,6 +94,7 @@ from utils.run_cancellation import (
 )
 
 
+_LOGGER = logging.getLogger(__name__)
 _ACTIVE_INTERRUPT_ADAPTER = TypeAdapter(ActiveInterrupt)
 _PUBLIC_INTERRUPT_TYPES = {
     "dataset_plan_review",
@@ -1021,6 +1025,7 @@ class ReportAgentApiRuntime:
     )
     history_store: ConversationHistoryStore | None = None
     title_generator: OpenAIConversationTitleGenerator | None = None
+    activity_store: SqliteActivityStore | None = None
     _threads: dict[str, ThreadRuntime] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _attachment_store: LocalAttachmentStore | None = field(
@@ -1039,6 +1044,24 @@ class ReportAgentApiRuntime:
     def __post_init__(self) -> None:
         if self.runtime_root is not None:
             self._attachment_store = LocalAttachmentStore(self.runtime_root)
+
+    def _activity_call(self, operation: str, *args: Any) -> Any:
+        if self.activity_store is None:
+            return None
+        try:
+            return getattr(self.activity_store, operation)(*args)
+        except Exception:
+            _LOGGER.exception(
+                "Agent activity lifecycle update failed",
+                extra={"operation": operation},
+            )
+            return None
+
+    def _activity_runs(self, thread_id: str) -> list[ActivityRun]:
+        result = self._activity_call("list_runs", thread_id)
+        if not isinstance(result, list):
+            return []
+        return [item for item in result if isinstance(item, ActivityRun)]
 
     @property
     def attachment_store(self) -> LocalAttachmentStore:
@@ -1408,6 +1431,27 @@ class ReportAgentApiRuntime:
         ):
             self._reject_initial_turn(thread_id, thread, manifests)
             raise InitialTurnCheckpointError("Initial turn was not durably checkpointed")
+        values = _projection_values(snapshot)
+        user_event_id = next(
+            (
+                str(event.get("event_id") or "").strip()
+                for event in reversed(
+                    list(
+                        dict(values.get("artifacts") or {}).get(
+                            "conversation_events"
+                        )
+                        or []
+                    )
+                )
+                if isinstance(event, dict)
+                and event.get("type") == "user"
+                and event.get("user_turn_hash") == turn_hash
+                and str(event.get("event_id") or "").strip()
+            ),
+            "",
+        )
+        if user_event_id:
+            self._activity_call("start_run", thread_id, user_event_id)
         self._commit_binding_manifests(thread_id, manifests)
         if self.history_store is not None:
             self.history_store.promote_pending(thread_id)
@@ -1628,6 +1672,7 @@ class ReportAgentApiRuntime:
         app.checkpointer.delete_thread(thread_id)
         if self._attachment_store is not None:
             self._attachment_store.delete_thread(thread_id)
+        self._activity_call("delete_thread", thread_id)
         with self._lock:
             self._threads.pop(thread_id, None)
         assert self.history_store is not None
@@ -1788,6 +1833,7 @@ class ReportAgentApiRuntime:
         active_interrupt = _active_interrupt(snapshot, values)
         if active_interrupt is None or active_interrupt.id != interrupt_id:
             raise StaleInterruptError(interrupt_id)
+        interrupt_type = active_interrupt.type
         resume_payload = validate_resume_decision(
             active_interrupt.model_dump(mode="json"),
             payload,
@@ -1829,6 +1875,7 @@ class ReportAgentApiRuntime:
         )
         if not started:
             raise ThreadAlreadyRunningError(thread_id)
+        self._activity_call("resume", thread_id, interrupt_type)
         if self.history_store is not None:
             self.history_store.touch(thread_id)
 
@@ -1841,6 +1888,7 @@ class ReportAgentApiRuntime:
         )
         run_status = runner.status(thread_id)
         if _should_recover_snapshot(snapshot, run_status):
+            self._activity_call("recover", thread_id)
             runner.start_background(
                 thread_id=thread_id,
                 initial_payload=None,
@@ -1848,14 +1896,39 @@ class ReportAgentApiRuntime:
                 timeout_seconds=thread.settings.timeout_seconds or 1,
             )
             run_status = runner.status(thread_id)
-        state = project_thread_state(
+        projected = project_thread_state(
             thread_id=thread_id,
             snapshot=snapshot,
             run_status=run_status,
             runtime_settings=thread.settings,
             runtime_settings_locked=thread.locked,
         )
-        return state
+        if projected.active_interrupt is not None:
+            self._activity_call(
+                "mark_waiting",
+                thread_id,
+                projected.active_interrupt.type,
+            )
+        terminal_activity_state = {
+            "done": "completed",
+            "cancelled": "cancelled",
+            "error": "error",
+            "timeout": "error",
+        }.get(projected.run.state)
+        if terminal_activity_state is not None:
+            self._activity_call(
+                "finish",
+                thread_id,
+                terminal_activity_state,
+            )
+        return project_thread_state(
+            thread_id=thread_id,
+            snapshot=snapshot,
+            run_status=run_status,
+            runtime_settings=thread.settings,
+            runtime_settings_locked=thread.locked,
+            activity_runs=self._activity_runs(thread_id),
+        )
 
     def _dataset_artifact(
         self,
@@ -2356,6 +2429,7 @@ def project_thread_state(
     run_status: dict[str, Any],
     runtime_settings: RuntimeSettings | None = None,
     runtime_settings_locked: bool = False,
+    activity_runs: list[ActivityRun] | None = None,
 ) -> ApiThreadState:
     values = _projection_values(snapshot)
     snapshot_next = list(getattr(snapshot, "next", None) or [])
@@ -2429,6 +2503,7 @@ def project_thread_state(
         thread_id=thread_id,
         run=status,
         conversation=_conversation(values),
+        activity_runs=list(activity_runs or []),
         active_interrupt=interrupt,
         datasets=_datasets(values),
         file_artifacts=_file_artifacts(values),
