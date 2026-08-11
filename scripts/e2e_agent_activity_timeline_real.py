@@ -112,7 +112,13 @@ def _wait_for_dataset_plan_review(
         if heading.is_visible(timeout=100) and approve.is_visible(timeout=100):
             return
 
-        state = state_reader(api_url)
+        try:
+            state = state_reader(api_url)
+        except AssertionError as error:
+            if "received []" not in str(error):
+                raise
+            time.sleep(0.25)
+            continue
         run = state.get("run") or {}
         run_state = str(run.get("state") or "")
         if run_state in {"cancelled", "error", "timeout"}:

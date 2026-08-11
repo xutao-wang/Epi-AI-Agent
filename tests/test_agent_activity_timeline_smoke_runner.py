@@ -42,6 +42,33 @@ def test_review_wait_stops_when_api_run_is_already_terminal() -> None:
         )
 
 
+def test_review_wait_treats_empty_conversation_history_as_transient() -> None:
+    attempts = 0
+
+    def state_reader(_url: str):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise AssertionError("Expected exactly one conversation, received [].")
+        return {
+            "run": {
+                "state": "error",
+                "error_code": "OPENAI_CREDITS_EXHAUSTED",
+                "user_message": "No API credits remain.",
+            }
+        }
+
+    with pytest.raises(RuntimeError, match="OPENAI_CREDITS_EXHAUSTED"):
+        smoke._wait_for_dataset_plan_review(
+            NoReviewPage(),
+            api_url="http://unused.test",
+            deadline=time.monotonic() + 60,
+            state_reader=state_reader,
+        )
+
+    assert attempts == 2
+
+
 def test_browser_diagnostics_are_captured_before_browser_closes() -> None:
     diagnostic_browser = getattr(smoke, "_diagnostic_browser", None)
     assert diagnostic_browser is not None
