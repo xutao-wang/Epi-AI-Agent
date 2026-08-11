@@ -12,6 +12,7 @@ import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App, { isPendingMessageAcknowledged } from "./App";
 import type {
+  ActivityRun,
   ApiThreadState,
   ModelOption,
   RuntimeOptions,
@@ -41,6 +42,7 @@ function threadState(
       updated_at: null,
     },
     conversation: [],
+    activity_runs: [],
     active_interrupt: null,
     runtime_settings: null,
     runtime_settings_locked: false,
@@ -48,6 +50,33 @@ function threadState(
     file_artifacts: [],
     output: {},
     diagnostics: {},
+    ...overrides,
+  };
+}
+
+function activityRun(
+  state: ActivityRun["state"] = "running",
+  overrides: Partial<ActivityRun> = {},
+): ActivityRun {
+  return {
+    id: "activity-run-1",
+    thread_id: "thread-1",
+    user_message_id: "user-1",
+    state,
+    activities: [
+      {
+        id: "activity-1",
+        sequence: 1,
+        label: "Searching the data catalog",
+        status: state === "waiting" ? "waiting" : "running",
+        tool_name: "dbrag-search_catalog",
+        tool_call_id: "call-1",
+        created_at: "2026-08-11T00:00:00+00:00",
+        updated_at: "2026-08-11T00:00:00+00:00",
+      },
+    ],
+    created_at: "2026-08-11T00:00:00+00:00",
+    updated_at: "2026-08-11T00:00:00+00:00",
     ...overrides,
   };
 }
@@ -531,6 +560,264 @@ describe("App", () => {
       "needs_code",
     );
     expect(messageList.children[1]).toHaveTextContent("Agent is working");
+  });
+
+  it("places a running timeline directly after its matching user message", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(runtimeOptionsResponse())
+      .mockResolvedValueOnce(createThreadResponse())
+      .mockResolvedValueOnce(
+        jsonResponse(
+          threadState({
+            run: {
+              state: "running",
+              steps: 1,
+              error: null,
+              started_at: null,
+              updated_at: null,
+            },
+            conversation: [
+              { id: "user-1", role: "user", text: "Create a cohort" },
+            ],
+            activity_runs: [activityRun()],
+          }),
+        ),
+      );
+    render(<App apiBase="http://api.test" fetchImpl={fetchMock} loadConversationHistory={false} />);
+
+    fireEvent.change(
+      await screen.findByLabelText("Ask a question about your dataset!"),
+      { target: { value: "Create a cohort" } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    const messageList = await screen.findByRole("list", {
+      name: "Conversation messages",
+    });
+    const timeline = await within(messageList).findByLabelText(
+      "Agent activity timeline",
+    );
+    expect(messageList.children[0]).toHaveTextContent("Create a cohort");
+    expect(messageList.children[1]).toBe(timeline);
+    expect(within(messageList).queryByLabelText("Agent activity")).not.toBeInTheDocument();
+  });
+
+  it("updates a polled activity in place without duplicating it", async () => {
+    vi.useFakeTimers();
+    const updatedRun = activityRun("running", {
+      activities: [
+        {
+          ...activityRun().activities[0],
+          status: "completed",
+          updated_at: "2026-08-11T00:00:01+00:00",
+        },
+        {
+          id: "activity-2",
+          sequence: 2,
+          label: "Choosing the next step",
+          status: "running",
+          tool_name: null,
+          tool_call_id: null,
+          created_at: "2026-08-11T00:00:01+00:00",
+          updated_at: "2026-08-11T00:00:01+00:00",
+        },
+      ],
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(runtimeOptionsResponse())
+      .mockResolvedValueOnce(createThreadResponse())
+      .mockResolvedValueOnce(
+        jsonResponse(
+          threadState({
+            run: {
+              state: "running",
+              steps: 1,
+              error: null,
+              started_at: null,
+              updated_at: null,
+            },
+            conversation: [
+              { id: "user-1", role: "user", text: "Create a cohort" },
+            ],
+            activity_runs: [activityRun()],
+          }),
+        ),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          threadState({
+            run: {
+              state: "running",
+              steps: 2,
+              error: null,
+              started_at: null,
+              updated_at: null,
+            },
+            conversation: [
+              { id: "user-1", role: "user", text: "Create a cohort" },
+            ],
+            activity_runs: [updatedRun],
+          }),
+        ),
+      );
+    render(<App apiBase="http://api.test" fetchImpl={fetchMock} loadConversationHistory={false} />);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    fireEvent.change(screen.getByLabelText("Ask a question about your dataset!"), {
+      target: { value: "Create a cohort" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getAllByText("Searching the data catalog")).toHaveLength(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+
+    expect(screen.getAllByText("Searching the data catalog")).toHaveLength(1);
+    expect(screen.getByText("Choosing the next step")).toBeInTheDocument();
+    expect(screen.getAllByLabelText("Agent activity timeline")).toHaveLength(1);
+  });
+
+  it("renders repeated successful calls as separate rows", async () => {
+    const first = {
+      ...activityRun().activities[0],
+      status: "completed" as const,
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(runtimeOptionsResponse())
+      .mockResolvedValueOnce(createThreadResponse())
+      .mockResolvedValueOnce(
+        jsonResponse(
+          threadState({
+            run: {
+              state: "running",
+              steps: 2,
+              error: null,
+              started_at: null,
+              updated_at: null,
+            },
+            conversation: [
+              { id: "user-1", role: "user", text: "Create a cohort" },
+            ],
+            activity_runs: [
+              activityRun("running", {
+                activities: [
+                  first,
+                  {
+                    ...first,
+                    id: "activity-2",
+                    sequence: 2,
+                    tool_call_id: "call-2",
+                  },
+                ],
+              }),
+            ],
+          }),
+        ),
+      );
+    render(<App apiBase="http://api.test" fetchImpl={fetchMock} loadConversationHistory={false} />);
+
+    fireEvent.change(
+      await screen.findByLabelText("Ask a question about your dataset!"),
+      { target: { value: "Create a cohort" } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(await screen.findAllByText("Searching the data catalog")).toHaveLength(2);
+    expect(screen.getByText("Call 1")).toBeInTheDocument();
+    expect(screen.getByText("Call 2")).toBeInTheDocument();
+  });
+
+  it("keeps a waiting timeline last in the message list before its review card", async () => {
+    const waiting = activityRun("waiting", {
+      user_message_id: "message-1",
+      activities: [
+        {
+          ...activityRun().activities[0],
+          label: "Waiting for dataset plan review",
+          status: "waiting",
+          tool_name: "dbrag-request_dataset_plan_review",
+        },
+      ],
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(runtimeOptionsResponse())
+      .mockResolvedValueOnce(createThreadResponse())
+      .mockResolvedValueOnce(
+        jsonResponse({ ...reviewState(), activity_runs: [waiting] }),
+      );
+    render(<App apiBase="http://api.test" fetchImpl={fetchMock} loadConversationHistory={false} />);
+
+    fireEvent.change(
+      await screen.findByLabelText("Ask a question about your dataset!"),
+      { target: { value: "Find projects about diabetes" } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    const messageList = await screen.findByRole("list", {
+      name: "Conversation messages",
+    });
+    const timeline = await within(messageList).findByLabelText(
+      "Agent activity timeline",
+    );
+    const approve = screen.getByRole("button", { name: "Approve plan and extract" });
+    expect(messageList.lastElementChild).toBe(timeline);
+    expect(messageList.contains(approve)).toBe(false);
+    expect(
+      messageList.compareDocumentPosition(approve) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("shows a completed historical timeline collapsed", async () => {
+    const completed = activityRun("completed", {
+      activities: [
+        {
+          ...activityRun().activities[0],
+          status: "completed",
+        },
+      ],
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(runtimeOptionsResponse())
+      .mockResolvedValueOnce(createThreadResponse())
+      .mockResolvedValueOnce(
+        jsonResponse(
+          threadState({
+            run: {
+              state: "done",
+              steps: 2,
+              error: null,
+              started_at: null,
+              updated_at: null,
+            },
+            conversation: [
+              { id: "user-1", role: "user", text: "Create a cohort" },
+            ],
+            activity_runs: [completed],
+          }),
+        ),
+      );
+    render(<App apiBase="http://api.test" fetchImpl={fetchMock} loadConversationHistory={false} />);
+
+    fireEvent.change(
+      await screen.findByLabelText("Ask a question about your dataset!"),
+      { target: { value: "Create a cohort" } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(
+      await screen.findByRole("button", { name: "View agent activity · 1 activity" }),
+    ).toHaveAttribute("aria-expanded", "false");
   });
 
   it.each(["awaiting_clarification", "retrying_after_error", "needs_code"])(

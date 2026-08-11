@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, createApiClient } from "./apiClient";
+import AgentActivityTimeline from "./AgentActivityTimeline";
 import AttachmentComposer from "./AttachmentComposer";
 import AnalysisResultReview from "./AnalysisResultReview";
 import AppShell from "./AppShell";
@@ -256,6 +257,14 @@ export default function App({
       setSelectedRuntimeSettings(state.runtime_settings);
     }
   }, [state?.runtime_settings]);
+
+  const activityRunByUserMessageId = useMemo(
+    () =>
+      new Map(
+        (state?.activity_runs ?? []).map((run) => [run.user_message_id, run]),
+      ),
+    [state?.activity_runs],
+  );
 
   const projectedClarificationIds = new Set(
     (state?.conversation ?? []).flatMap((conversationMessage) =>
@@ -818,6 +827,16 @@ export default function App({
     ? [...conversationMessages, pendingUserMessage]
     : conversationMessages;
   const hasVisibleConversation = visibleConversationMessages.length > 0;
+  const latestVisibleUserMessage = [...visibleConversationMessages]
+    .reverse()
+    .find((conversationMessage) => conversationMessage.role === "user");
+  const hasActivityForLatestUser = Boolean(
+    latestVisibleUserMessage &&
+      activityRunByUserMessageId.has(latestVisibleUserMessage.id),
+  );
+  const showGenericActivity = Boolean(
+    activityTitle && !hasActivityForLatestUser,
+  );
 
   function renderActiveInterrupt(interrupt: ActiveInterrupt) {
     if (!threadId) {
@@ -907,65 +926,78 @@ export default function App({
             className="conversation-panel"
             aria-label="Conversation messages"
           >
-            {hasVisibleConversation || activityTitle ? (
+            {hasVisibleConversation || showGenericActivity ? (
               <ol className="message-list" aria-label="Conversation messages">
-                {visibleConversationMessages.map((conversationMessage) => (
-                  <ConversationMessage
-                    attachmentUrl={(attachmentId) =>
-                      threadId
-                        ? apiClient.conversationAttachmentUrl(
+                {visibleConversationMessages.map((conversationMessage) => {
+                  const activityRun =
+                    conversationMessage.role === "user"
+                      ? activityRunByUserMessageId.get(conversationMessage.id)
+                      : undefined;
+                  return (
+                    <Fragment key={conversationMessage.id}>
+                      <ConversationMessage
+                        attachmentUrl={(attachmentId) =>
+                          threadId
+                            ? apiClient.conversationAttachmentUrl(
+                                threadId,
+                                attachmentId,
+                              )
+                            : ""
+                        }
+                        getDatasetPreview={(attachmentId, limit) => {
+                          if (!threadId) {
+                            return Promise.reject(
+                              new Error("Thread is unavailable."),
+                            );
+                          }
+                          return apiClient.getDatasetPreview(
                             threadId,
                             attachmentId,
-                          )
-                        : ""
-                    }
-                    getDatasetPreview={(attachmentId, limit) => {
-                      if (!threadId) {
-                        return Promise.reject(
-                          new Error("Thread is unavailable."),
-                        );
-                      }
-                      return apiClient.getDatasetPreview(
-                        threadId,
-                        attachmentId,
-                        limit,
-                      );
-                    }}
-                    getDatasetSchema={(attachmentId) => {
-                      if (!threadId) {
-                        return Promise.reject(
-                          new Error("Thread is unavailable."),
-                        );
-                      }
-                      return apiClient.getDatasetSchema(
-                        threadId,
-                        attachmentId,
-                      );
-                    }}
-                    getDatasetProvenance={(attachmentId) => {
-                      if (!threadId) {
-                        return Promise.reject(
-                          new Error("Thread is unavailable."),
-                        );
-                      }
-                      return apiClient.getDatasetProvenance(
-                        threadId,
-                        attachmentId,
-                      );
-                    }}
-                    getAnalysisResult={(attachmentId) => {
-                      if (!threadId) {
-                        return Promise.reject(
-                          new Error("Thread is unavailable."),
-                        );
-                      }
-                      return apiClient.getAnalysisResult(threadId, attachmentId);
-                    }}
-                    key={conversationMessage.id}
-                    message={conversationMessage}
-                  />
-                ))}
-                {activityTitle ? (
+                            limit,
+                          );
+                        }}
+                        getDatasetSchema={(attachmentId) => {
+                          if (!threadId) {
+                            return Promise.reject(
+                              new Error("Thread is unavailable."),
+                            );
+                          }
+                          return apiClient.getDatasetSchema(
+                            threadId,
+                            attachmentId,
+                          );
+                        }}
+                        getDatasetProvenance={(attachmentId) => {
+                          if (!threadId) {
+                            return Promise.reject(
+                              new Error("Thread is unavailable."),
+                            );
+                          }
+                          return apiClient.getDatasetProvenance(
+                            threadId,
+                            attachmentId,
+                          );
+                        }}
+                        getAnalysisResult={(attachmentId) => {
+                          if (!threadId) {
+                            return Promise.reject(
+                              new Error("Thread is unavailable."),
+                            );
+                          }
+                          return apiClient.getAnalysisResult(
+                            threadId,
+                            attachmentId,
+                          );
+                        }}
+                        message={conversationMessage}
+                      />
+                      {activityRun ? (
+                        <AgentActivityTimeline run={activityRun} />
+                      ) : null}
+                    </Fragment>
+                  );
+                })}
+                {showGenericActivity ? (
                   <ActivityMessage
                     detail={activityDetail}
                     steps={state?.run.steps}

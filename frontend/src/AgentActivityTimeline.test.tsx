@@ -94,4 +94,21 @@ describe("AgentActivityTimeline", () => {
 
     expect(screen.getByRole("button")).toHaveAttribute("aria-expanded", "false");
   });
+
+  it("keeps cancelled work collapsed without a running indicator", () => {
+    const { container } = render(
+      <AgentActivityTimeline
+        run={{
+          ...completedRun,
+          state: "cancelled",
+          activities: [
+            { ...completedRun.activities[0], status: "completed" },
+          ],
+        }}
+      />,
+    );
+
+    expect(screen.getByRole("button")).toHaveAttribute("aria-expanded", "false");
+    expect(container.querySelector(".agent-activity-item--running")).toBeNull();
+  });
 });

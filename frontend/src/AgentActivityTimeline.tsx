@@ -44,17 +44,20 @@ export default function AgentActivityTimeline({ run }: { run: ActivityRun }) {
   const actionLabel = expanded ? "Hide agent activity" : "View agent activity";
 
   return (
-    <li className={`agent-activity agent-activity--${run.state}`}>
+    <li
+      aria-label="Agent activity timeline"
+      className={`message message-assistant agent-activity-timeline agent-activity--${run.state}`}
+    >
       <button
         type="button"
-        className="agent-activity__summary"
+        className="agent-activity-summary"
         aria-expanded={expanded}
         onClick={() => setExpanded((current) => !current)}
       >
         {actionLabel} · {countLabel}
       </button>
       {expanded ? (
-        <ol className="agent-activity__items">
+        <ol className="agent-activity-list">
           {activities.map((activity) => {
             let occurrence: number | null = null;
             if (activity.tool_name) {
@@ -67,9 +70,9 @@ export default function AgentActivityTimeline({ run }: { run: ActivityRun }) {
             return (
               <li
                 key={activity.id}
-                className={`agent-activity__item agent-activity__item--${activity.status}`}
+                className={`agent-activity-item agent-activity-item--${activity.status}`}
               >
-                <span className="agent-activity__icon" aria-hidden="true">
+                <span className="agent-activity-status" aria-hidden="true">
                   {activity.status === "completed"
                     ? "✓"
                     : activity.status === "waiting"
@@ -77,13 +80,13 @@ export default function AgentActivityTimeline({ run }: { run: ActivityRun }) {
                       : ""}
                 </span>
                 <span
-                  className="agent-activity__label"
+                  className="agent-activity-label"
                   aria-live={liveActivity?.id === activity.id ? "polite" : undefined}
                 >
                   {activity.label}
                 </span>
                 {activity.tool_name ? (
-                  <span className="agent-activity__technical">
+                  <span className="agent-activity-tool">
                     <code>{activity.tool_name}</code>
                     {repeated ? <span>Call {occurrence}</span> : null}
                   </span>
