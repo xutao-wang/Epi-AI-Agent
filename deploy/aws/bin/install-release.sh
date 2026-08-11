@@ -11,6 +11,7 @@ readonly releases_root=/opt/epi-agent/releases
 readonly current_link=/opt/epi-agent/current
 readonly maintenance_file=/run/epi-agent/maintenance
 readonly drain_deadline_seconds=600
+readonly startup_deadline_seconds=120
 
 usage() {
   printf '%s\n' 'usage: install-release.sh <bucket> <release-key> <sha256> <release-id> <domain> <certificate-email> [--force]' >&2
@@ -61,7 +62,7 @@ restore_previous_release() {
     systemctl restart epi-agent.service
   else
     rm -f -- "$current_link"
-    systemctl stop epi-agent.service
+    systemctl disable --now epi-agent.service
   fi
 }
 
@@ -138,6 +139,22 @@ check_service() {
     | /usr/bin/python3.12 -c 'import json, sys; raise SystemExit(0 if json.load(sys.stdin).get("status") == "ready" else 1)'
 }
 
+wait_for_service_health() {
+  local deadline
+  deadline=$((SECONDS + startup_deadline_seconds))
+  while ! curl --fail --silent --show-error --max-time 5 \
+    http://127.0.0.1:8000/api/health >/dev/null; do
+    if ! systemctl is-active --quiet epi-agent.service; then
+      systemctl status epi-agent.service --no-pager >&2 || true
+      fail 'application service exited before becoming healthy'
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      fail 'timed out waiting for application service health'
+    fi
+    sleep 2
+  done
+}
+
 require_root
 [ "$#" -eq 6 ] || [ "$#" -eq 7 ] || usage
 
@@ -207,8 +224,9 @@ rm -f -- /opt/epi-agent/current.next
 ln -s "$release_dir" /opt/epi-agent/current.next
 mv -Tf /opt/epi-agent/current.next /opt/epi-agent/current
 activated=true
+systemctl enable epi-agent.service
 systemctl restart epi-agent.service
-curl --fail --silent --show-error --max-time 15 http://127.0.0.1:8000/api/health >/dev/null
+wait_for_service_health
 rm -f -- "$maintenance_file"
 check_service
 activated=false

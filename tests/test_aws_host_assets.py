@@ -203,6 +203,9 @@ def _release_harness(
     invalid_archive: bool,
     readiness_fails: bool,
     staging_fails: bool = False,
+    health_failures: int = 0,
+    service_inactive: bool = False,
+    previous_release_exists: bool = True,
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path, Path, Path]:
     root = tmp_path / "host"
     fake_bin = tmp_path / "bin"
@@ -217,12 +220,29 @@ def _release_harness(
         "id": "printf '%s\\n' 0\n",
         "aws": 'cp "$TEST_ARCHIVE" "$4"\n',
         "sha256sum": "exit 0\n",
-        "systemctl": 'printf "%s\\n" "$*" >> "$TEST_SYSTEMCTL_LOG"\n',
+        "systemctl": """printf "%s\\n" "$*" >> "$TEST_SYSTEMCTL_LOG"
+if [ "${1:-}" = is-active ] && [ "$TEST_SERVICE_INACTIVE" = 1 ]; then
+  exit 3
+fi
+""",
         "curl": """case "$*" in
   *deployment-status*) printf '%s\\n' '{"maintenance": true, "active_runs": 0}' ;;
-  *readiness*) [ "$TEST_READINESS_FAILS" = 0 ] || exit 22 ;;
+  */api/health*)
+    count=0
+    if [ -f "$TEST_HEALTH_COUNT_FILE" ]; then
+      read -r count < "$TEST_HEALTH_COUNT_FILE"
+    fi
+    count=$((count + 1))
+    printf '%s\\n' "$count" > "$TEST_HEALTH_COUNT_FILE"
+    [ "$count" -gt "$TEST_HEALTH_FAILURES" ] || exit 7
+    ;;
+  *readiness*)
+    [ "$TEST_READINESS_FAILS" = 0 ] || exit 22
+    printf '%s\\n' '{"status": "ready"}'
+    ;;
 esac
 """,
+        "sleep": ":\n",
         "uv": """if [ "$1" = venv ]; then
   mkdir -p "$4/bin"
   : > "$4/bin/python"
@@ -266,7 +286,8 @@ fi
 
     current_link = root / "opt" / "epi-agent" / "current"
     current_link.parent.mkdir(parents=True)
-    current_link.symlink_to("/previous/release")
+    if previous_release_exists:
+        current_link.symlink_to("/previous/release")
     certificate = root / "etc" / "letsencrypt" / "live" / "example.org" / "fullchain.pem"
     certificate.parent.mkdir(parents=True)
     certificate.touch()
@@ -277,6 +298,9 @@ fi
         "TEST_SYSTEMCTL_LOG": str(systemctl_log),
         "TEST_READINESS_FAILS": "1" if readiness_fails else "0",
         "TEST_STAGING_FAILS": "1" if staging_fails else "0",
+        "TEST_HEALTH_FAILURES": str(health_failures),
+        "TEST_HEALTH_COUNT_FILE": str(tmp_path / "health-count"),
+        "TEST_SERVICE_INACTIVE": "1" if service_inactive else "0",
     }
     completed = subprocess.run(
         [
@@ -315,6 +339,49 @@ def test_release_installer_rolls_back_after_readiness_failure(tmp_path: Path) ->
     assert systemctl_log.read_text(encoding="utf-8").splitlines().count(
         "restart epi-agent.service"
     ) == 2
+
+
+def test_release_installer_waits_for_delayed_first_service_startup(
+    tmp_path: Path,
+) -> None:
+    completed, current_link, maintenance_file, staging_parent, systemctl_log = (
+        _release_harness(
+            tmp_path,
+            invalid_archive=False,
+            readiness_fails=False,
+            health_failures=1,
+            previous_release_exists=False,
+        )
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert current_link.readlink() == staging_parent / "releases" / ("a" * 40)
+    assert not maintenance_file.exists()
+    assert int((tmp_path / "health-count").read_text(encoding="utf-8")) >= 2
+    systemctl_calls = systemctl_log.read_text(encoding="utf-8").splitlines()
+    assert "enable epi-agent.service" in systemctl_calls
+    assert systemctl_calls.count("restart epi-agent.service") == 1
+
+
+def test_release_installer_disables_service_after_failed_first_startup(
+    tmp_path: Path,
+) -> None:
+    completed, current_link, maintenance_file, _, systemctl_log = _release_harness(
+        tmp_path,
+        invalid_archive=False,
+        readiness_fails=False,
+        health_failures=1,
+        service_inactive=True,
+        previous_release_exists=False,
+    )
+
+    assert completed.returncode != 0
+    assert not current_link.exists()
+    assert not current_link.is_symlink()
+    assert not maintenance_file.exists()
+    systemctl_calls = systemctl_log.read_text(encoding="utf-8").splitlines()
+    assert "is-active --quiet epi-agent.service" in systemctl_calls
+    assert "disable --now epi-agent.service" in systemctl_calls
 
 
 def test_release_installer_clears_maintenance_when_archive_is_invalid(tmp_path: Path) -> None:
