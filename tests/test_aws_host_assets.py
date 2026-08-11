@@ -211,6 +211,7 @@ def _release_harness(
     health_failures: int = 0,
     service_inactive: bool = False,
     previous_release_exists: bool = True,
+    runtime_repair_fails: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path, Path, Path]:
     root = tmp_path / "host"
     fake_bin = tmp_path / "bin"
@@ -226,6 +227,9 @@ def _release_harness(
         "aws": 'cp "$TEST_ARCHIVE" "$4"\n',
         "sha256sum": "exit 0\n",
         "install": """printf 'install %s\\n' "$*" >> "$TEST_OPERATION_LOG"
+if [ "$TEST_RUNTIME_REPAIR_FAILS" = 1 ] && [ "$*" = "-d -m 0750 -o epi-agent-web -g epi-agent-web $TEST_RUNTIME_DIR" ]; then
+  exit 1
+fi
 args=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -326,6 +330,8 @@ fi
         "TEST_HEALTH_FAILURES": str(health_failures),
         "TEST_HEALTH_COUNT_FILE": str(tmp_path / "health-count"),
         "TEST_SERVICE_INACTIVE": "1" if service_inactive else "0",
+        "TEST_RUNTIME_REPAIR_FAILS": "1" if runtime_repair_fails else "0",
+        "TEST_RUNTIME_DIR": str(root / "srv" / "epi-agent" / "runtime"),
     }
     completed = subprocess.run(
         [
@@ -415,6 +421,82 @@ def test_release_installer_repairs_runtime_ownership_before_service_activation(
     assert harness_repair in operations
     assert operations.index(harness_repair) < operations.index(
         "systemctl enable epi-agent.service"
+    )
+
+
+def test_release_installer_repairs_retained_runtime_directory_without_touching_child(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "host" / "srv" / "epi-agent" / "runtime"
+    runtime_dir.mkdir(parents=True)
+    runtime_dir.chmod(0o711)
+    sentinel = runtime_dir / "sentinel.txt"
+    sentinel.write_text("preserve this runtime data", encoding="utf-8")
+    sentinel.chmod(0o640)
+    sentinel_metadata = sentinel.stat()
+
+    completed, _, _, _, _ = _release_harness(
+        tmp_path,
+        invalid_archive=False,
+        readiness_fails=False,
+        previous_release_exists=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert runtime_dir.stat().st_mode & 0o777 == 0o750
+    assert sentinel.read_text(encoding="utf-8") == "preserve this runtime data"
+    actual_metadata = sentinel.stat()
+    assert (
+        actual_metadata.st_mode,
+        actual_metadata.st_uid,
+        actual_metadata.st_gid,
+        actual_metadata.st_mtime_ns,
+    ) == (
+        sentinel_metadata.st_mode,
+        sentinel_metadata.st_uid,
+        sentinel_metadata.st_gid,
+        sentinel_metadata.st_mtime_ns,
+    )
+
+
+def test_release_installer_cleans_up_when_runtime_repair_fails(
+    tmp_path: Path,
+) -> None:
+    runtime_dir = tmp_path / "host" / "srv" / "epi-agent" / "runtime"
+    runtime_dir.mkdir(parents=True)
+    sentinel = runtime_dir / "sentinel.txt"
+    sentinel.write_text("preserve this runtime data", encoding="utf-8")
+    sentinel.chmod(0o640)
+    sentinel_metadata = sentinel.stat()
+
+    completed, current_link, maintenance_file, _, systemctl_log = _release_harness(
+        tmp_path,
+        invalid_archive=False,
+        readiness_fails=False,
+        runtime_repair_fails=True,
+    )
+
+    assert completed.returncode != 0
+    assert current_link.readlink() == Path("/previous/release")
+    assert not maintenance_file.exists()
+    assert not systemctl_log.exists()
+    operations = (tmp_path / "operation.log").read_text(encoding="utf-8").splitlines()
+    assert operations[-1] == (
+        "install -d -m 0750 -o epi-agent-web -g epi-agent-web "
+        f"{runtime_dir}"
+    )
+    assert sentinel.read_text(encoding="utf-8") == "preserve this runtime data"
+    actual_metadata = sentinel.stat()
+    assert (
+        actual_metadata.st_mode,
+        actual_metadata.st_uid,
+        actual_metadata.st_gid,
+        actual_metadata.st_mtime_ns,
+    ) == (
+        sentinel_metadata.st_mode,
+        sentinel_metadata.st_uid,
+        sentinel_metadata.st_gid,
+        sentinel_metadata.st_mtime_ns,
     )
 
 
