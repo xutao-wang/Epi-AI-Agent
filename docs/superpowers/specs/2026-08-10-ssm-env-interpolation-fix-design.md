@@ -44,3 +44,21 @@ Do not retry the failed command unchanged. If the updated deployment fails,
 retrieve the exact SSM invocation output before making another change. The
 installer's existing checksum, health-check, and rollback behavior remains
 unchanged.
+
+## CloudFormation Rollback Recovery
+
+The first live update created non-default document versions but failed when
+the CloudFormation execution role could not read the document or set a new
+default version. Complete the document-scoped lifecycle policy in one
+administrator bootstrap update by retaining the existing create, update,
+delete, and describe actions and adding `ssm:GetDocument`,
+`ssm:UpdateDocumentDefaultVersion`, `ssm:AddTagsToResource`,
+`ssm:RemoveTagsFromResource`, and `ssm:ListTagsForResource`. These actions
+remain restricted to `document/epi-agent-*`; do not grant wildcard SSM access
+or unrelated attachment and role-passing permissions.
+
+After the bootstrap stack reaches `UPDATE_COMPLETE`, continue the application
+stack rollback without skipping resources. Require
+`UPDATE_ROLLBACK_COMPLETE`, then create a fresh application change set and
+apply the corrected SSM document through CloudFormation. Do not manually set a
+document default version or accept stack drift.
