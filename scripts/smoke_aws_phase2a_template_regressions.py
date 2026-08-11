@@ -49,6 +49,22 @@ def main() -> None:
     parameters = phase2a["Resources"]["EpiAgentDeployReleaseDocument"]["Properties"]["Content"][
         "parameters"
     ]
+    parameter_names = (
+        "Bucket",
+        "ReleaseKey",
+        "ReleaseSha256",
+        "ReleaseId",
+        "DomainName",
+        "CertificateEmail",
+    )
+    inputs = phase2a["Resources"]["EpiAgentDeployReleaseDocument"]["Properties"][
+        "Content"
+    ]["mainSteps"][0]["inputs"]
+    if "interpolationType" in inputs:
+        raise AssertionError("ENV_VAR interpolation must be declared on SSM parameters")
+    for name in parameter_names:
+        if parameters[name].get("interpolationType") != "ENV_VAR":
+            raise AssertionError(f"{name} does not export its SSM environment variable")
     patterns = {name: parameter["allowedPattern"] for name, parameter in parameters.items()}
     unsupported = ("(?=", "(?!", "(?<=", "(?<!")
     for name, pattern in patterns.items():

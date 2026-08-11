@@ -539,27 +539,32 @@ Resources:
         parameters:
           Bucket:
             type: String
+            interpolationType: ENV_VAR
             allowedPattern: '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
           ReleaseKey:
             type: String
+            interpolationType: ENV_VAR
             allowedPattern: '^releases/[A-Za-z0-9][A-Za-z0-9_/-]*(\.[A-Za-z0-9_/-]+)*$'
           ReleaseSha256:
             type: String
+            interpolationType: ENV_VAR
             allowedPattern: '^[0-9a-f]{64}$'
           ReleaseId:
             type: String
+            interpolationType: ENV_VAR
             allowedPattern: '^[0-9a-f]{40}$'
           DomainName:
             type: String
+            interpolationType: ENV_VAR
             allowedPattern: '^([A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9-]{0,61}[A-Za-z0-9])(\.([A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9-]{0,61}[A-Za-z0-9]))+$'
           CertificateEmail:
             type: String
+            interpolationType: ENV_VAR
             allowedPattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
         mainSteps:
           - action: aws:runShellScript
             name: installRelease
             inputs:
-              interpolationType: ENV_VAR
               runCommand:
                 - |
                   set -Eeuo pipefail

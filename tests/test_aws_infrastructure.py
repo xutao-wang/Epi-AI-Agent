@@ -608,10 +608,20 @@ def test_phase2a_ssm_release_document_uses_strict_environment_interpolation() ->
     assert content["schemaVersion"] == "2.2"
     assert content["mainSteps"][0]["action"] == "aws:runShellScript"
     inputs = content["mainSteps"][0]["inputs"]
-    assert inputs["interpolationType"] == "ENV_VAR"
+    parameters = content["parameters"]
+    parameter_names = (
+        "Bucket",
+        "ReleaseKey",
+        "ReleaseSha256",
+        "ReleaseId",
+        "DomainName",
+        "CertificateEmail",
+    )
+    assert "interpolationType" not in inputs
+    for name in parameter_names:
+        assert parameters[name]["interpolationType"] == "ENV_VAR"
+        assert parameters[name]["allowedPattern"].startswith("^")
     assert "{{ Bucket }}" not in "\n".join(inputs["runCommand"])
-    for name in ("Bucket", "ReleaseKey", "ReleaseSha256", "ReleaseId", "DomainName", "CertificateEmail"):
-        assert content["parameters"][name]["allowedPattern"].startswith("^")
     command = "\n".join(inputs["runCommand"])
     assert "install-release.sh" in command
     assert "install -o root -g root -m 0750" in command
