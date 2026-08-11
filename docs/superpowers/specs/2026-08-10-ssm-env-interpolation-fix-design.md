@@ -62,3 +62,18 @@ stack rollback without skipping resources. Require
 `UPDATE_ROLLBACK_COMPLETE`, then create a fresh application change set and
 apply the corrected SSM document through CloudFormation. Do not manually set a
 document default version or accept stack drift.
+
+## Embedded Archive Extractor
+
+The corrected SSM parameter flow exposed a separate extractor defect:
+`source.extractall(...)` runs after the `tarfile.open(...)` context exits, so
+Python raises `OSError: TarFile is closed`. Keep the existing archive-member
+safety validation and move extraction inside the open context. Add a functional
+regression that extracts the exact Python heredoc from the CloudFormation
+document, runs it against a small safe tar archive, and verifies the payload is
+created. The executable Phase 2A template smoke must exercise the same real
+heredoc, not a reimplemented extractor.
+
+Apply this correction through another reviewed SSM-document-only CloudFormation
+change set, then build a new immutable release from the tested commit. Do not
+retry failed command `67a8ee05-4db7-431d-be98-443c54613253`.
