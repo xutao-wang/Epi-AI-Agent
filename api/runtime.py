@@ -17,6 +17,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
+from langgraph.graph import START
 from langgraph.types import Command
 import httpx
 from openai import (
@@ -1440,7 +1441,7 @@ class ReportAgentApiRuntime:
                     None,
                     active_study_id=active_study_id,
                 ),
-                as_node="finish",
+                as_node=START,
             )
             snapshot = app.get_state(
                 graph_config(thread_id),
@@ -1490,7 +1491,11 @@ class ReportAgentApiRuntime:
                 turn=turn,
                 manifests=committed_manifests,
             )
-            app.update_state(durable_config, patch, as_node="finish")
+            app.update_state(
+                durable_config,
+                patch,
+                as_node="model_output_gate",
+            )
             if self.history_store is not None:
                 self.history_store.promote_pending(thread_id)
 
@@ -1807,7 +1812,11 @@ class ReportAgentApiRuntime:
                 turn=turn,
                 manifests=committed_manifests,
             )
-            app.update_state(durable_config, patch, as_node="finish")
+            app.update_state(
+                durable_config,
+                patch,
+                as_node="model_output_gate",
+            )
             if self.history_store is not None:
                 self.history_store.promote_pending(thread_id)
 

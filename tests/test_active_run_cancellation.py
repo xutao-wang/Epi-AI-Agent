@@ -551,10 +551,10 @@ def _blocking_app(
 
     builder = StateGraph(CancellationGraphState)
     builder.add_node("tools", tools)
-    builder.add_node("finish", lambda _state: {})
+    builder.add_node("model_output_gate", lambda _state: {})
     builder.add_edge(START, "tools")
-    builder.add_edge("tools", "finish")
-    builder.add_edge("finish", END)
+    builder.add_edge("tools", "model_output_gate")
+    builder.add_edge("model_output_gate", END)
     app = builder.compile(checkpointer=checkpointer or InMemorySaver())
     if finished is not None:
         return InvocationTrackingGraph(app, finished)
