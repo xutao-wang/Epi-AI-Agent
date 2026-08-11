@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -88,6 +89,56 @@ def _thread_state(api_url: str) -> dict[str, Any]:
     )
     response.raise_for_status()
     return response.json()
+
+
+def _wait_for_dataset_plan_review(
+    page: Any,
+    *,
+    api_url: str,
+    deadline: float,
+    state_reader: Any = _thread_state,
+) -> None:
+    while time.monotonic() < deadline:
+        heading = page.get_by_role(
+            "heading",
+            name="Review dataset plan",
+            exact=True,
+        )
+        approve = page.get_by_role(
+            "button",
+            name="Approve plan and extract",
+            exact=True,
+        )
+        if heading.is_visible(timeout=100) and approve.is_visible(timeout=100):
+            return
+
+        state = state_reader(api_url)
+        run = state.get("run") or {}
+        run_state = str(run.get("state") or "")
+        if run_state in {"cancelled", "error", "timeout"}:
+            error_code = str(run.get("error_code") or "AGENT_RUN_TERMINATED")
+            message = str(
+                run.get("user_message")
+                or run.get("error")
+                or f"Agent run ended with state {run_state}."
+            )
+            raise RuntimeError(
+                "Agent run ended before dataset-plan review: "
+                f"{message} Error: {error_code}"
+            )
+        time.sleep(0.25)
+    raise TimeoutError("Timed out waiting for dataset-plan review.")
+
+
+@contextmanager
+def _diagnostic_browser(browser: Any, record_failure: Any):
+    try:
+        yield browser
+    except BaseException as error:
+        record_failure(error)
+        raise
+    finally:
+        browser.close()
 
 
 def _write_page_artifacts(page: Any, artifact_dir: Path, prefix: str) -> None:
@@ -256,11 +307,23 @@ def run(args: argparse.Namespace) -> int:
     from playwright.sync_api import sync_playwright
 
     page: Any | None = None
+    diagnostics_written = False
     try:
         _wait_for_health(api_url, deadline, process)
         with sync_playwright() as playwright:
             browser = _launch_browser(playwright)
-            try:
+
+            def record_browser_failure(error: BaseException) -> None:
+                nonlocal diagnostics_written
+                _write_failure_diagnostics(
+                    artifact_dir=artifact_dir,
+                    api_url=api_url,
+                    page=page,
+                    error=error,
+                )
+                diagnostics_written = True
+
+            with _diagnostic_browser(browser, record_browser_failure):
                 page = browser.new_page(viewport={"width": 1440, "height": 950})
                 page.goto(
                     api_url,
@@ -272,16 +335,11 @@ def run(args: argparse.Namespace) -> int:
                 field.fill(args.query)
                 page.get_by_role("button", name="Send", exact=True).click()
 
-                page.get_by_role(
-                    "heading",
-                    name="Review dataset plan",
-                    exact=True,
-                ).wait_for(timeout=_remaining_ms(deadline))
-                page.get_by_role(
-                    "button",
-                    name="Approve plan and extract",
-                    exact=True,
-                ).wait_for(timeout=_remaining_ms(deadline))
+                _wait_for_dataset_plan_review(
+                    page,
+                    api_url=api_url,
+                    deadline=deadline,
+                )
 
                 timeline = page.get_by_label(
                     "Agent activity timeline",
@@ -312,15 +370,14 @@ def run(args: argparse.Namespace) -> int:
                     encoding="utf-8",
                 )
                 _write_page_artifacts(page, artifact_dir, "waiting")
-            finally:
-                browser.close()
     except BaseException as error:
-        _write_failure_diagnostics(
-            artifact_dir=artifact_dir,
-            api_url=api_url,
-            page=page,
-            error=error,
-        )
+        if not diagnostics_written:
+            _write_failure_diagnostics(
+                artifact_dir=artifact_dir,
+                api_url=api_url,
+                page=page,
+                error=error,
+            )
         print(f"FAIL agent activity timeline smoke; diagnostics: {artifact_dir}")
         raise
     finally:
