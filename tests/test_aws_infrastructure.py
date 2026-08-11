@@ -740,6 +740,8 @@ def test_phase2a_recovery_document_is_fixed_and_parameter_free() -> None:
         "/usr/sbin/runuser --user epi-agent-web -- /usr/bin/env -i"
     )
     assert "readonly study_root=/srv/epi-agent/study_data" in command
+    assert command.startswith("exec /usr/bin/bash -Eeuo pipefail <<'BASH'\n")
+    assert command.rstrip().endswith("BASH")
     assert ownership in command
     assert privilege_drop in command
     assert "PATH=/opt/epi-agent/current/.venv/bin:/usr/bin" in command
@@ -759,6 +761,8 @@ def test_phase2a_recovery_document_is_fixed_and_parameter_free() -> None:
     assert "eval " not in command
     assert "bash -c" not in command
     assert "rm -rf" not in command
+    assert "remaining_seconds=$((recovery_deadline - SECONDS))" in command
+    assert "--max-time \"$request_timeout\"" in command
     assert template["Outputs"]["RecoverStudyAccessDocumentName"]["Value"] == {
         "Ref": "EpiAgentRecoverStudyAccessDocument"
     }

@@ -44,7 +44,9 @@ The document runs as the SSM root execution identity and:
    searchable by the service identity;
 5. restarts the existing `epi-agent.service` once; and
 6. waits for local health and readiness to return HTTP 200, failing if the
-   service exits or the fixed deadline expires.
+   service exits or the fixed deadline expires. The command explicitly enters
+   `/usr/bin/bash` before using Bash-only `pipefail` and `SECONDS` behavior;
+   each request and sleep is bounded by time remaining before the deadline.
 
 The document has no caller-controlled parameters, shell fragments, paths,
 users, commands, or environment variables. It does not delete, replace, or
@@ -105,16 +107,20 @@ Implementation follows RED-GREEN TDD. Tests must prove:
    service restart and health/readiness checks;
 3. the validation rejects unreadable or inconsistent registry/package/index
    state before restarting the service;
-4. a real-shell harness beginning with a `root:root`-equivalent mode-`0600`
-   registry and non-writable retained index makes both accessible to the
-   simulated service identity, preserves sentinel content, restarts the
-   service, and reaches the simulated health/readiness gates;
+4. a disposable `python:3.12-slim` Docker integration test begins with real
+   `root:root` mode-`0600` retained study data, runs real `chown` and
+   `runuser` to a real `epi-agent-web` Linux account, proves the service UID
+   validates the registry and index, preserves sentinel content, and reaches
+   stubbed host-only health/readiness gates. Docker is test-only; production
+   remains the native Python/EC2 deployment;
 5. recovery failure prevents the service restart and propagates a nonzero
    result;
 6. the CLI requires the exact stack instance confirmation, selects only the
    stack-provided recovery document, sends no parameters, polls only the new
    command ID, and fails closed on non-success terminal states; and
-7. existing infrastructure, operator CLI, release installer, study installer,
+7. ready responses at or after the fixed deadline are rejected without a
+   120-second test wait; and
+8. existing infrastructure, operator CLI, release installer, study installer,
    shell syntax, and executable smoke gates remain green.
 
 ## Corrected Live Recovery Order

@@ -4,7 +4,7 @@
 
 **Goal:** Add a fixed, parameter-free SSM recovery operation that restores the retained study to `epi-agent-web`, validates access as that user, and returns the current application to health before another release deployment.
 
-**Architecture:** CloudFormation owns one narrowly scoped recovery document with no caller-controlled parameters. The document repairs only `/srv/epi-agent/study_data`, validates the active registry/package/index paths through a fixed `runuser` and `env -i` boundary, then restarts and health-checks the existing service. The pinned operator CLI invokes that stack-provided document only after exact instance confirmation; a real-shell harness tests the inline recovery program without AWS access.
+**Architecture:** CloudFormation owns one narrowly scoped recovery document with no caller-controlled parameters. The document explicitly invokes Bash, repairs only `/srv/epi-agent/study_data`, validates the active registry/package/index paths through a fixed `runuser` and `env -i` boundary, then restarts and health-checks the existing service within a strict deadline. The pinned operator CLI invokes that stack-provided document only after exact instance confirmation; a disposable Linux Docker integration test executes the inline recovery program with real ownership and UID switching, while production remains native Python/EC2.
 
 **Tech Stack:** AWS CloudFormation, AWS Systems Manager Command documents, Bash, Python 3.12, pytest, PyYAML
 
@@ -15,7 +15,7 @@
 - Change ownership only with `chown -R -h epi-agent-web:epi-agent-web /srv/epi-agent/study_data`.
 - Validate retained study access through `/usr/sbin/runuser --user epi-agent-web -- /usr/bin/env -i`.
 - Pass only fixed `PATH`, `LANG`, `LC_ALL`, `PYTHONUTF8`, and `REPORT_AGENT_STUDY_ROOT` values to recovery Python.
-- Restart `epi-agent.service` only after service-user validation succeeds, then require local health and readiness within 120 seconds.
+- Restart `epi-agent.service` only after service-user validation succeeds, then require local health and readiness strictly before the 120-second deadline.
 - Do not delete, replace, reinstall, or modify the active registry, packages, Chroma contents, conversations, checkpoints, artifacts, releases, or other retained EBS data.
 - Do not change IAM policies, EC2, EBS, networking, Route 53, Cognito, systemd units, application schemas, the uploaded study object, or the reviewed `install-study.sh` implementation.
 - The operator CLI must verify account `641379499556`, principal `arn:aws:iam::641379499556:user/xutao-dev`, region `us-east-1`, profile `xutao-dev`, the stack-provided instance ID, and the stack-provided recovery-document name.
@@ -28,7 +28,7 @@
 
 - `infra/aws/phase2a/template.yaml`: declares the parameter-free recovery SSM document and exposes its name.
 - `tests/test_aws_infrastructure.py`: locks the static CloudFormation recovery contract and command ordering.
-- `tests/test_aws_study_access_recovery.py`: executes the real inline SSM shell command with only privileged host commands substituted.
+- `tests/test_aws_study_access_recovery.py`: executes the real inline SSM shell command in disposable `python:3.12-slim` Linux containers using real `chown` and `runuser`; only unavailable `systemctl` and `curl` host boundaries are stubbed.
 - `scripts/smoke_aws_phase2a_template_regressions.py`: keeps the recovery document in the existing executable template smoke gate.
 - `scripts/aws_phase2a.py`: provides the account- and instance-guarded `recover-study-access` operator command and shared SSM polling.
 - `tests/test_aws_phase2a_cli.py`: verifies exact document/instance selection, no parameters, polling, and fail-closed behavior.

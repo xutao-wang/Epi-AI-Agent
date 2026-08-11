@@ -109,6 +109,10 @@ def main() -> None:
     recovery_command = "\n".join(
         recovery_content["mainSteps"][0]["inputs"]["runCommand"]
     )
+    if not recovery_command.startswith("exec /usr/bin/bash -Eeuo pipefail <<'BASH'\n"):
+        raise AssertionError("study access recovery must explicitly invoke Bash")
+    if "remaining_seconds=$((recovery_deadline - SECONDS))" not in recovery_command:
+        raise AssertionError("study access recovery deadline must bound each operation")
     recovery_order = (
         "chown -R -h epi-agent-web:epi-agent-web",
         "/usr/sbin/runuser --user epi-agent-web -- /usr/bin/env -i",

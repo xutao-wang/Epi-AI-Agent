@@ -617,7 +617,7 @@ Resources:
             inputs:
               runCommand:
                 - |
-                  set -Eeuo pipefail
+                  exec /usr/bin/bash -Eeuo pipefail <<'BASH'
                   readonly study_root=/srv/epi-agent/study_data
                   readonly current_python=/opt/epi-agent/current/.venv/bin/python
                   readonly recovery_deadline_seconds=120
@@ -698,18 +698,32 @@ Resources:
                   PY
                   systemctl restart epi-agent.service
                   recovery_deadline=$((SECONDS + recovery_deadline_seconds))
-                  until curl --fail --silent --show-error --max-time 5 \
-                    http://127.0.0.1:8000/api/health >/dev/null \
-                    && curl --fail --silent --show-error --max-time 5 \
-                    http://127.0.0.1:8000/api/readiness \
-                    | /usr/bin/python3.12 -c 'import json, sys; raise SystemExit(0 if json.load(sys.stdin).get("status") == "ready" else 1)'; do
+                  while :; do
+                    remaining_seconds=$((recovery_deadline - SECONDS))
+                    [ "$remaining_seconds" -gt 0 ] || exit 1
+                    request_timeout=$((remaining_seconds < 5 ? remaining_seconds : 5))
+                    if curl --fail --silent --show-error --max-time "$request_timeout" \
+                      http://127.0.0.1:8000/api/health >/dev/null; then
+                      remaining_seconds=$((recovery_deadline - SECONDS))
+                      [ "$remaining_seconds" -gt 0 ] || exit 1
+                      request_timeout=$((remaining_seconds < 5 ? remaining_seconds : 5))
+                      if curl --fail --silent --show-error --max-time "$request_timeout" \
+                        http://127.0.0.1:8000/api/readiness \
+                        | /usr/bin/python3.12 -c 'import json, sys; raise SystemExit(0 if json.load(sys.stdin).get("status") == "ready" else 1)' \
+                        && [ "$SECONDS" -lt "$recovery_deadline" ]; then
+                        break
+                      fi
+                    fi
                     if ! systemctl is-active --quiet epi-agent.service; then
                       systemctl status epi-agent.service --no-pager >&2 || true
                       exit 1
                     fi
-                    [ "$SECONDS" -lt "$recovery_deadline" ] || exit 1
-                    sleep 2
+                    remaining_seconds=$((recovery_deadline - SECONDS))
+                    [ "$remaining_seconds" -gt 0 ] || exit 1
+                    sleep_seconds=$((remaining_seconds < 2 ? remaining_seconds : 2))
+                    sleep "$sleep_seconds"
                   done
+                  BASH
 
   ApplicationDataVolumeLifecycleRole:
     Type: AWS::IAM::Role
