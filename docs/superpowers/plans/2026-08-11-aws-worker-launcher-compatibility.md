@@ -140,7 +140,8 @@ Expected: all parameterized unit cases pass and the smoke prints `AWS service AS
 - [ ] **Step 6: Run the full local regression gate once**
 
 ```bash
-/Users/xutaowang/Desktop/RA\ work/Epi-Agent/Epi-AI-Agent/.venv/bin/python -m pytest \
+OPENAI_API_KEY=test-only-placeholder \
+  /Users/xutaowang/Desktop/RA\ work/Epi-Agent/Epi-AI-Agent/.venv/bin/python -m pytest \
   tests/test_no_study_startup.py tests/test_epi_python_runtime.py \
   tests/test_aws_infrastructure.py tests/test_aws_host_assets.py \
   tests/test_aws_phase2a_cli.py -q
