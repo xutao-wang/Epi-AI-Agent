@@ -16,8 +16,28 @@ class HiddenLocator:
 class NoReviewPage:
     def get_by_role(self, role: str, *, name: str, exact: bool):
         assert role in {"heading", "button"}
-        assert name in {"Review dataset plan", "Approve plan and extract"}
+        assert name in {
+            "Review dataset plan",
+            "Approve & continue",
+            "Approve plan and extract",
+        }
         assert exact is True
+        return HiddenLocator()
+
+
+class VisibleLocator:
+    def is_visible(self, *, timeout: int) -> bool:
+        assert timeout == 100
+        return True
+
+
+class StepwiseReviewPage:
+    def get_by_role(self, role: str, *, name: str, exact: bool):
+        assert exact is True
+        if role == "heading" and name == "Review dataset plan":
+            return VisibleLocator()
+        if role == "button" and name == "Approve & continue":
+            return VisibleLocator()
         return HiddenLocator()
 
 
@@ -67,6 +87,18 @@ def test_review_wait_treats_empty_conversation_history_as_transient() -> None:
         )
 
     assert attempts == 2
+
+
+def test_review_wait_accepts_the_initial_stepwise_review_controls() -> None:
+    def unexpected_state_read(_url: str):
+        raise AssertionError("Review was already visible; API state was unnecessary.")
+
+    smoke._wait_for_dataset_plan_review(
+        StepwiseReviewPage(),
+        api_url="http://unused.test",
+        deadline=time.monotonic() + 60,
+        state_reader=unexpected_state_read,
+    )
 
 
 def test_browser_diagnostics_are_captured_before_browser_closes() -> None:

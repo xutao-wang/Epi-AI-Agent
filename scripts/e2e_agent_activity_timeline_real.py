@@ -104,12 +104,20 @@ def _wait_for_dataset_plan_review(
             name="Review dataset plan",
             exact=True,
         )
-        approve = page.get_by_role(
+        approve_stepwise = page.get_by_role(
+            "button",
+            name="Approve & continue",
+            exact=True,
+        )
+        approve_final = page.get_by_role(
             "button",
             name="Approve plan and extract",
             exact=True,
         )
-        if heading.is_visible(timeout=100) and approve.is_visible(timeout=100):
+        has_review_controls = approve_stepwise.is_visible(
+            timeout=100
+        ) or approve_final.is_visible(timeout=100)
+        if heading.is_visible(timeout=100) and has_review_controls:
             return
 
         try:
