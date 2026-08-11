@@ -601,6 +601,116 @@ Resources:
                   systemctl enable --now nginx.service epi-agent-certificate-renew.timer
                   exec /usr/local/sbin/install-release.sh "$SSM_Bucket" "$SSM_ReleaseKey" "$SSM_ReleaseSha256" "$SSM_ReleaseId" "$SSM_DomainName" "$SSM_CertificateEmail"
 
+  EpiAgentRecoverStudyAccessDocument:
+    Type: AWS::SSM::Document
+    Properties:
+      DocumentType: Command
+      DocumentFormat: YAML
+      Name: epi-agent-recover-study-access
+      UpdateMethod: NewVersion
+      Content:
+        schemaVersion: '2.2'
+        description: Restore retained Epi Agent study access before release deployment.
+        mainSteps:
+          - action: aws:runShellScript
+            name: recoverStudyAccess
+            inputs:
+              runCommand:
+                - |
+                  set -Eeuo pipefail
+                  readonly study_root=/srv/epi-agent/study_data
+                  readonly current_python=/opt/epi-agent/current/.venv/bin/python
+                  readonly recovery_deadline_seconds=120
+                  [ "$(id -u)" -eq 0 ]
+                  [ -d "$study_root" ]
+                  [ -x "$current_python" ]
+                  chown -R -h epi-agent-web:epi-agent-web "$study_root"
+                  /usr/sbin/runuser --user epi-agent-web -- /usr/bin/env -i \
+                    PATH=/opt/epi-agent/current/.venv/bin:/usr/bin \
+                    LANG=C.UTF-8 \
+                    LC_ALL=C.UTF-8 \
+                    PYTHONUTF8=1 \
+                    REPORT_AGENT_STUDY_ROOT=/srv/epi-agent/study_data \
+                    "$current_python" - "$study_root" <<'PY'
+                  import json
+                  import os
+                  from pathlib import Path, PurePosixPath
+                  import re
+                  import sys
+
+                  study_root = Path(sys.argv[1])
+                  registry_path = study_root / "studies" / "registry.json"
+                  if not os.access(registry_path, os.R_OK | os.W_OK):
+                      raise SystemExit("study registry is not readable and writable")
+                  try:
+                      registry = json.loads(registry_path.read_text(encoding="utf-8"))
+                  except (OSError, ValueError) as error:
+                      raise SystemExit(f"study registry is invalid: {error}") from error
+                  active = registry.get("active")
+                  if not isinstance(active, dict) or not active:
+                      raise SystemExit("study registry has no active package")
+                  safe_token = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+                  for study_id, package_version in active.items():
+                      if not isinstance(study_id, str) or not safe_token.fullmatch(study_id):
+                          raise SystemExit("active study ID is invalid")
+                      if not isinstance(package_version, str) or not safe_token.fullmatch(
+                          package_version
+                      ):
+                          raise SystemExit("active study version is invalid")
+                      package_root = (
+                          study_root
+                          / "studies"
+                          / "packages"
+                          / study_id
+                          / package_version
+                      )
+                      manifest_path = package_root / "study-package.json"
+                      try:
+                          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                      except (OSError, ValueError) as error:
+                          raise SystemExit(
+                              f"active study manifest is invalid: {error}"
+                          ) from error
+                      if (
+                          manifest.get("study_id") != study_id
+                          or manifest.get("package_version") != package_version
+                      ):
+                          raise SystemExit("active study manifest does not match registry")
+                      database = manifest.get("database")
+                      index_value = database.get("index") if isinstance(database, dict) else None
+                      if not isinstance(index_value, str):
+                          raise SystemExit("active study index path is missing")
+                      index_relative = PurePosixPath(index_value)
+                      if (
+                          index_relative.is_absolute()
+                          or not index_relative.parts
+                          or any(part in {"", ".", ".."} for part in index_relative.parts)
+                      ):
+                          raise SystemExit("active study index path is unsafe")
+                      index_path = package_root.joinpath(*index_relative.parts)
+                      if not index_path.is_dir() or not os.access(
+                          index_path,
+                          os.R_OK | os.W_OK | os.X_OK,
+                      ):
+                          raise SystemExit(
+                              "active study index is not readable, writable, and searchable"
+                          )
+                  PY
+                  systemctl restart epi-agent.service
+                  recovery_deadline=$((SECONDS + recovery_deadline_seconds))
+                  until curl --fail --silent --show-error --max-time 5 \
+                    http://127.0.0.1:8000/api/health >/dev/null \
+                    && curl --fail --silent --show-error --max-time 5 \
+                    http://127.0.0.1:8000/api/readiness \
+                    | /usr/bin/python3.12 -c 'import json, sys; raise SystemExit(0 if json.load(sys.stdin).get("status") == "ready" else 1)'; do
+                    if ! systemctl is-active --quiet epi-agent.service; then
+                      systemctl status epi-agent.service --no-pager >&2 || true
+                      exit 1
+                    fi
+                    [ "$SECONDS" -lt "$recovery_deadline" ] || exit 1
+                    sleep 2
+                  done
+
   ApplicationDataVolumeLifecycleRole:
     Type: AWS::IAM::Role
     Properties:
@@ -849,3 +959,6 @@ Outputs:
   DeployReleaseDocumentName:
     Description: Name of the SSM Command document used to install releases.
     Value: !Ref EpiAgentDeployReleaseDocument
+  RecoverStudyAccessDocumentName:
+    Description: Parameter-free SSM document for retained study access recovery
+    Value: !Ref EpiAgentRecoverStudyAccessDocument

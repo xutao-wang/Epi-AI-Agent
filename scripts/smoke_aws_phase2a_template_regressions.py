@@ -98,6 +98,33 @@ def main() -> None:
         raise AssertionError("SSM document lifecycle permissions must remain scoped to epi-agent documents")
 
     phase2a = _load("infra/aws/phase2a/template.yaml")
+    recovery = phase2a["Resources"]["EpiAgentRecoverStudyAccessDocument"]["Properties"]
+    if recovery["Name"] != "epi-agent-recover-study-access":
+        raise AssertionError("study access recovery document name changed")
+    if recovery.get("UpdateMethod") != "NewVersion":
+        raise AssertionError("study access recovery updates must create a new version")
+    recovery_content = recovery["Content"]
+    if "parameters" in recovery_content:
+        raise AssertionError("study access recovery must remain parameter-free")
+    recovery_command = "\n".join(
+        recovery_content["mainSteps"][0]["inputs"]["runCommand"]
+    )
+    recovery_order = (
+        "chown -R -h epi-agent-web:epi-agent-web",
+        "/usr/sbin/runuser --user epi-agent-web -- /usr/bin/env -i",
+        "systemctl restart epi-agent.service",
+        "http://127.0.0.1:8000/api/health",
+        "http://127.0.0.1:8000/api/readiness",
+    )
+    positions = [recovery_command.index(token) for token in recovery_order]
+    if positions != sorted(positions):
+        raise AssertionError("study access recovery command order is unsafe")
+    if any(token in recovery_command for token in ("eval ", "bash -c", "rm -rf")):
+        raise AssertionError("study access recovery contains an unsafe shell operation")
+    if phase2a["Outputs"]["RecoverStudyAccessDocumentName"]["Value"] != {
+        "Ref": "EpiAgentRecoverStudyAccessDocument"
+    }:
+        raise AssertionError("study access recovery output does not match its document")
     assert_release_archive_extractor_works(phase2a)
     lifecycle = phase2a["Resources"]["ApplicationDataVolumeLifecyclePolicy"]["Properties"]
     if not re.fullmatch(r"[0-9A-Za-z _-]+", lifecycle["Description"]):

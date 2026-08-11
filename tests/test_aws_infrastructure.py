@@ -714,3 +714,51 @@ def test_phase2a_backup_and_observability_cover_host_failure_modes() -> None:
     assert resources["EpiAgentDeployReleaseDocument"]["Properties"]["UpdateMethod"] == "NewVersion"
     assert template["Outputs"]["ApplicationInstanceId"]["Value"] == {"Ref": "ApplicationInstance"}
     assert template["Outputs"]["DeployReleaseDocumentName"]["Value"] == {"Ref": "EpiAgentDeployReleaseDocument"}
+
+
+def test_phase2a_recovery_document_is_fixed_and_parameter_free() -> None:
+    template = phase2a_template()
+    document = template["Resources"]["EpiAgentRecoverStudyAccessDocument"]
+
+    assert document["Type"] == "AWS::SSM::Document"
+    properties = document["Properties"]
+    assert properties["Name"] == "epi-agent-recover-study-access"
+    assert properties["DocumentType"] == "Command"
+    assert properties["DocumentFormat"] == "YAML"
+    assert properties["UpdateMethod"] == "NewVersion"
+    content = properties["Content"]
+    assert "parameters" not in content
+    assert content["schemaVersion"] == "2.2"
+    step = content["mainSteps"][0]
+    assert step["action"] == "aws:runShellScript"
+    command = "\n".join(step["inputs"]["runCommand"])
+    ownership = (
+        "chown -R -h epi-agent-web:epi-agent-web "
+        '"$study_root"'
+    )
+    privilege_drop = (
+        "/usr/sbin/runuser --user epi-agent-web -- /usr/bin/env -i"
+    )
+    assert "readonly study_root=/srv/epi-agent/study_data" in command
+    assert ownership in command
+    assert privilege_drop in command
+    assert "PATH=/opt/epi-agent/current/.venv/bin:/usr/bin" in command
+    assert "LANG=C.UTF-8" in command
+    assert "LC_ALL=C.UTF-8" in command
+    assert "PYTHONUTF8=1" in command
+    assert "REPORT_AGENT_STUDY_ROOT=/srv/epi-agent/study_data" in command
+    assert command.index(ownership) < command.index(privilege_drop)
+    assert command.index(privilege_drop) < command.index(
+        "systemctl restart epi-agent.service"
+    )
+    assert command.index("systemctl restart epi-agent.service") < command.index(
+        "http://127.0.0.1:8000/api/health"
+    )
+    assert "OPENAI_API_KEY" not in command
+    assert "AWS_ACCESS_KEY_ID" not in command
+    assert "eval " not in command
+    assert "bash -c" not in command
+    assert "rm -rf" not in command
+    assert template["Outputs"]["RecoverStudyAccessDocumentName"]["Value"] == {
+        "Ref": "EpiAgentRecoverStudyAccessDocument"
+    }
