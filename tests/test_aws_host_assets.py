@@ -171,6 +171,27 @@ def test_study_installer_verifies_archive_and_preserves_prior_versions() -> None
     assert "package_version" in source
     assert 'study_root / "studies" / "packages"' in source
     assert "rm -rf /srv/epi-agent" not in source
+    ownership_repair = (
+        'chown -R -h epi-agent-web:epi-agent-web "$study_root" "$staging_dir"'
+    )
+    assert ownership_repair in source
+    assert "readonly -a study_python=(" in source
+    assert "/usr/sbin/runuser" in source
+    assert "--user epi-agent-web" in source
+    assert "/usr/bin/env" in source
+    assert "-i" in source
+    assert "PATH=/opt/epi-agent/current/.venv/bin:/usr/bin" in source
+    assert "LANG=C.UTF-8" in source
+    assert "LC_ALL=C.UTF-8" in source
+    assert "PYTHONUTF8=1" in source
+    assert "REPORT_AGENT_STUDY_ROOT=/srv/epi-agent/study_data" in source
+    assert source.count('"${study_python[@]}"') == 2
+    assert source.index("sha256sum -c") < source.index(ownership_repair)
+    assert source.index(ownership_repair) < source.index('"${study_python[@]}"')
+    assert "OPENAI_API_KEY" not in source
+    assert "AWS_ACCESS_KEY_ID" not in source
+    assert "eval " not in source
+    assert "bash -c" not in source
 
 
 def test_certificate_and_cloudwatch_assets_are_present() -> None:

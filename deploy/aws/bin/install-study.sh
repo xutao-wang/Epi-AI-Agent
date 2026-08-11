@@ -7,6 +7,19 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 readonly PATH
 
 readonly study_root=/srv/epi-agent/study_data
+readonly -a study_python=(
+  /usr/sbin/runuser
+  --user epi-agent-web
+  --
+  /usr/bin/env
+  -i
+  PATH=/opt/epi-agent/current/.venv/bin:/usr/bin
+  LANG=C.UTF-8
+  LC_ALL=C.UTF-8
+  PYTHONUTF8=1
+  REPORT_AGENT_STUDY_ROOT=/srv/epi-agent/study_data
+  /opt/epi-agent/current/.venv/bin/python
+)
 
 usage() {
   printf '%s\n' 'usage: install-study.sh <bucket> <study-key> <sha256> <study-id> <version>' >&2
@@ -56,11 +69,11 @@ archive_path="$staging_dir/study.tar.gz"
 
 aws s3 cp "s3://$bucket/$study_key" "$archive_path"
 printf '%s  %s\n' "$study_sha256" "$archive_path" | sha256sum -c -
-REPORT_AGENT_STUDY_ROOT=/srv/epi-agent/study_data \
-  /opt/epi-agent/current/.venv/bin/python /opt/epi-agent/current/study_installer.py \
+chown -R -h epi-agent-web:epi-agent-web "$study_root" "$staging_dir"
+"${study_python[@]}" /opt/epi-agent/current/study_installer.py \
   "--study" "$archive_path"
 
-/opt/epi-agent/current/.venv/bin/python - "$study_root" "$study_id" "$package_version" <<'PY'
+"${study_python[@]}" - "$study_root" "$study_id" "$package_version" <<'PY'
 import json
 from pathlib import Path
 import sys
