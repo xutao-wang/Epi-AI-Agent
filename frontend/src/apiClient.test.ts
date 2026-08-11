@@ -47,6 +47,28 @@ const threadState: ApiThreadState = {
     updated_at: null,
   },
   conversation: [],
+  activity_runs: [
+    {
+      id: "run-1",
+      thread_id: "thread-1",
+      user_message_id: "user-1",
+      state: "running",
+      activities: [
+        {
+          id: "activity-1",
+          sequence: 1,
+          label: "Understanding your request",
+          status: "running",
+          tool_name: null,
+          tool_call_id: null,
+          created_at: "2026-08-11T00:00:00+00:00",
+          updated_at: "2026-08-11T00:00:00+00:00",
+        },
+      ],
+      created_at: "2026-08-11T00:00:00+00:00",
+      updated_at: "2026-08-11T00:00:00+00:00",
+    },
+  ],
   active_interrupt: null,
   runtime_settings: null,
   runtime_settings_locked: false,

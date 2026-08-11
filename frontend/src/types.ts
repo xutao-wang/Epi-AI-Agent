@@ -7,6 +7,36 @@ export type RunState =
   | "error"
   | "timeout";
 
+export type ActivityItemStatus = "running" | "completed" | "waiting";
+
+export type ActivityRunState =
+  | "running"
+  | "waiting"
+  | "completed"
+  | "cancelled"
+  | "error";
+
+export interface ActivityItem {
+  id: string;
+  sequence: number;
+  label: string;
+  status: ActivityItemStatus;
+  tool_name: string | null;
+  tool_call_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ActivityRun {
+  id: string;
+  thread_id: string;
+  user_message_id: string;
+  state: ActivityRunState;
+  activities: ActivityItem[];
+  created_at: string;
+  updated_at: string;
+}
+
 export interface RunStatus {
   state: RunState;
   steps: number;
@@ -377,6 +407,7 @@ export interface ApiThreadState {
   thread_id: string;
   run: RunStatus;
   conversation: ConversationMessage[];
+  activity_runs: ActivityRun[];
   active_interrupt: ActiveInterrupt | null;
   runtime_settings: RuntimeSettings | null;
   runtime_settings_locked: boolean;
