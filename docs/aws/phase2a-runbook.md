@@ -85,8 +85,9 @@ python scripts/aws_phase2a.py deploy-release releases/SHA.tar.gz SHA256 RELEASE_
 
 `recover-study-access` is a separately authorized, parameter-free recovery
 operation. Run it only after its CloudFormation change set is complete and the
-instance is SSM Online. Record its new command ID; on any non-success terminal
-state, inspect that invocation once, do not retry the command ID, stop the
+instance is SSM Online. Record the emitted
+`study access recovery command ID: COMMAND_ID` line; on any non-success terminal
+state, inspect that exact invocation once, do not retry the command ID, stop the
 instance, and return to source diagnosis.
 
 Replace only the uppercase placeholders after reviewing the matching change set

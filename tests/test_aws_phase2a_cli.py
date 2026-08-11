@@ -1,5 +1,7 @@
+import builtins
 import importlib.util
 from pathlib import Path
+import pytest
 spec=importlib.util.spec_from_file_location("cli",Path(__file__).parents[1]/"scripts/aws_phase2a.py"); cli=importlib.util.module_from_spec(spec); spec.loader.exec_module(cli)
 class R:
  def __init__(self,out): self.out=out; self.calls=[]
@@ -58,7 +60,7 @@ def test_all_aws_commands_use_immutable_target_flags():
  s=_source(); assert 'EXPECTED_PROFILE="xutao-dev"' in s and 'EXPECTED_REGION="us-east-1"' in s and '"--profile",EXPECTED_PROFILE,"--region",EXPECTED_REGION' in s
 def test_mutating_helpers_guard_identity_first():
  s=_source()
- for name in ("plan(","plan_bootstrap(","execute(","execute_bootstrap(","upload(","lifecycle(","deploy(","recover_study_access("):
+ for name in ("plan(","plan_bootstrap(","execute(","execute_bootstrap(","upload(","lifecycle(","deploy("):
   start=s.index("def "+name); assert "require_expected_identity(r)" in s[start:start+500]
 
 def test_plan_stack_parser_requires_application_parameters():
@@ -90,6 +92,8 @@ def test_deploy_retries_transient_invocation_then_succeeds(monkeypatch):
  monkeypatch.setattr(cli,"outputs",lambda r:{"ApplicationBucketName":"b","DeployReleaseDocumentName":"d","ApplicationInstanceId":"i"})
  monkeypatch.setattr(cli.time,"sleep",lambda seconds:sleeps.append(seconds))
  cli.deploy(SequenceRunner(),"releases/a.tgz","a"*64,"b"*40,"epiagent.org","ops@example.org")
+ assert sum("send-command" in call for call in calls)==1
+ assert sum("get-command-invocation" in call for call in calls)==3
  assert len(sleeps)==2
 
 def test_plan_rejects_access_denied_before_change_set(monkeypatch):
@@ -108,24 +112,55 @@ def test_plan_rejects_access_denied_before_change_set(monkeypatch):
 def test_plan_requires_validation_error_and_nonexistence_phrase():
  s=_source(); assert '"does not exist" not in (probe.stderr or "").lower() or "validationerror" not in (probe.stderr or "").lower()' in s
 
-def test_recover_study_access_uses_stack_document_without_parameters(monkeypatch):
+def test_recover_study_access_uses_stack_document_without_parameters(monkeypatch,capsys):
  import subprocess
- calls=[]
+ calls=[]; events=[]
  class SequenceRunner:
   def run(self,argv,*,capture_output=True):
    calls.append(list(argv))
    if "get-caller-identity" in argv:return subprocess.CompletedProcess(argv,0,'{"Account":"641379499556","Arn":"arn:aws:iam::641379499556:user/xutao-dev"}',"")
-   if "send-command" in argv:return subprocess.CompletedProcess(argv,0,'{"Command":{"CommandId":"new-recovery-command"}}',"")
-   if "get-command-invocation" in argv:return subprocess.CompletedProcess(argv,0,'{"Status":"Success"}',"")
+   if "send-command" in argv:
+    events.append("send")
+    return subprocess.CompletedProcess(argv,0,'{"Command":{"CommandId":"new-recovery-command"}}',"")
+   if "get-command-invocation" in argv:
+    events.append("poll")
+    return subprocess.CompletedProcess(argv,0,'{"Status":"Success"}',"")
    raise AssertionError(argv)
+ def recording_print(message,*,flush=False):
+  events.append(("print",message,flush))
+  builtins.print(message,flush=flush)
  monkeypatch.setattr(cli,"outputs",lambda r:{"ApplicationInstanceId":"i-0f9ed9c133ea2358b","RecoverStudyAccessDocumentName":"epi-agent-recover-study-access"})
+ monkeypatch.setattr(cli,"print",recording_print,raising=False)
  cli.recover_study_access(SequenceRunner(),"i-0f9ed9c133ea2358b")
  sent=next(call for call in calls if "send-command" in call)
  assert sent[sent.index("--document-name")+1]=="epi-agent-recover-study-access"
  assert sent[sent.index("--instance-ids")+1]=="i-0f9ed9c133ea2358b"
  assert "--parameters" not in sent
+ assert sum("send-command" in call for call in calls)==1
  polled=next(call for call in calls if "get-command-invocation" in call)
  assert polled[polled.index("--command-id")+1]=="new-recovery-command"
+ assert events==["send",("print","study access recovery command ID: new-recovery-command",True),"poll"]
+ assert capsys.readouterr().out=="study access recovery command ID: new-recovery-command\n"
+
+def test_recover_study_access_checks_identity_before_outputs_and_send(monkeypatch):
+ import subprocess
+ events=[]
+ class OrderedRunner:
+  def run(self,argv,*,capture_output=True):
+   if "get-caller-identity" in argv:
+    events.append("identity")
+    return subprocess.CompletedProcess(argv,0,'{"Account":"641379499556","Arn":"arn:aws:iam::641379499556:user/xutao-dev"}',"")
+   if "send-command" in argv:
+    events.append("send")
+    return subprocess.CompletedProcess(argv,0,'{"Command":{"CommandId":"ordered-command"}}',"")
+   if "get-command-invocation" in argv:return subprocess.CompletedProcess(argv,0,'{"Status":"Success"}',"")
+   raise AssertionError(argv)
+ def ordered_outputs(r):
+  events.append("outputs")
+  return {"ApplicationInstanceId":"i-0f9ed9c133ea2358b","RecoverStudyAccessDocumentName":"epi-agent-recover-study-access"}
+ monkeypatch.setattr(cli,"outputs",ordered_outputs)
+ cli.recover_study_access(OrderedRunner(),"i-0f9ed9c133ea2358b")
+ assert events[:3]==["identity","outputs","send"]
 
 def test_recover_study_access_rejects_wrong_instance_before_send(monkeypatch):
  import pytest, subprocess
@@ -139,18 +174,40 @@ def test_recover_study_access_rejects_wrong_instance_before_send(monkeypatch):
   cli.recover_study_access(IdentityRunner(),"i-wrong")
  assert not any("send-command" in call for call in calls)
 
-def test_recover_study_access_fails_closed_on_new_terminal_failure(monkeypatch):
- import pytest, subprocess
+@pytest.mark.parametrize("status",["Failed","TimedOut","Cancelled"])
+def test_recover_study_access_fails_closed_on_new_terminal_failure(monkeypatch,capsys,status):
+ import subprocess
  calls=[]
  class FailedRunner:
   def run(self,argv,*,capture_output=True):
    calls.append(list(argv))
    if "get-caller-identity" in argv:return subprocess.CompletedProcess(argv,0,'{"Account":"641379499556","Arn":"arn:aws:iam::641379499556:user/xutao-dev"}',"")
    if "send-command" in argv:return subprocess.CompletedProcess(argv,0,'{"Command":{"CommandId":"failed-new-command"}}',"")
-   if "get-command-invocation" in argv:return subprocess.CompletedProcess(argv,0,'{"Status":"Failed"}',"")
+   if "get-command-invocation" in argv:return subprocess.CompletedProcess(argv,0,'{"Status":"'+status+'"}',"")
    raise AssertionError(argv)
  monkeypatch.setattr(cli,"outputs",lambda r:{"ApplicationInstanceId":"i-0f9ed9c133ea2358b","RecoverStudyAccessDocumentName":"epi-agent-recover-study-access"})
  with pytest.raises(cli.OperatorError,match="study access recovery command did not succeed"):
   cli.recover_study_access(FailedRunner(),"i-0f9ed9c133ea2358b")
  assert sum("send-command" in call for call in calls)==1
  assert sum("get-command-invocation" in call for call in calls)==1
+ assert capsys.readouterr().out=="study access recovery command ID: failed-new-command\n"
+
+def test_recover_study_access_times_out_without_resending(monkeypatch,capsys):
+ import subprocess
+ calls=[]; sleeps=[]; moments=iter((0,0,cli.DEPLOY_TIMEOUT_SECONDS+1))
+ class TimeoutRunner:
+  def run(self,argv,*,capture_output=True):
+   calls.append(list(argv))
+   if "get-caller-identity" in argv:return subprocess.CompletedProcess(argv,0,'{"Account":"641379499556","Arn":"arn:aws:iam::641379499556:user/xutao-dev"}',"")
+   if "send-command" in argv:return subprocess.CompletedProcess(argv,0,'{"Command":{"CommandId":"timeout-command"}}',"")
+   if "get-command-invocation" in argv:return subprocess.CompletedProcess(argv,0,'{"Status":"InProgress"}',"")
+   raise AssertionError(argv)
+ monkeypatch.setattr(cli,"outputs",lambda r:{"ApplicationInstanceId":"i-0f9ed9c133ea2358b","RecoverStudyAccessDocumentName":"epi-agent-recover-study-access"})
+ monkeypatch.setattr(cli.time,"monotonic",lambda:next(moments))
+ monkeypatch.setattr(cli.time,"sleep",lambda seconds:sleeps.append(seconds))
+ with pytest.raises(cli.OperatorError,match="study access recovery command timeout-command timed out with last status InProgress"):
+  cli.recover_study_access(TimeoutRunner(),"i-0f9ed9c133ea2358b")
+ assert sum("send-command" in call for call in calls)==1
+ assert sum("get-command-invocation" in call for call in calls)==1
+ assert sleeps==[cli.POLL_INTERVAL_SECONDS]
+ assert capsys.readouterr().out=="study access recovery command ID: timeout-command\n"

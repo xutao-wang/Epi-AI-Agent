@@ -116,6 +116,7 @@ def recover_study_access(r:Runner,confirm:str)->None:
  if not document or not instance: raise OperatorError("required recovery outputs missing")
  if confirm!=instance: raise OperatorError("confirm the exact stack instance ID")
  sent=run_json(r,aws("ssm","send-command","--document-name",document,"--instance-ids",instance)); command=sent["Command"]["CommandId"]
+ print(f"study access recovery command ID: {command}",flush=True)
  wait_for_ssm_command(r,command,instance,"study access recovery")
 def main(argv=None, runner:Runner|None=None)->int:
  r=runner or SubprocessRunner(); p=argparse.ArgumentParser(); s=p.add_subparsers(dest="cmd",required=True)
