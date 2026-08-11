@@ -16,13 +16,21 @@ import traceback
 from typing import Any
 
 import requests
-from playwright.sync_api import Page, sync_playwright
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 MESSAGE_LABEL = "Ask a question about your dataset!"
+
+
+def _launch_browser(playwright: Any) -> Any:
+    try:
+        return playwright.chromium.launch()
+    except Exception as error:
+        if "Executable doesn't exist" not in str(error):
+            raise
+        return playwright.chromium.launch(channel="chrome")
 
 
 def _find_port(host: str, preferred: int) -> int:
@@ -84,7 +92,7 @@ def _write_failure_diagnostics(
     *,
     artifact_dir: Path,
     api_url: str,
-    page: Page | None,
+    page: Any | None,
     error: BaseException,
 ) -> None:
     (artifact_dir / "failure.txt").write_text(
@@ -172,7 +180,9 @@ def run(args: argparse.Namespace) -> int:
         stderr=subprocess.STDOUT,
         text=True,
     )
-    page: Page | None = None
+    from playwright.sync_api import sync_playwright
+
+    page: Any | None = None
     try:
         _wait_for_health(api_url, deadline, process)
         attachment = artifact_dir / "cancel-smoke.csv"
@@ -181,7 +191,7 @@ def run(args: argparse.Namespace) -> int:
             encoding="utf-8",
         )
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch()
+            browser = _launch_browser(playwright)
             try:
                 page = browser.new_page()
                 page.goto(
