@@ -101,6 +101,37 @@ def test_review_wait_accepts_the_initial_stepwise_review_controls() -> None:
     )
 
 
+def test_timeline_label_wait_accepts_repeated_matching_rows() -> None:
+    wait_for_label = getattr(smoke, "_wait_for_timeline_label", None)
+    assert wait_for_label is not None
+    observed: list[tuple[str, int]] = []
+
+    class FirstMatch:
+        def wait_for(self, *, timeout: int) -> None:
+            observed.append(("first", timeout))
+
+    class MultipleMatches:
+        @property
+        def first(self):
+            return FirstMatch()
+
+    class Timeline:
+        def get_by_text(self, label: str, *, exact: bool):
+            assert label == "Searching the data catalog"
+            assert exact is True
+            return MultipleMatches()
+
+    wait_for_label(
+        Timeline(),
+        "Searching the data catalog",
+        deadline=time.monotonic() + 1,
+    )
+
+    assert len(observed) == 1
+    assert observed[0][0] == "first"
+    assert observed[0][1] > 0
+
+
 def test_browser_diagnostics_are_captured_before_browser_closes() -> None:
     diagnostic_browser = getattr(smoke, "_diagnostic_browser", None)
     assert diagnostic_browser is not None

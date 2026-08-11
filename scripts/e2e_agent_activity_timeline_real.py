@@ -144,6 +144,17 @@ def _wait_for_dataset_plan_review(
     raise TimeoutError("Timed out waiting for dataset-plan review.")
 
 
+def _wait_for_timeline_label(
+    timeline: Any,
+    label: str,
+    *,
+    deadline: float,
+) -> None:
+    timeline.get_by_text(label, exact=True).first.wait_for(
+        timeout=_remaining_ms(deadline)
+    )
+
+
 @contextmanager
 def _diagnostic_browser(browser: Any, record_failure: Any):
     try:
@@ -360,14 +371,16 @@ def run(args: argparse.Namespace) -> int:
                     exact=True,
                 ).last
                 timeline.wait_for(timeout=_remaining_ms(deadline))
-                timeline.get_by_text(
+                _wait_for_timeline_label(
+                    timeline,
                     "Searching the data catalog",
-                    exact=True,
-                ).wait_for(timeout=_remaining_ms(deadline))
-                timeline.get_by_text(
+                    deadline=deadline,
+                )
+                _wait_for_timeline_label(
+                    timeline,
                     "Waiting for dataset plan review",
-                    exact=True,
-                ).wait_for(timeout=_remaining_ms(deadline))
+                    deadline=deadline,
+                )
                 if timeline.locator("code").filter(has_text="dbrag-").count() < 1:
                     raise AssertionError(
                         "Expanded activity timeline did not show a DB-RAG tool name."
