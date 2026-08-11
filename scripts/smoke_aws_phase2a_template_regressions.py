@@ -41,6 +41,19 @@ def main() -> None:
     route53 = next(statement for statement in statements if statement["Sid"] == "ManageDnsRecords")
     if "route53:GetHostedZone" not in route53["Action"]:
         raise AssertionError("CloudFormation cannot verify the hosted zone before changing DNS")
+    documents = next(
+        statement for statement in statements if statement["Sid"] == "ManageEpiAgentSsmDocuments"
+    )
+    required_document_actions = {
+        "ssm:GetDocument",
+        "ssm:UpdateDocumentDefaultVersion",
+    }
+    if not required_document_actions <= set(documents["Action"]):
+        raise AssertionError("CloudFormation cannot read and select the current SSM document version")
+    if documents["Resource"] != {
+        "Fn::Sub": "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:document/epi-agent-*"
+    }:
+        raise AssertionError("SSM document lifecycle permissions must remain scoped to epi-agent documents")
 
     phase2a = _load("infra/aws/phase2a/template.yaml")
     lifecycle = phase2a["Resources"]["ApplicationDataVolumeLifecyclePolicy"]["Properties"]

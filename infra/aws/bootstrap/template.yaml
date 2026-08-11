@@ -300,8 +300,13 @@ Resources:
             Action:
               - ssm:CreateDocument
               - ssm:UpdateDocument
+              - ssm:UpdateDocumentDefaultVersion
               - ssm:DeleteDocument
               - ssm:DescribeDocument
+              - ssm:GetDocument
+              - ssm:AddTagsToResource
+              - ssm:RemoveTagsFromResource
+              - ssm:ListTagsForResource
             Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:document/epi-agent-*
           - Sid: ManageEpiAgentInstanceProfiles
             Effect: Allow

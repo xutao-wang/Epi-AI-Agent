@@ -174,6 +174,30 @@ def test_bootstrap_execution_policy_is_limited_to_phase_2a_services_and_resource
         assert excluded not in rendered
 
 
+def test_bootstrap_execution_policy_manages_the_complete_document_lifecycle() -> None:
+    statements = bootstrap_template()["Resources"]["CloudFormationExecutionPolicy"]["Properties"][
+        "PolicyDocument"
+    ]["Statement"]
+    documents = next(
+        statement for statement in statements if statement["Sid"] == "ManageEpiAgentSsmDocuments"
+    )
+
+    assert documents["Action"] == [
+        "ssm:CreateDocument",
+        "ssm:UpdateDocument",
+        "ssm:UpdateDocumentDefaultVersion",
+        "ssm:DeleteDocument",
+        "ssm:DescribeDocument",
+        "ssm:GetDocument",
+        "ssm:AddTagsToResource",
+        "ssm:RemoveTagsFromResource",
+        "ssm:ListTagsForResource",
+    ]
+    assert documents["Resource"] == {
+        "Fn::Sub": "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:document/epi-agent-*"
+    }
+
+
 def test_bootstrap_workload_boundary_limits_workload_roles_without_iam_or_sts() -> None:
     template = bootstrap_template()
     resources = template["Resources"]
