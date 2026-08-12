@@ -46,7 +46,19 @@ def release_project(tmp_path: Path) -> Path:
 
     files = {
         "api/app.py": "print('tracked application')\n",
-        "frontend/dist/build-manifest.json": '{"assets": ["app.js"]}\n',
+        "frontend/index.html": '<div id="root"></div>\n',
+        "frontend/package.json": '{"scripts":{"build":"vite build"}}\n',
+        "frontend/package-lock.json": json.dumps(
+            {
+                "lockfileVersion": 3,
+                "packages": {"node_modules/vite": {"version": "7.3.5"}},
+            }
+        )
+        + "\n",
+        "frontend/tsconfig.json": "{}\n",
+        "frontend/tsconfig.node.json": "{}\n",
+        "frontend/vite.config.ts": "export default {};\n",
+        "frontend/src/main.tsx": "console.log('tracked source');\n",
         "frontend/dist/app.js": "console.log('tracked frontend');\n",
         ".env": "SECRET=never-release\n",
         "runtime/state.db": "mutable runtime data\n",
@@ -57,6 +69,27 @@ def release_project(tmp_path: Path) -> Path:
         path = project_root / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(contents)
+    frontend_inputs = (
+        "frontend/index.html",
+        "frontend/package-lock.json",
+        "frontend/package.json",
+        "frontend/src/main.tsx",
+        "frontend/tsconfig.json",
+        "frontend/tsconfig.node.json",
+        "frontend/vite.config.ts",
+    )
+    manifest = {
+        "built_at": "2026-08-11T00:00:00+00:00",
+        "source_sha256": {
+            relative_path: hashlib.sha256(
+                (project_root / relative_path).read_bytes()
+            ).hexdigest()
+            for relative_path in frontend_inputs
+        },
+        "vite_version": "7.3.5",
+    }
+    manifest_path = project_root / "frontend/dist/build-manifest.json"
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n")
     git(project_root, "add", ".")
     git(project_root, "commit", "-qm", "initial release fixture")
     (project_root / "untracked.txt").write_text("not versioned\n")
@@ -164,3 +197,129 @@ def test_same_commit_produces_byte_identical_archive_and_sidecars(
     second = builder.build_release(release_project, tmp_path / "two")
 
     assert [path.read_bytes() for path in first] == [path.read_bytes() for path in second]
+
+
+def test_stale_frontend_source_is_rejected_before_archive_write(
+    release_project: Path, tmp_path: Path
+) -> None:
+    builder = load_builder()
+    (release_project / "frontend/src/main.tsx").write_text(
+        "console.log('changed after build');\n"
+    )
+    git(release_project, "add", "frontend/src/main.tsx")
+    git(release_project, "commit", "-qm", "change frontend without rebuilding")
+    output_dir = tmp_path / "dist"
+
+    with pytest.raises(
+        builder.ReleaseBuildError,
+        match="does not match current frontend inputs",
+    ):
+        builder.build_release(release_project, output_dir)
+
+    assert not output_dir.exists() or not list(output_dir.iterdir())
+
+
+def test_new_tracked_frontend_source_missing_from_manifest_is_rejected(
+    release_project: Path, tmp_path: Path
+) -> None:
+    builder = load_builder()
+    new_source = release_project / "frontend/src/NewPanel.tsx"
+    new_source.write_text("export const NewPanel = () => null;\n")
+    git(release_project, "add", "frontend/src/NewPanel.tsx")
+    git(release_project, "commit", "-qm", "add frontend source without rebuilding")
+
+    with pytest.raises(
+        builder.ReleaseBuildError,
+        match="does not match current frontend inputs",
+    ):
+        builder.build_release(release_project, tmp_path / "dist")
+
+
+def test_removed_frontend_source_left_in_manifest_is_rejected(
+    release_project: Path, tmp_path: Path
+) -> None:
+    builder = load_builder()
+    git(release_project, "rm", "-q", "frontend/src/main.tsx")
+    git(release_project, "commit", "-qm", "remove frontend source without rebuilding")
+
+    with pytest.raises(
+        builder.ReleaseBuildError,
+        match="does not match current frontend inputs",
+    ):
+        builder.build_release(release_project, tmp_path / "dist")
+
+
+def test_wrong_manifest_vite_version_is_rejected(
+    release_project: Path, tmp_path: Path
+) -> None:
+    builder = load_builder()
+    manifest_path = release_project / "frontend/dist/build-manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["vite_version"] = "0.0.0"
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n")
+    git(release_project, "add", "frontend/dist/build-manifest.json")
+    git(release_project, "commit", "-qm", "corrupt recorded vite version")
+
+    with pytest.raises(
+        builder.ReleaseBuildError,
+        match="does not match current frontend inputs",
+    ):
+        builder.build_release(release_project, tmp_path / "dist")
+
+
+def test_invalid_frontend_manifest_is_rejected(
+    release_project: Path, tmp_path: Path
+) -> None:
+    builder = load_builder()
+    manifest_path = release_project / "frontend/dist/build-manifest.json"
+    manifest_path.write_text("{not-json}\n")
+    git(release_project, "add", "frontend/dist/build-manifest.json")
+    git(release_project, "commit", "-qm", "corrupt frontend manifest JSON")
+
+    with pytest.raises(builder.ReleaseBuildError, match="manifest is invalid"):
+        builder.build_release(release_project, tmp_path / "dist")
+
+
+def test_manifest_writer_refreshes_hashes_for_current_tracked_inputs(
+    release_project: Path,
+) -> None:
+    builder = load_builder()
+    source_path = release_project / "frontend/src/main.tsx"
+    source_path.write_text("console.log('new build input');\n")
+    git(release_project, "add", "frontend/src/main.tsx")
+
+    assert hasattr(builder, "write_frontend_build_manifest"), (
+        "release builder must expose a frontend manifest writer"
+    )
+    manifest_path = builder.write_frontend_build_manifest(release_project)
+    manifest = json.loads(manifest_path.read_text())
+
+    assert manifest["vite_version"] == "7.3.5"
+    assert manifest["source_sha256"]["frontend/src/main.tsx"] == hashlib.sha256(
+        source_path.read_bytes()
+    ).hexdigest()
+
+
+def test_cli_can_refresh_manifest_without_building_an_archive(
+    release_project: Path,
+) -> None:
+    source_path = release_project / "frontend/src/main.tsx"
+    source_path.write_text("console.log('refresh through CLI');\n")
+    git(release_project, "add", "frontend/src/main.tsx")
+
+    completed = subprocess.run(
+        [sys.executable, str(BUILDER_PATH), "--write-frontend-manifest"],
+        cwd=release_project,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+    manifest = json.loads(
+        (release_project / "frontend/dist/build-manifest.json").read_text()
+    )
+    assert manifest["source_sha256"]["frontend/src/main.tsx"] == hashlib.sha256(
+        source_path.read_bytes()
+    ).hexdigest()
+    assert not (release_project / "dist/aws").exists()

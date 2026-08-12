@@ -24,6 +24,16 @@ PYTHON_VERSION = "3.12"
 COMMIT_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 EXCLUDED_TOP_LEVEL = {".git", "runtime", "study_data"}
 FRONTEND_MANIFEST_PATH = PurePosixPath("frontend/dist/build-manifest.json")
+FRONTEND_BUILD_INPUTS = frozenset(
+    {
+        PurePosixPath("frontend/index.html"),
+        PurePosixPath("frontend/package-lock.json"),
+        PurePosixPath("frontend/package.json"),
+        PurePosixPath("frontend/tsconfig.json"),
+        PurePosixPath("frontend/tsconfig.node.json"),
+        PurePosixPath("frontend/vite.config.ts"),
+    }
+)
 
 
 class ReleaseBuildError(RuntimeError):
@@ -94,13 +104,119 @@ def fixed_tar_info(name: str, size: int, executable: bool) -> tarfile.TarInfo:
     return info
 
 
-def frontend_manifest_sha256(project_root: Path, release_files: list[PurePosixPath]) -> str:
+def tracked_release_files(project_root: Path) -> list[PurePosixPath]:
+    tracked = git_output(project_root, "ls-files", "-z").split("\0")
+    tracked_paths = sorted(
+        (safe_archive_path(value) for value in tracked if value),
+        key=lambda path: path.as_posix(),
+    )
+    return [path for path in tracked_paths if include_path(path)]
+
+
+def frontend_source_paths(
+    release_files: list[PurePosixPath],
+) -> list[PurePosixPath]:
+    tracked = set(release_files)
+    missing = sorted(
+        FRONTEND_BUILD_INPUTS - tracked,
+        key=lambda path: path.as_posix(),
+    )
+    if missing:
+        names = ", ".join(path.as_posix() for path in missing)
+        raise ReleaseBuildError(f"required frontend build inputs are not tracked: {names}")
+    return sorted(
+        (
+            path
+            for path in tracked
+            if path in FRONTEND_BUILD_INPUTS
+            or path.parts[:2] == ("frontend", "src")
+        ),
+        key=lambda path: path.as_posix(),
+    )
+
+
+def vite_version(project_root: Path) -> str:
+    try:
+        lock = json.loads(
+            (project_root / "frontend/package-lock.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        version = lock["packages"]["node_modules/vite"]["version"]
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise ReleaseBuildError(
+            "frontend package lock has no pinned Vite version"
+        ) from error
+    if not isinstance(version, str) or not version.strip():
+        raise ReleaseBuildError("frontend package lock has no pinned Vite version")
+    return version
+
+
+def expected_frontend_source_sha256(
+    project_root: Path,
+    release_files: list[PurePosixPath],
+) -> dict[str, str]:
+    return {
+        path.as_posix(): hashlib.sha256(
+            (project_root / path).read_bytes()
+        ).hexdigest()
+        for path in frontend_source_paths(release_files)
+    }
+
+
+def validate_frontend_build_manifest(
+    project_root: Path,
+    release_files: list[PurePosixPath],
+) -> str:
+    manifest_path = project_root / FRONTEND_MANIFEST_PATH
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise ReleaseBuildError("frontend build manifest is invalid") from error
+    expected_sources = expected_frontend_source_sha256(
+        project_root,
+        release_files,
+    )
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("source_sha256") != expected_sources
+        or manifest.get("vite_version") != vite_version(project_root)
+    ):
+        raise ReleaseBuildError(
+            "frontend build manifest does not match current frontend inputs"
+        )
+    return hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+
+
+def write_frontend_build_manifest(project_root: Path) -> Path:
+    project_root = project_root.resolve()
+    release_files = tracked_release_files(project_root)
+    manifest_path = project_root / FRONTEND_MANIFEST_PATH
+    payload = {
+        "built_at": datetime.now(timezone.utc).isoformat(),
+        "source_sha256": expected_frontend_source_sha256(
+            project_root,
+            release_files,
+        ),
+        "vite_version": vite_version(project_root),
+    }
+    write_atomically(
+        manifest_path,
+        (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode(),
+    )
+    return manifest_path
+
+
+def frontend_manifest_sha256(
+    project_root: Path,
+    release_files: list[PurePosixPath],
+) -> str:
     if FRONTEND_MANIFEST_PATH not in release_files:
         raise ReleaseBuildError("frontend/dist/build-manifest.json must be a tracked regular file")
     manifest_path = project_root / FRONTEND_MANIFEST_PATH
     if not manifest_path.is_file():
         raise ReleaseBuildError("frontend/dist/build-manifest.json must be a tracked regular file")
-    return hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    return validate_frontend_build_manifest(project_root, release_files)
 
 
 def commit_created_at(project_root: Path) -> str:
@@ -138,11 +254,7 @@ def build_release(project_root: Path, output_dir: Path) -> tuple[Path, Path, Pat
         raise ReleaseBuildError(f"Git returned an invalid commit identity: {commit_sha!r}")
     require_clean_tracked_tree(project_root)
 
-    tracked = git_output(project_root, "ls-files", "-z").split("\0")
-    tracked_paths = sorted(
-        (safe_archive_path(value) for value in tracked if value), key=lambda path: path.as_posix()
-    )
-    release_files = [path for path in tracked_paths if include_path(path)]
+    release_files = tracked_release_files(project_root)
     manifest_hash = frontend_manifest_sha256(project_root, release_files)
     embedded_manifest = {
         "build_format_version": BUILD_FORMAT_VERSION,
@@ -211,8 +323,16 @@ def build_release(project_root: Path, output_dir: Path) -> tuple[Path, Path, Pat
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, default=Path("dist/aws"))
+    parser.add_argument(
+        "--write-frontend-manifest",
+        action="store_true",
+        help="refresh frontend/dist/build-manifest.json and exit",
+    )
     arguments = parser.parse_args()
     try:
+        if arguments.write_frontend_manifest:
+            print(write_frontend_build_manifest(Path.cwd()))
+            return 0
         archive_path, checksum_path, manifest_path = build_release(Path.cwd(), arguments.output_dir)
     except ReleaseBuildError as error:
         print(f"error: {error}")
