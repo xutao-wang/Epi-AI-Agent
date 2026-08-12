@@ -3,6 +3,7 @@ export type RunState =
   | "running"
   | "interrupted"
   | "done"
+  | "cancelled"
   | "error"
   | "timeout";
 
@@ -22,6 +23,36 @@ export interface PublicAppConfig {
 
 export interface ProviderKeyStatus {
   configured: boolean;
+}
+
+export type ActivityItemStatus = "running" | "completed" | "waiting";
+
+export type ActivityRunState =
+  | "running"
+  | "waiting"
+  | "completed"
+  | "cancelled"
+  | "error";
+
+export interface ActivityItem {
+  id: string;
+  sequence: number;
+  label: string;
+  status: ActivityItemStatus;
+  tool_name: string | null;
+  tool_call_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ActivityRun {
+  id: string;
+  thread_id: string;
+  user_message_id: string;
+  state: ActivityRunState;
+  activities: ActivityItem[];
+  created_at: string;
+  updated_at: string;
 }
 
 export interface RunStatus {
@@ -131,6 +162,7 @@ export interface ConversationMessage {
   id: string;
   role: "user" | "assistant" | "system";
   text: string;
+  status?: "cancelled" | null;
   created_at?: string | null;
   attachments?: ConversationAttachment[];
   clarifications?: ClarificationExchange[];
@@ -394,6 +426,7 @@ export interface ApiThreadState {
   thread_id: string;
   run: RunStatus;
   conversation: ConversationMessage[];
+  activity_runs: ActivityRun[];
   active_interrupt: ActiveInterrupt | null;
   runtime_settings: RuntimeSettings | null;
   runtime_settings_locked: boolean;

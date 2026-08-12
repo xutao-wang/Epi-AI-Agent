@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 EMBEDDING_MODEL = "OpenAI/text-embedding-3-large"
@@ -64,7 +64,7 @@ class KnowledgeManifest(_ManifestModel):
         return _require_relative_path(value, field="knowledge.root")
 
 
-class StudyDesignManifest(_ManifestModel):
+class LegacyStudyDesignManifest(_ManifestModel):
     document: str
 
     @field_validator("document")
@@ -73,8 +73,21 @@ class StudyDesignManifest(_ManifestModel):
         return _require_relative_path(value, field="study_design.document")
 
 
+class MarkdownStudyDesignManifest(_ManifestModel):
+    root: str
+    overview: Literal["overview.md"]
+
+    @field_validator("root", "overview")
+    @classmethod
+    def validate_path(cls, value: str, info) -> str:
+        return _require_relative_path(value, field=f"study_design.{info.field_name}")
+
+
+StudyDesignManifest = LegacyStudyDesignManifest | MarkdownStudyDesignManifest
+
+
 class StudyPackageManifest(_ManifestModel):
-    format_version: Literal[2]
+    format_version: Literal[2, 3]
     study_id: str
     label: str = Field(min_length=1, max_length=200)
     package_version: str
@@ -82,6 +95,25 @@ class StudyPackageManifest(_ManifestModel):
     description: str | None = Field(default=None, min_length=1, max_length=1000)
     knowledge: KnowledgeManifest | None = None
     study_design: StudyDesignManifest | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_versioned_study_design(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        version = value.get("format_version")
+        design = value.get("study_design")
+        if not isinstance(design, dict):
+            return value
+        if version == 2 and set(design) != {"document"}:
+            raise ValueError(
+                "study_design declaration does not match format_version 2"
+            )
+        if version == 3 and set(design) != {"root", "overview"}:
+            raise ValueError(
+                "study_design declaration does not match format_version 3"
+            )
+        return value
 
     @field_validator("study_id", "package_version")
     @classmethod
@@ -102,7 +134,16 @@ class StudyPackageManifest(_ManifestModel):
         if self.knowledge is not None:
             paths["knowledge.root"] = (self.knowledge.root, "directory")
         if self.study_design is not None:
-            paths["study_design.document"] = (self.study_design.document, "file")
+            if isinstance(self.study_design, LegacyStudyDesignManifest):
+                paths["study_design.document"] = (
+                    self.study_design.document,
+                    "file",
+                )
+            else:
+                paths["study_design.root"] = (
+                    self.study_design.root,
+                    "directory",
+                )
         return paths
 
 

@@ -198,6 +198,18 @@ export async function getThreadState(
   return parseJsonResponse<ApiThreadState>(response);
 }
 
+export async function cancelRun(
+  fetchImpl: FetchImpl = fetch,
+  apiBase = "",
+  threadId: string,
+): Promise<ApiThreadState> {
+  const response = await fetchImpl(
+    apiUrl(apiBase, `/api/threads/${pathParam(threadId)}/cancel`),
+    { method: "POST" },
+  );
+  return parseJsonResponse<ApiThreadState>(response);
+}
+
 export async function submitMessage(
   fetchImpl: FetchImpl = fetch,
   apiBase = "",
@@ -515,6 +527,9 @@ export function createApiClient({
     },
     getThreadState(threadId: string) {
       return getThreadState(authenticatedFetch, apiBase, threadId);
+    },
+    cancelRun(threadId: string) {
+      return cancelRun(authenticatedFetch, apiBase, threadId);
     },
     submitMessage(
       threadId: string,

@@ -12,11 +12,13 @@ from epi_agent.studies import (
 )
 
 from study_package.installer import InstalledStudy
+from study_package.manifest import LegacyStudyDesignManifest
 
 from .config import resolve_db_rag_runtime_paths
 from .catalog import SchemaCatalog, load_full_schema_catalog
 from .local_knowledge import LocalPublicationKnowledge
 from .study_design import LocalStudyDesign
+from .study_design_documents import MarkdownStudyDesign
 from .relationships import RelationshipInventory, build_relationship_inventory
 
 
@@ -51,13 +53,17 @@ def build_study_bundle(package: InstalledStudy) -> StudyBundle:
         if manifest.knowledge is not None
         else None
     )
-    study_design = (
-        LocalStudyDesign.from_path(
+    if isinstance(manifest.study_design, LegacyStudyDesignManifest):
+        study_design = LocalStudyDesign.from_path(
             package.package_root / manifest.study_design.document
         )
-        if manifest.study_design is not None
-        else None
-    )
+    elif manifest.study_design is not None:
+        study_design = MarkdownStudyDesign.from_package(
+            package.package_root,
+            manifest,
+        )
+    else:
+        study_design = None
     return StudyBundle(
         study_id=manifest.study_id,
         label=manifest.label,

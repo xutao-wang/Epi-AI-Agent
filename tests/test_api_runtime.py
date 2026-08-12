@@ -300,11 +300,13 @@ class _BlockingGraph:
         self.invoke_started = threading.Event()
         self.release_invoke = threading.Event()
         self.invoke_calls: list[tuple[dict, dict]] = []
+        self.values: dict[str, Any] = {}
 
     def invoke(self, payload: dict, config: dict) -> None:
         self.invoke_calls.append((payload, config))
         self.invoke_started.set()
         self.release_invoke.wait(timeout=5)
+        self.values.update(payload)
 
     def get_state(
         self,
@@ -312,7 +314,7 @@ class _BlockingGraph:
         *,
         subgraphs: bool = False,
     ) -> SimpleNamespace:
-        return SimpleNamespace(values={}, next=(), interrupts=[])
+        return SimpleNamespace(values=self.values, next=(), interrupts=[])
 
 
 class _RecordingCheckpointer:

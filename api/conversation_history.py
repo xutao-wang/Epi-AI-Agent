@@ -11,6 +11,7 @@ from utils.llm_response import coerce_text_content
 
 
 _UNTITLED = "Untitled conversation"
+_ATTACHMENT_ONLY_TITLE = "Attached data analysis"
 _MAX_TITLE_LENGTH = 120
 
 
@@ -58,6 +59,16 @@ class ConversationHistoryStore:
                 )
             if "owner_user_id" not in columns:
                 self._migrate_legacy_table(connection)
+                columns = {
+                    row[1]
+                    for row in connection.execute("PRAGMA table_info(conversation_history)")
+                }
+            if "lifecycle" not in columns:
+                connection.execute(
+                    "ALTER TABLE conversation_history ADD COLUMN lifecycle "
+                    "TEXT NOT NULL DEFAULT 'ready' "
+                    "CHECK(lifecycle IN ('pending', 'ready'))"
+                )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS conversation_history_owner_activity_idx "
                 "ON conversation_history (owner_user_id, archived_at, updated_at DESC)"
@@ -77,6 +88,8 @@ class ConversationHistoryStore:
                 updated_at TEXT NOT NULL,
                 last_opened_at TEXT,
                 archived_at TEXT,
+                lifecycle TEXT NOT NULL DEFAULT 'ready'
+                    CHECK(lifecycle IN ('pending', 'ready')),
                 PRIMARY KEY (owner_user_id, thread_id)
             )
             """
@@ -122,6 +135,16 @@ class ConversationHistoryStore:
             raise ValueError("title is required")
         return normalized[:_MAX_TITLE_LENGTH]
 
+    @staticmethod
+    def fallback_title(first_message: str) -> str:
+        normalized = " ".join(str(first_message or "").split())
+        if not normalized:
+            return _ATTACHMENT_ONLY_TITLE
+        try:
+            return ConversationHistoryStore._title(normalized)
+        except ValueError:
+            return _ATTACHMENT_ONLY_TITLE
+
     def create(
         self,
         owner_user_id: str,
@@ -144,7 +167,61 @@ class ConversationHistoryStore:
         assert record is not None
         return record
 
-    def get(self, owner_user_id: str, thread_id: str) -> ConversationSummary | None:
+    def create_pending(
+        self,
+        owner_user_id: str,
+        thread_id: str | None = None,
+        *,
+        model_name: str,
+    ) -> tuple[ConversationSummary, bool]:
+        if thread_id is None:
+            thread_id = owner_user_id
+            owner_user_id = "local-user"
+        now = self._now()
+        with self._connect() as connection:
+            result = connection.execute(
+                "INSERT OR IGNORE INTO conversation_history "
+                "(owner_user_id, thread_id, title, title_source, model_name, lifecycle, "
+                "created_at, updated_at, last_opened_at) "
+                "VALUES (?, ?, ?, 'automatic', ?, 'pending', ?, ?, ?)",
+                (owner_user_id, thread_id, _UNTITLED, model_name, now, now, now),
+            )
+        record = self.get(owner_user_id, thread_id)
+        assert record is not None
+        return record, result.rowcount == 1
+
+    def promote_pending(self, owner_user_id: str, thread_id: str | None = None) -> bool:
+        if thread_id is None:
+            thread_id = owner_user_id
+            owner_user_id = "local-user"
+        with self._connect() as connection:
+            result = connection.execute(
+                "UPDATE conversation_history SET lifecycle = 'ready', updated_at = ? "
+                "WHERE owner_user_id = ? AND thread_id = ? AND lifecycle = 'pending'",
+                (self._now(), owner_user_id, thread_id),
+            )
+        return result.rowcount == 1
+
+    def delete_pending(self, owner_user_id: str, thread_id: str | None = None) -> bool:
+        if thread_id is None:
+            thread_id = owner_user_id
+            owner_user_id = "local-user"
+        with self._connect() as connection:
+            result = connection.execute(
+                "DELETE FROM conversation_history "
+                "WHERE owner_user_id = ? AND thread_id = ? AND lifecycle = 'pending'",
+                (owner_user_id, thread_id),
+            )
+        return result.rowcount == 1
+
+    def get(
+        self,
+        owner_user_id: str,
+        thread_id: str | None = None,
+    ) -> ConversationSummary | None:
+        if thread_id is None:
+            thread_id = owner_user_id
+            owner_user_id = "local-user"
         with self._connect() as connection:
             row = connection.execute(
                 "SELECT thread_id, title, title_source, model_name, created_at, updated_at, last_opened_at, archived_at "
@@ -153,11 +230,11 @@ class ConversationHistoryStore:
             ).fetchone()
         return self._summary(row)
 
-    def list(self, owner_user_id: str) -> list[ConversationSummary]:
+    def list(self, owner_user_id: str = "local-user") -> list[ConversationSummary]:
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT thread_id, title, title_source, model_name, created_at, updated_at, last_opened_at, archived_at "
-                "FROM conversation_history WHERE owner_user_id = ? "
+                "FROM conversation_history WHERE owner_user_id = ? AND lifecycle = 'ready' "
                 "ORDER BY updated_at DESC, created_at DESC",
                 (owner_user_id,),
             ).fetchall()
@@ -256,6 +333,25 @@ class ConversationHistoryStore:
                 (owner_user_id,),
             )
         return result.rowcount
+
+    def set_initial_automatic_title(
+        self,
+        owner_user_id: str,
+        thread_id: str,
+        title: str | None = None,
+    ) -> ConversationSummary | None:
+        if title is None:
+            title = thread_id
+            thread_id = owner_user_id
+            owner_user_id = "local-user"
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE conversation_history SET title = ?, updated_at = ? "
+                "WHERE owner_user_id = ? AND thread_id = ? "
+                "AND title = ? AND title_source = 'automatic'",
+                (self._title(title), self._now(), owner_user_id, thread_id, _UNTITLED),
+            )
+        return self.get(owner_user_id, thread_id)
 
 
 class OpenAIConversationTitleGenerator:

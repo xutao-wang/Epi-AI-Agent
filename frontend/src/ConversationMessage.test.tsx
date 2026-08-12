@@ -43,6 +43,29 @@ describe("ConversationMessage", () => {
       .toHaveClass("message-assistant");
   });
 
+  it("marks a retained cancelled user message without hiding its content", () => {
+    render(
+      <ConversationMessage
+        fetchAttachmentBlob={fetchAttachmentBlob}
+        message={{
+          id: "user-cancelled",
+          role: "user",
+          text: "Analyze the attached cohort",
+          status: "cancelled",
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Analyze the attached cohort")).toBeInTheDocument();
+    expect(screen.getByText("Cancelled")).toHaveAttribute(
+      "aria-label",
+      "Message status: Cancelled",
+    );
+    expect(screen.getByText("Cancelled")).toHaveClass("message-status-cancelled");
+    expect(screen.getByText("Analyze the attached cohort").closest("li"))
+      .toHaveClass("message-cancelled");
+  });
+
   it.each(["user", "assistant"] as const)(
     "uses the bounded layout contract for %s messages",
     (role) => {

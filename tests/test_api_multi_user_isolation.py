@@ -70,10 +70,16 @@ class _IsolationCheckpointer:
 
 
 class _IsolationGraph:
-    def __init__(self, values: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        values: dict[str, Any] | None = None,
+        *,
+        fail_invocation: bool = False,
+    ) -> None:
         self.checkpointer = _IsolationCheckpointer()
         self.invoke_calls: list[tuple[Any, dict[str, Any]]] = []
         self.values = values or {}
+        self.fail_invocation = fail_invocation
 
     def get_state(
         self,
@@ -85,6 +91,8 @@ class _IsolationGraph:
 
     def invoke(self, payload: Any, config: dict[str, Any]) -> None:
         self.invoke_calls.append((payload, config))
+        if self.fail_invocation:
+            raise RuntimeError("first invoke failed")
         if isinstance(payload, dict):
             self.values.update(payload)
 
@@ -92,6 +100,7 @@ class _IsolationGraph:
 class _GraphFactory:
     def __init__(self) -> None:
         self.calls: list[tuple[Any, Any]] = []
+        self.fail_invocation = False
 
     def __call__(self, settings: Any, context: Any) -> _IsolationGraph:
         self.calls.append((settings, context))
@@ -183,7 +192,8 @@ class _GraphFactory:
                     },
                     "conversation_events": [],
                 }
-            }
+            },
+            fail_invocation=self.fail_invocation,
         )
 
 
@@ -325,9 +335,50 @@ def test_conversation_routes_are_owner_scoped(
     ]
 
     assert [response.status_code for response in responses] == [404] * 5
+    assert user_a.get("/api/conversations").json() == {"items": []}
+
+    user_a.configure_key()
+    submitted = user_a.post(
+        f"/api/threads/{thread_id}/messages",
+        json={"text": "Create a cohort"},
+    )
+    assert submitted.status_code == 200, submitted.json()
+    deadline = time.time() + 2
+    while time.time() < deadline:
+        state = user_a.get(f"/api/threads/{thread_id}/state").json()
+        if state["run"]["state"] != "running":
+            break
+        time.sleep(0.01)
+
     owned = user_a.get("/api/conversations").json()["items"]
     assert [item["thread_id"] for item in owned] == [thread_id]
     assert owned[0]["title"] == "Untitled conversation"
+
+
+def test_authenticated_failed_first_turn_stays_out_of_history(
+    multi_user_client: tuple[MultiUserClient, ReportAgentApiRuntime, _GraphFactory],
+) -> None:
+    clients, _runtime, graph_factory = multi_user_client
+    graph_factory.fail_invocation = True
+    user_a = clients.as_user("user-a")
+    user_a.configure_key()
+    thread_id = user_a.create_thread()
+
+    assert user_a.get("/api/conversations").json() == {"items": []}
+    submitted = user_a.post(
+        f"/api/threads/{thread_id}/messages",
+        json={"text": "Create a cohort"},
+    )
+    assert submitted.status_code == 200, submitted.json()
+
+    deadline = time.time() + 2
+    state = submitted.json()
+    while time.time() < deadline and state["run"]["state"] == "running":
+        time.sleep(0.01)
+        state = user_a.get(f"/api/threads/{thread_id}/state").json()
+
+    assert state["run"]["state"] == "error"
+    assert user_a.get("/api/conversations").json() == {"items": []}
 
 
 def test_thread_state_options_message_reset_and_export_are_owner_scoped(

@@ -5,7 +5,15 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
-RunState = Literal["idle", "running", "interrupted", "done", "error", "timeout"]
+RunState = Literal[
+    "idle",
+    "running",
+    "interrupted",
+    "done",
+    "cancelled",
+    "error",
+    "timeout",
+]
 
 
 class CognitoPublicConfig(BaseModel):
@@ -140,6 +148,7 @@ class ConversationMessage(BaseModel):
     id: str
     role: Literal["user", "assistant", "system"]
     text: str
+    status: Literal["cancelled"] | None = None
     created_at: str | None = None
     attachments: list[ConversationAttachment] = Field(default_factory=list)
     clarifications: list[ClarificationExchange] = Field(default_factory=list)
@@ -404,10 +413,46 @@ class DatasetSchemaResponse(BaseModel):
     schema_: dict[str, Any] = Field(default_factory=dict, alias="schema")
 
 
+ActivityItemStatus = Literal["running", "completed", "waiting"]
+ActivityRunState = Literal[
+    "running",
+    "waiting",
+    "completed",
+    "cancelled",
+    "error",
+]
+
+
+class ActivityItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1)
+    sequence: int = Field(ge=1)
+    label: str = Field(min_length=1, max_length=200)
+    status: ActivityItemStatus
+    tool_name: str | None = Field(default=None, max_length=200)
+    tool_call_id: str | None = Field(default=None, max_length=200)
+    created_at: str
+    updated_at: str
+
+
+class ActivityRun(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1)
+    thread_id: str = Field(min_length=1)
+    user_message_id: str = Field(min_length=1)
+    state: ActivityRunState
+    activities: list[ActivityItem] = Field(default_factory=list)
+    created_at: str
+    updated_at: str
+
+
 class ApiThreadState(BaseModel):
     thread_id: str
     run: RunStatus
     conversation: list[ConversationMessage] = Field(default_factory=list)
+    activity_runs: list[ActivityRun] = Field(default_factory=list)
     active_interrupt: ActiveInterrupt | None = None
     datasets: list[DatasetSummary] = Field(default_factory=list)
     file_artifacts: list[FileArtifactSummary] = Field(default_factory=list)

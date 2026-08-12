@@ -82,10 +82,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.study is not None:
             installed = install_study_archives(args.study, studies_root)
             for package in installed:
+                for warning in package.warnings:
+                    print(f"Warning: {warning.message}")
                 print(f"Installed: {package.study_id}@{package.package_version}")
         else:
             study_id, package_version = _activate_target(args.activate)
             package = activate_study_version(study_id, package_version, studies_root)
+            for warning in package.warnings:
+                print(f"Warning: {warning.message}")
             print(f"Activated: {package.study_id}@{package.package_version}")
     except (OSError, ValueError) as error:
         print(f"ERROR: {error}", file=sys.stderr)

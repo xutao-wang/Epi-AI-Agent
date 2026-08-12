@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 
 class StudySourceUnavailableError(RuntimeError):
@@ -16,6 +16,12 @@ class StudyKnowledgeProvider(Protocol):
 class StudyDesignProvider(Protocol):
     def render_context(self) -> str:
         """Return bounded authoritative context for the active study."""
+
+
+@runtime_checkable
+class SearchableStudyDesignProvider(StudyDesignProvider, Protocol):
+    def search(self, query: str, limit: int = 5) -> tuple[object, ...]:
+        """Return bounded study-design retrieval hits."""
 
 
 class StudyCatalogProvider(Protocol):

@@ -82,6 +82,12 @@ de-identified data only. Phase 2A repository operations are documented in the
 live stack exists until Task 11. See [docs/working-demo.md](docs/working-demo.md)
 for the operating boundary and acceptance smoke.
 
+While the agent is working, **Cancel** stops the active request and returns the
+conversation to its latest completed or approved save point. The cancelled
+request and its original attachments remain visible and can be retried later;
+unfinished model, tool, and Python output is discarded. **New conversation**
+continues to open a separate blank conversation and does not cancel work.
+
 ## Included demo data
 
 The study uses a synthetic RePORT India database, its schema

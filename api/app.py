@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 import os
 from pathlib import Path
 
 from fastapi import FastAPI
 
+from api.activity_store import SqliteActivityStore
 from api.auth import (
     AuthenticatedUser,
     CognitoTokenVerifier,
@@ -34,6 +36,7 @@ from db_rag.config import (
     resolve_db_rag_reranker_model,
 )
 from db_rag.readiness import DbRagReadiness, resolve_db_rag_readiness
+from epi_agent.activity import NULL_ACTIVITY_SINK
 from epi_agent.studies import StudyRegistry
 from epi_agent.runtimes.python import LocalPythonRuntime
 from graph.builder import build_graph
@@ -56,6 +59,7 @@ _NO_STUDY_MESSAGE = "No study package is installed."
 _STUDY_SELECTION_REQUIRED_MESSAGE = (
     "Multiple study packages are installed. Select an active study."
 )
+_LOGGER = logging.getLogger(__name__)
 
 
 def _history_store_for_auth_mode(
@@ -146,6 +150,11 @@ def build_application(*, environ: Mapping[str, str] | None = None) -> FastAPI:
         if environ.get("REPORT_AGENT_CHECKPOINT_DB_PATH", "").strip()
         else checkpoint_db_path(runtime_root_path)
     )
+    try:
+        activity_store: SqliteActivityStore | None = SqliteActivityStore(db_path)
+    except Exception:
+        _LOGGER.exception("Agent activity persistence is unavailable")
+        activity_store = None
     selected_static_dir = (
         Path(environ["REPORT_AGENT_STATIC_DIR"])
         if environ.get("REPORT_AGENT_STATIC_DIR", "").strip()
@@ -189,6 +198,7 @@ def build_application(*, environ: Mapping[str, str] | None = None) -> FastAPI:
                 runtime_root=context.storage.execution,
                 worker_launcher=worker_launcher,
             ),
+            activity_sink=activity_store or NULL_ACTIVITY_SINK,
         )
 
     runtime_settings = {
@@ -237,6 +247,7 @@ def build_application(*, environ: Mapping[str, str] | None = None) -> FastAPI:
                 message=db_rag_readiness.message,
             ),
         ),
+        activity_store=activity_store,
     )
 
     credential_store = ProviderCredentialStore(
@@ -273,7 +284,6 @@ def build_application(*, environ: Mapping[str, str] | None = None) -> FastAPI:
     application.state.provider_credential_store = credential_store
     application.state.token_verifier = token_verifier
     return application
-
 
 app = build_application()
 runtime = app.state.report_agent_runtime

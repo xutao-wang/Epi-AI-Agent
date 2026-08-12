@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { User } from "oidc-client-ts";
 import { ApiError, createApiClient, type ApiClient } from "./apiClient";
+import AgentActivityTimeline from "./AgentActivityTimeline";
 import AttachmentComposer from "./AttachmentComposer";
 import AnalysisResultReview from "./AnalysisResultReview";
 import AppShell from "./AppShell";
@@ -152,6 +153,7 @@ export default function App({
     typeof apiClient.getRuntimeOptions
   > | null>(null);
   const savedConversationsRequestRef = useRef(0);
+  const savedConversationsMutationRef = useRef(0);
   const pollGenerationRef = useRef(0);
   const [threadId, setThreadId] = useState<string | null>(null);
   const fetchAttachmentBlob = useCallback(
@@ -178,6 +180,7 @@ export default function App({
   const [runFailureMessage, setRunFailureMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isResuming, setIsResuming] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
   const [stagedAttachments, setStagedAttachments] = useState<
     AttachmentManifestSummary[]
   >([]);
@@ -275,6 +278,14 @@ export default function App({
     }
   }, [state?.runtime_settings]);
 
+  const activityRunByUserMessageId = useMemo(
+    () =>
+      new Map(
+        (state?.activity_runs ?? []).map((run) => [run.user_message_id, run]),
+      ),
+    [state?.activity_runs],
+  );
+
   const projectedClarificationIds = new Set(
     (state?.conversation ?? []).flatMap((conversationMessage) =>
       (conversationMessage.clarifications ?? []).map(
@@ -322,9 +333,13 @@ export default function App({
   async function refreshSavedConversations(): Promise<ConversationSummary[] | null> {
     const requestId = savedConversationsRequestRef.current + 1;
     savedConversationsRequestRef.current = requestId;
+    const mutationId = savedConversationsMutationRef.current;
     try {
       const response = await apiClient.listConversations();
-      if (requestId !== savedConversationsRequestRef.current) {
+      if (
+        requestId !== savedConversationsRequestRef.current ||
+        mutationId !== savedConversationsMutationRef.current
+      ) {
         return null;
       }
       const items = response.items ?? [];
@@ -334,6 +349,10 @@ export default function App({
       // A history refresh must not block the active analysis workflow.
       return null;
     }
+  }
+
+  function invalidateSavedConversationRequests() {
+    savedConversationsMutationRef.current += 1;
   }
 
   async function openConversation(nextThreadId: string) {
@@ -371,6 +390,7 @@ export default function App({
 
   async function archiveConversation(threadIdToArchive: string) {
     try {
+      invalidateSavedConversationRequests();
       const archived = await apiClient.archiveConversation(threadIdToArchive);
       setSavedConversations((current) =>
         current.map((item) =>
@@ -389,6 +409,7 @@ export default function App({
 
   async function restoreConversation(threadIdToRestore: string) {
     try {
+      invalidateSavedConversationRequests();
       const restored = await apiClient.restoreConversation(threadIdToRestore);
       setSavedConversations((current) =>
         current.map((item) =>
@@ -405,6 +426,10 @@ export default function App({
 
   async function deleteConversation(threadIdToDelete: string) {
     try {
+      invalidateSavedConversationRequests();
+      setTitlePollingThreadId((current) =>
+        current === threadIdToDelete ? null : current,
+      );
       await apiClient.deleteConversation(threadIdToDelete);
       setSavedConversations((current) =>
         current.filter((item) => item.thread_id !== threadIdToDelete),
@@ -420,7 +445,7 @@ export default function App({
   }
 
   useEffect(() => {
-    if (!threadId || state?.run.state !== "running") {
+    if (!threadId || state?.run.state !== "running" || isCancelling) {
       return;
     }
 
@@ -460,7 +485,7 @@ export default function App({
         window.clearTimeout(timeoutId);
       }
     };
-  }, [apiClient, state?.run.state, threadId]);
+  }, [apiClient, isCancelling, state?.run.state, threadId]);
 
   async function handleRequestError(
     requestError: unknown,
@@ -697,6 +722,25 @@ export default function App({
     }
   }
 
+  async function cancelActiveRun() {
+    if (!threadId || state?.run.state !== "running" || isCancelling) {
+      return;
+    }
+
+    const activeThreadId = threadId;
+    pollGenerationRef.current += 1;
+    setIsCancelling(true);
+    try {
+      const nextState = await apiClient.cancelRun(activeThreadId);
+      applyThreadState(nextState);
+      setError(null);
+    } catch (cancelError) {
+      await handleRequestError(cancelError, activeThreadId);
+    } finally {
+      setIsCancelling(false);
+    }
+  }
+
   function newConversation() {
     if (isBusy) {
       return;
@@ -713,6 +757,7 @@ export default function App({
     setStagedAttachments([]);
     setAttachmentErrors([]);
     setIsUploadingAttachments(false);
+    setIsCancelling(false);
     setSubmittedClarifications({});
     setIsModelLockHintVisible(false);
   }
@@ -733,6 +778,7 @@ export default function App({
   const isBusy =
     isSubmitting ||
     isResuming ||
+    isCancelling ||
     isUploadingAttachments ||
     isRunInFlight;
   const isComposerDisabled =
@@ -754,13 +800,17 @@ export default function App({
     ? "Submitting your message"
     : isResuming
       ? "Sending your review decision"
+      : isCancelling
+        ? "Cancelling current run"
       : isUploadingAttachments
         ? "Uploading your files"
         : isRunInFlight
           ? "Agent is working"
           : "";
   const activityDetail = isRunInFlight
-    ? workflowStatus || "Running the workflow and checking for the next result."
+    ? isCancelling
+      ? "Restoring the latest durable checkpoint."
+      : workflowStatus || "Running the workflow and checking for the next result."
     : isSubmitting
       ? "Creating or updating the thread, then handing your message to the backend."
       : isResuming
@@ -797,6 +847,16 @@ export default function App({
     ? [...conversationMessages, pendingUserMessage]
     : conversationMessages;
   const hasVisibleConversation = visibleConversationMessages.length > 0;
+  const latestVisibleUserMessage = [...visibleConversationMessages]
+    .reverse()
+    .find((conversationMessage) => conversationMessage.role === "user");
+  const hasActivityForLatestUser = Boolean(
+    latestVisibleUserMessage &&
+      activityRunByUserMessageId.has(latestVisibleUserMessage.id),
+  );
+  const showGenericActivity = Boolean(
+    activityTitle && !hasActivityForLatestUser,
+  );
 
   function renderActiveInterrupt(interrupt: ActiveInterrupt) {
     if (!threadId) {
@@ -908,58 +968,71 @@ export default function App({
             className="conversation-panel"
             aria-label="Conversation messages"
           >
-            {hasVisibleConversation || activityTitle ? (
+            {hasVisibleConversation || showGenericActivity ? (
               <ol className="message-list" aria-label="Conversation messages">
-                {visibleConversationMessages.map((conversationMessage) => (
-                  <ConversationMessage
-                    fetchAttachmentBlob={fetchAttachmentBlob}
-                    getDatasetPreview={(attachmentId, limit) => {
-                      if (!threadId) {
-                        return Promise.reject(
-                          new Error("Thread is unavailable."),
-                        );
-                      }
-                      return apiClient.getDatasetPreview(
-                        threadId,
-                        attachmentId,
-                        limit,
-                      );
-                    }}
-                    getDatasetSchema={(attachmentId) => {
-                      if (!threadId) {
-                        return Promise.reject(
-                          new Error("Thread is unavailable."),
-                        );
-                      }
-                      return apiClient.getDatasetSchema(
-                        threadId,
-                        attachmentId,
-                      );
-                    }}
-                    getDatasetProvenance={(attachmentId) => {
-                      if (!threadId) {
-                        return Promise.reject(
-                          new Error("Thread is unavailable."),
-                        );
-                      }
-                      return apiClient.getDatasetProvenance(
-                        threadId,
-                        attachmentId,
-                      );
-                    }}
-                    getAnalysisResult={(attachmentId) => {
-                      if (!threadId) {
-                        return Promise.reject(
-                          new Error("Thread is unavailable."),
-                        );
-                      }
-                      return apiClient.getAnalysisResult(threadId, attachmentId);
-                    }}
-                    key={conversationMessage.id}
-                    message={conversationMessage}
-                  />
-                ))}
-                {activityTitle ? (
+                {visibleConversationMessages.map((conversationMessage) => {
+                  const activityRun =
+                    conversationMessage.role === "user"
+                      ? activityRunByUserMessageId.get(conversationMessage.id)
+                      : undefined;
+                  return (
+                    <Fragment key={conversationMessage.id}>
+                      <ConversationMessage
+                        fetchAttachmentBlob={fetchAttachmentBlob}
+                        getDatasetPreview={(attachmentId, limit) => {
+                          if (!threadId) {
+                            return Promise.reject(
+                              new Error("Thread is unavailable."),
+                            );
+                          }
+                          return apiClient.getDatasetPreview(
+                            threadId,
+                            attachmentId,
+                            limit,
+                          );
+                        }}
+                        getDatasetSchema={(attachmentId) => {
+                          if (!threadId) {
+                            return Promise.reject(
+                              new Error("Thread is unavailable."),
+                            );
+                          }
+                          return apiClient.getDatasetSchema(
+                            threadId,
+                            attachmentId,
+                          );
+                        }}
+                        getDatasetProvenance={(attachmentId) => {
+                          if (!threadId) {
+                            return Promise.reject(
+                              new Error("Thread is unavailable."),
+                            );
+                          }
+                          return apiClient.getDatasetProvenance(
+                            threadId,
+                            attachmentId,
+                          );
+                        }}
+                        getAnalysisResult={(attachmentId) => {
+                          if (!threadId) {
+                            return Promise.reject(
+                              new Error("Thread is unavailable."),
+                            );
+                          }
+                          return apiClient.getAnalysisResult(
+                            threadId,
+                            attachmentId,
+                          );
+                        }}
+                        message={conversationMessage}
+                      />
+                      {activityRun ? (
+                        <AgentActivityTimeline run={activityRun} />
+                      ) : null}
+                    </Fragment>
+                  );
+                })}
+                {showGenericActivity ? (
                   <ActivityMessage
                     detail={activityDetail}
                     steps={state?.run.steps}
@@ -1054,7 +1127,19 @@ export default function App({
                       ))}
                     </select>
                   )}
-                  <button disabled={isSendDisabled} type="submit">Send</button>
+                  {isRunInFlight || isCancelling ? (
+                    <button
+                      aria-label={isCancelling ? "Cancelling run" : "Cancel run"}
+                      className="cancel-run-button"
+                      disabled={isCancelling}
+                      onClick={() => void cancelActiveRun()}
+                      type="button"
+                    >
+                      {isCancelling ? "Cancelling…" : "Cancel"}
+                    </button>
+                  ) : (
+                    <button disabled={isSendDisabled} type="submit">Send</button>
+                  )}
                 </>
               }
               disabled={isComposerDisabled}

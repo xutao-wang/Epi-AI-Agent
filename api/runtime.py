@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import base64
+from copy import deepcopy
 import csv
 from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Callable
 from dataclasses import dataclass, field
 import hashlib
 import io
+import inspect
 import json
+import logging
 from pathlib import Path
 import threading
 import time
@@ -15,7 +18,9 @@ import uuid
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.graph import START
 from langgraph.types import Command
 from langgraph.graph.state import CompiledStateGraph
 import httpx
@@ -33,6 +38,7 @@ from pydantic import TypeAdapter, ValidationError
 from api.auth import AuthenticatedUser, LOCAL_SESSION_ID, RequestIdentity
 from api.schemas import (
     ActiveInterrupt,
+    ActivityRun,
     ApiThreadState,
     AttachmentManifestSummary,
     AttachmentUploadError,
@@ -55,6 +61,7 @@ from api.schemas import (
     RuntimeSettings,
     TablePreview,
 )
+from api.activity_store import SqliteActivityStore
 from api.conversation_history import ConversationHistoryStore, OpenAIConversationTitleGenerator
 from epi_agent.analysis_artifacts import AnalysisRun
 from graph.conversation_events import (
@@ -85,8 +92,14 @@ from utils.review_interrupts import (
     validate_resume_decision,
 )
 from utils.model_runtime_profiles import model_runtime_profile
+from utils.run_cancellation import (
+    CancellationToken,
+    RunCancelled,
+    bind_cancellation,
+)
 
 
+_LOGGER = logging.getLogger(__name__)
 _ACTIVE_INTERRUPT_ADAPTER = TypeAdapter(ActiveInterrupt)
 _PUBLIC_INTERRUPT_TYPES = {
     "dataset_plan_review",
@@ -249,9 +262,37 @@ class StaleInterruptError(RuntimeError):
         super().__init__(f"Interrupt {interrupt_id} is no longer active")
 
 
+class InitialTurnCheckpointError(RuntimeError):
+    pass
+
+
 def _has_blocking_interrupt(snapshot: Any) -> bool:
     interrupts = list(getattr(snapshot, "interrupts", None) or [])
     return bool(interrupts)
+
+
+def _checkpoint_contains_user_turn(
+    snapshot: Any,
+    *,
+    message_id: str,
+    turn_hash: str,
+) -> bool:
+    values = _projection_values(snapshot)
+    if any(
+        isinstance(message, HumanMessage) and str(message.id or "") == message_id
+        for message in list(values.get("messages") or [])
+    ):
+        return True
+    meta = dict(values.get("meta") or {})
+    if str(meta.get(MetaKeys.LAST_USER_MESSAGE_HASH) or "") == turn_hash:
+        return True
+    events = list(dict(values.get("artifacts") or {}).get("conversation_events") or [])
+    return any(
+        isinstance(event, dict)
+        and event.get("type") == "user"
+        and str(event.get("user_turn_hash") or "") == turn_hash
+        for event in events
+    )
 
 
 def _projection_values(snapshot: Any) -> dict[str, Any]:
@@ -353,17 +394,254 @@ def _matches_pending_analysis_linked_output(
     )
 
 
+@dataclass(frozen=True)
+class CancelledTurn:
+    message_id: str
+    text: str
+    turn_hash: str
+    attachment_ids: tuple[str, ...]
+
+
+@dataclass
+class GraphJob:
+    status: dict[str, Any]
+    token: CancellationToken
+    durable_config: RunnableConfig | None
+    restore: Callable[[RunnableConfig], None] | None = None
+    transition_complete: threading.Event = field(default_factory=threading.Event)
+
+
+class CancellationRestoreError(RuntimeError):
+    pass
+
+
+def _cancelled_turn_from_values(values: dict[str, Any]) -> CancelledTurn:
+    events = list(
+        dict(values.get("artifacts") or {}).get("conversation_events") or []
+    )
+    user_event = next(
+        (
+            event
+            for event in reversed(events)
+            if isinstance(event, dict) and event.get("type") == "user"
+        ),
+        None,
+    )
+    if user_event is None:
+        raise CancellationRestoreError(
+            "The active run has no user turn to retain."
+        )
+    turn_hash = str(user_event.get("user_turn_hash") or "")
+    user_event_id = str(user_event.get("event_id") or "")
+    attachment_ids = tuple(
+        dict.fromkeys(
+            str(event.get("artifact_id") or "")
+            for event in events
+            if isinstance(event, dict)
+            and event.get("type") == "attachment"
+            and event.get("relationship") == "input"
+            and (
+                str(event.get("parent_event_id") or "") == user_event_id
+                or str(event.get("user_turn_hash") or "") == turn_hash
+            )
+            and str(event.get("artifact_id") or "")
+        )
+    )
+    message_id = user_event_id
+    for message in reversed(list(values.get("messages") or [])):
+        if isinstance(message, HumanMessage):
+            message_id = str(message.id or user_event_id)
+            break
+    return CancelledTurn(
+        message_id=message_id,
+        text=str(user_event.get("text") or ""),
+        turn_hash=turn_hash,
+        attachment_ids=attachment_ids,
+    )
+
+
+def _cancelled_turn_patch(
+    durable_values: dict[str, Any],
+    *,
+    turn: CancelledTurn,
+    manifests: list[dict[str, Any]],
+) -> dict[str, Any]:
+    event_state = ensure_conversation_state(
+        {
+            "artifacts": durable_values.get("artifacts"),
+            "meta": durable_values.get("meta"),
+        }
+    )
+    artifacts = dict(event_state.get("artifacts") or {})
+    events = list(artifacts.get("conversation_events") or [])
+    user_event_id = ""
+    for event in events:
+        if (
+            isinstance(event, dict)
+            and event.get("type") == "user"
+            and str(event.get("user_turn_hash") or "") == turn.turn_hash
+        ):
+            event["status"] = "cancelled"
+            user_event_id = str(event.get("event_id") or "")
+            break
+    if not user_event_id:
+        event_state = append_conversation_event(
+            event_state,
+            build_user_event(
+                actor="human",
+                user_turn_hash=turn.turn_hash,
+                text=turn.text,
+                status="cancelled",
+            ),
+        )
+        artifacts = dict(event_state.get("artifacts") or {})
+        events = list(artifacts.get("conversation_events") or [])
+        user_event_id = str(events[-1]["event_id"])
+    else:
+        artifacts["conversation_events"] = events
+        event_state = {**event_state, "artifacts": artifacts}
+
+    linked_input_ids = {
+        str(event.get("artifact_id") or "")
+        for event in list(
+            dict(event_state.get("artifacts") or {}).get(
+                "conversation_events"
+            )
+            or []
+        )
+        if isinstance(event, dict)
+        and event.get("type") == "attachment"
+        and event.get("relationship") == "input"
+        and str(event.get("user_turn_hash") or "") == turn.turn_hash
+    }
+    for attachment_id in turn.attachment_ids:
+        if attachment_id in linked_input_ids:
+            continue
+        event_state = append_conversation_event(
+            event_state,
+            build_attachment_event(
+                actor="api",
+                user_turn_hash=turn.turn_hash,
+                artifact_id=attachment_id,
+                relationship="input",
+                parent_event_id=user_event_id,
+            ),
+        )
+
+    artifacts = dict(event_state.get("artifacts") or {})
+    attachments = dict(artifacts.get("attachments") or {})
+    available_ids: set[str] = set()
+    for manifest in manifests:
+        attachment_id = str(manifest.get("id") or "")
+        if not attachment_id or manifest.get("status") != "available":
+            continue
+        attachments[attachment_id] = dict(manifest)
+        available_ids.add(attachment_id)
+    artifacts["attachments"] = attachments
+    meta = dict(event_state.get("meta") or {})
+    meta[MetaKeys.LAST_USER_MESSAGE_HASH] = turn.turn_hash
+    authorized_attachment_ids = sorted(
+        {
+            *[
+                str(attachment_id)
+                for attachment_id in list(
+                    durable_values.get("authorized_attachment_ids") or []
+                )
+                if str(attachment_id)
+            ],
+            *available_ids,
+        }
+    )
+    return {
+        "artifacts": artifacts,
+        "meta": meta,
+        "authorized_attachment_ids": authorized_attachment_ids,
+        "current_turn_artifact_refs": [],
+        "current_turn_output_artifact_refs": [],
+        "terminal_error": None,
+        "final_response": None,
+        "completion_blocked": False,
+        "terminal_control": {
+            "status": "cancelled",
+            "reason": "User cancelled the active run.",
+        },
+        "cancelled_turn": {
+            "message_id": turn.message_id,
+            "text": turn.text,
+            "turn_hash": turn.turn_hash,
+            "attachment_ids": list(turn.attachment_ids),
+        },
+    }
+
+
 @dataclass
 class ApiGraphRunner:
     app: Any
-    _jobs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    _jobs: dict[str, GraphJob] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def status(self, thread_id: str) -> dict[str, Any]:
         with self._lock:
-            return dict(self._jobs.get(thread_id) or _idle_status())
+            job = self._jobs.get(thread_id)
+            if isinstance(job, GraphJob):
+                return dict(job.status)
+            if isinstance(job, dict):
+                return dict(job)
+            return _idle_status()
 
-    def _reserve_run(self, thread_id: str) -> tuple[bool, dict[str, Any]]:
+    def _invoke(
+        self,
+        payload: Any,
+        config: dict[str, Any],
+        **boundary_options: Any,
+    ) -> Any:
+        invoke = getattr(self.app, "invoke", None)
+        if not callable(invoke):
+            return None
+        try:
+            parameter_map = inspect.signature(invoke).parameters
+        except (TypeError, ValueError):
+            parameter_map = {}
+        accepts_options = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameter_map.values()
+        ) or all(option in parameter_map for option in boundary_options)
+        if accepts_options:
+            return invoke(payload, config, **boundary_options)
+        return invoke(payload, config)
+
+    def _supports_invoke_options(self, *options: str) -> bool:
+        invoke = getattr(self.app, "invoke", None)
+        if not callable(invoke):
+            return False
+        try:
+            parameters = inspect.signature(invoke).parameters
+        except (TypeError, ValueError):
+            return False
+        return any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        ) or all(option in parameters for option in options)
+
+    def _durable_config(
+        self,
+        thread_id: str,
+        checkpoint_config: dict[str, Any] | None = None,
+    ) -> RunnableConfig | None:
+        snapshot = self.app.get_state(
+            checkpoint_config or graph_config(thread_id),
+            subgraphs=True,
+        )
+        saved = getattr(snapshot, "config", None)
+        return deepcopy(saved) if isinstance(saved, dict) else None
+
+    def _reserve_run(
+        self,
+        thread_id: str,
+        *,
+        restore: Callable[[RunnableConfig], None] | None = None,
+        checkpoint_config: dict[str, Any] | None = None,
+    ) -> tuple[bool, GraphJob]:
         started_at = time.time()
         status = {
             "state": "running",
@@ -376,10 +654,30 @@ class ApiGraphRunner:
         }
         with self._lock:
             current = self._jobs.get(thread_id)
-            if current and current.get("state") == "running":
-                return False, dict(current)
-            self._jobs[thread_id] = dict(status)
-        return True, status
+            current_status = (
+                current.status if isinstance(current, GraphJob) else current
+            )
+            if current and current_status.get("state") == "running":
+                if isinstance(current, GraphJob):
+                    return False, current
+                compatibility_job = GraphJob(
+                    status=current,
+                    token=CancellationToken(),
+                    durable_config=None,
+                )
+                return False, compatibility_job
+            job = GraphJob(
+                status=status,
+                token=CancellationToken(),
+                durable_config=(
+                    self._durable_config(thread_id, checkpoint_config)
+                    if restore is not None
+                    else None
+                ),
+                restore=restore,
+            )
+            self._jobs[thread_id] = job
+        return True, job
 
     def start_background(
         self,
@@ -390,9 +688,13 @@ class ApiGraphRunner:
         timeout_seconds: float,
         checkpoint_config: dict[str, Any] | None = None,
     ) -> bool:
-        started, status = self._reserve_run(thread_id)
+        started, job = self._reserve_run(
+            thread_id,
+            checkpoint_config=checkpoint_config,
+        )
         if not started:
             return False
+        job.transition_complete.set()
         thread = threading.Thread(
             target=self._run_reserved,
             kwargs={
@@ -400,7 +702,7 @@ class ApiGraphRunner:
                 "initial_payload": initial_payload,
                 "max_steps": max_steps,
                 "timeout_seconds": timeout_seconds,
-                "status": status,
+                "job": job,
                 "monotonic_started_at": time.monotonic(),
                 "checkpoint_config": checkpoint_config,
             },
@@ -417,34 +719,172 @@ class ApiGraphRunner:
         max_steps: int,
         timeout_seconds: float,
         checkpoint_config: dict[str, Any] | None = None,
+        restore: Callable[[RunnableConfig], None],
         on_initial_payload_error: Any | None = None,
         on_initial_payload_success: Any | None = None,
     ) -> bool:
-        started, status = self._reserve_run(thread_id)
+        started, job = self._reserve_run(
+            thread_id,
+            restore=restore,
+            checkpoint_config=checkpoint_config,
+        )
         if not started:
             return False
         try:
             initial_payload = payload_factory()
         except Exception:
             with self._lock:
-                self._jobs.pop(thread_id, None)
+                cancelled = job.token.cancelled
+                if self._jobs.get(thread_id) is job and not cancelled:
+                    self._jobs.pop(thread_id, None)
+                job.transition_complete.set()
+            if cancelled:
+                return True
             raise
+        if job.token.cancelled:
+            job.transition_complete.set()
+            return True
+        if not self._supports_invoke_options("interrupt_before"):
+            thread = threading.Thread(
+                target=self._run_reserved,
+                kwargs={
+                    "thread_id": thread_id,
+                    "initial_payload": initial_payload,
+                    "max_steps": max_steps,
+                    "timeout_seconds": timeout_seconds,
+                    "job": job,
+                    "monotonic_started_at": time.monotonic(),
+                    "on_initial_payload_error": on_initial_payload_error,
+                    "on_initial_payload_success": on_initial_payload_success,
+                    "checkpoint_config": checkpoint_config,
+                },
+                daemon=True,
+            )
+            with self._lock:
+                if self._jobs.get(thread_id) is job and not job.token.cancelled:
+                    thread.start()
+                job.transition_complete.set()
+            return True
+        try:
+            with bind_cancellation(job.token):
+                self._invoke(
+                    initial_payload,
+                    checkpoint_config or graph_config(thread_id),
+                    interrupt_before=["model", "tools", "model_output_gate"],
+                )
+            if on_initial_payload_success is not None:
+                on_initial_payload_success()
+        except RunCancelled:
+            job.transition_complete.set()
+            return True
+        except Exception as exc:
+            error_code, user_message = _run_failure(exc)
+            cancelled = False
+            try:
+                with self._lock:
+                    cancelled = job.token.cancelled
+                    if self._jobs.get(thread_id) is job and not cancelled:
+                        if on_initial_payload_error is not None:
+                            try:
+                                on_initial_payload_error()
+                            except Exception:
+                                pass
+                        job.status.update(
+                            {
+                                "state": "error",
+                                "error": f"{type(exc).__name__}: {exc}",
+                                "error_code": error_code,
+                                "user_message": user_message,
+                                "updated_at": time.time(),
+                            }
+                        )
+            finally:
+                job.transition_complete.set()
+            if cancelled:
+                return True
+            return True
         thread = threading.Thread(
             target=self._run_reserved,
             kwargs={
                 "thread_id": thread_id,
-                "initial_payload": initial_payload,
+                "initial_payload": None,
                 "max_steps": max_steps,
                 "timeout_seconds": timeout_seconds,
-                "status": status,
+                "job": job,
                 "monotonic_started_at": time.monotonic(),
-                "on_initial_payload_error": on_initial_payload_error,
-                "on_initial_payload_success": on_initial_payload_success,
                 "checkpoint_config": checkpoint_config,
             },
             daemon=True,
         )
-        thread.start()
+        with self._lock:
+            if self._jobs.get(thread_id) is job and not job.token.cancelled:
+                thread.start()
+            job.transition_complete.set()
+        return True
+
+    def start_background_after_durable_resume(
+        self,
+        *,
+        thread_id: str,
+        initial_payload: Any,
+        restore: Callable[[RunnableConfig], None],
+        max_steps: int,
+        timeout_seconds: float,
+        checkpoint_config: dict[str, Any] | None = None,
+    ) -> bool:
+        config = checkpoint_config or graph_config(thread_id)
+        started, job = self._reserve_run(
+            thread_id,
+            restore=restore,
+            checkpoint_config=config,
+        )
+        if not started:
+            return False
+        try:
+            with bind_cancellation(job.token):
+                self._invoke(
+                    initial_payload,
+                    config,
+                    interrupt_after=["tools", "model_output_gate"],
+                )
+            snapshot = self.app.get_state(
+                config,
+                subgraphs=True,
+            )
+        except RunCancelled:
+            job.transition_complete.set()
+            return True
+        except Exception:
+            with self._lock:
+                cancelled = job.token.cancelled
+                if self._jobs.get(thread_id) is job and not cancelled:
+                    self._jobs.pop(thread_id, None)
+                job.transition_complete.set()
+            if cancelled:
+                return True
+            raise
+        with self._lock:
+            if isinstance(getattr(snapshot, "config", None), dict):
+                job.durable_config = deepcopy(snapshot.config)
+            job.status["steps"] += 1
+            job.status["updated_at"] = time.time()
+        thread = threading.Thread(
+            target=self._run_reserved,
+            kwargs={
+                "thread_id": thread_id,
+                "initial_payload": None,
+                "max_steps": max_steps,
+                "timeout_seconds": timeout_seconds,
+                "job": job,
+                "monotonic_started_at": time.monotonic(),
+                "checkpoint_config": config,
+            },
+            daemon=True,
+        )
+        with self._lock:
+            if self._jobs.get(thread_id) is job and not job.token.cancelled:
+                thread.start()
+            job.transition_complete.set()
         return True
 
     def run_until_blocked(
@@ -457,15 +897,19 @@ class ApiGraphRunner:
         checkpoint_config: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         monotonic_started_at = time.monotonic()
-        started, status = self._reserve_run(thread_id)
+        started, job = self._reserve_run(
+            thread_id,
+            checkpoint_config=checkpoint_config,
+        )
         if not started:
-            return status
+            return dict(job.status)
+        job.transition_complete.set()
         return self._run_reserved(
             thread_id=thread_id,
             initial_payload=initial_payload,
             max_steps=max_steps,
             timeout_seconds=timeout_seconds,
-            status=status,
+            job=job,
             monotonic_started_at=monotonic_started_at,
             checkpoint_config=checkpoint_config,
         )
@@ -477,7 +921,7 @@ class ApiGraphRunner:
         initial_payload: Any | None,
         max_steps: int,
         timeout_seconds: float,
-        status: dict[str, Any],
+        job: GraphJob,
         monotonic_started_at: float,
         checkpoint_config: dict[str, Any] | None = None,
         on_initial_payload_error: Any | None = None,
@@ -490,7 +934,8 @@ class ApiGraphRunner:
 
         def store() -> None:
             with self._lock:
-                self._jobs[thread_id] = dict(status)
+                if self._jobs.get(thread_id) is job:
+                    job.status["updated_at"] = time.time()
 
         def finish(
             state: str,
@@ -499,17 +944,17 @@ class ApiGraphRunner:
             error_code: str | None = None,
             user_message: str | None = None,
         ) -> dict[str, Any]:
-            status["state"] = state
-            status["error"] = error
-            status["error_code"] = error_code
-            status["user_message"] = user_message
-            status["updated_at"] = time.time()
+            job.status["state"] = state
+            job.status["error"] = error
+            job.status["error_code"] = error_code
+            job.status["user_message"] = user_message
+            job.status["updated_at"] = time.time()
             store()
-            return dict(status)
+            return dict(job.status)
 
         def update_step() -> None:
-            status["steps"] += 1
-            status["updated_at"] = time.time()
+            job.status["steps"] += 1
+            job.status["updated_at"] = time.time()
             store()
 
         def finish_for_snapshot(snapshot: Any) -> dict[str, Any] | None:
@@ -522,7 +967,7 @@ class ApiGraphRunner:
             if not list(getattr(snapshot, "next", None) or []):
                 return finish("done")
 
-            if status["steps"] >= max_steps:
+            if job.status["steps"] >= max_steps:
                 return finish(
                     "timeout",
                     f"Graph run reached max_steps={max_steps}",
@@ -550,7 +995,10 @@ class ApiGraphRunner:
 
             if initial_payload is not None:
                 try:
-                    self.app.invoke(initial_payload, config)
+                    with bind_cancellation(job.token):
+                        self._invoke(initial_payload, config)
+                except RunCancelled:
+                    raise
                 except Exception:
                     if on_initial_payload_error is not None:
                         on_initial_payload_error()
@@ -576,8 +1024,11 @@ class ApiGraphRunner:
                 if result is not None:
                     return result
 
-                self.app.invoke({}, config)
+                with bind_cancellation(job.token):
+                    self._invoke({}, config)
                 update_step()
+        except RunCancelled:
+            return self.status(thread_id)
         except Exception as exc:
             error_code, user_message = _run_failure(exc)
             return finish(
@@ -587,15 +1038,68 @@ class ApiGraphRunner:
                 user_message=user_message,
             )
 
+    def cancel(self, thread_id: str) -> dict[str, Any]:
+        with self._lock:
+            job = self._jobs.get(thread_id)
+            if job is None or job.status.get("state") != "running":
+                return dict(job.status) if job is not None else _idle_status()
+            if job.restore is None or job.durable_config is None:
+                raise CancellationRestoreError(
+                    "The active run has no durable cancellation boundary."
+                )
+            job.token.cancel()
+            transition_complete = job.transition_complete
+
+        transition_complete.wait()
+
+        with self._lock:
+            current = self._jobs.get(thread_id)
+            if current is not job or job.status.get("state") != "running":
+                return (
+                    dict(current.status)
+                    if current is not None
+                    else _idle_status()
+                )
+            assert job.restore is not None
+            assert job.durable_config is not None
+            restore = job.restore
+            durable_config = deepcopy(job.durable_config)
+
+        try:
+            restore(durable_config)
+        except Exception as exc:
+            raise CancellationRestoreError(
+                "Unable to restore the last durable checkpoint."
+            ) from exc
+
+        with self._lock:
+            current = self._jobs.get(thread_id)
+            if current is not job:
+                return (
+                    dict(current.status)
+                    if current is not None
+                    else _idle_status()
+                )
+            job.status.update(
+                {
+                    "state": "cancelled",
+                    "error": None,
+                    "error_code": None,
+                    "user_message": None,
+                    "updated_at": time.time(),
+                }
+            )
+            return dict(job.status)
+
 
 def _initial_graph_state(
     thread_id: str,
-    message: HumanMessage,
+    message: HumanMessage | None,
     *,
     active_study_id: str | None = None,
 ) -> dict[str, Any]:
     state = {
-        "messages": [message],
+        "messages": [message] if message is not None else [],
         "output": {},
         "artifacts": {
             "datasets": {},
@@ -673,6 +1177,7 @@ class ReportAgentApiRuntime:
     history_store: ConversationHistoryStore | None = None
     title_generator: OpenAIConversationTitleGenerator | None = None
     title_generator_factory: TitleGeneratorFactory | None = None
+    activity_store: SqliteActivityStore | None = None
     _threads: dict[tuple[str, str], ThreadRuntime] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _attachment_store: LocalAttachmentStore | None = field(
@@ -692,6 +1197,24 @@ class ReportAgentApiRuntime:
         if self.runtime_root is not None:
             self._attachment_store = LocalAttachmentStore(self.runtime_root)
 
+    def _activity_call(self, operation: str, *args: Any) -> Any:
+        if self.activity_store is None:
+            return None
+        try:
+            return getattr(self.activity_store, operation)(*args)
+        except Exception:
+            _LOGGER.exception(
+                "Agent activity lifecycle update failed",
+                extra={"operation": operation},
+            )
+            return None
+
+    def _activity_runs(self, thread_id: str) -> list[ActivityRun]:
+        result = self._activity_call("list_runs", thread_id)
+        if not isinstance(result, list):
+            return []
+        return [item for item in result if isinstance(item, ActivityRun)]
+
     @property
     def attachment_store(self) -> LocalAttachmentStore:
         if self._attachment_store is None:
@@ -709,7 +1232,9 @@ class ReportAgentApiRuntime:
         identity: RequestIdentity | dict[str, Any] | None = None,
         runtime_settings: dict[str, Any] | None = None,
     ) -> str:
-        if isinstance(identity, RequestIdentity):
+        explicit_identity = isinstance(identity, RequestIdentity)
+        if explicit_identity:
+            assert isinstance(identity, RequestIdentity)
             owner_user_id = identity.owner_user_id
         else:
             owner_user_id = "local-user"
@@ -719,8 +1244,8 @@ class ReportAgentApiRuntime:
             settings=self._normalize_settings(runtime_settings),
             thread_id=thread_id,
         )
-        if self.history_store is not None:
-            self.history_store.create(
+        if self.history_store is not None and explicit_identity:
+            self.history_store.create_pending(
                 owner_user_id,
                 thread_id,
                 model_name=thread.settings.model_name,
@@ -846,6 +1371,19 @@ class ReportAgentApiRuntime:
         identity: RequestIdentity,
         thread_id: str,
     ) -> ThreadRuntime:
+        key = (identity.owner_user_id, thread_id)
+        with self._lock:
+            thread = self._threads.get(key)
+            if thread is None and identity.owner_user_id == "local-user":
+                thread = self._threads.pop(thread_id, None)  # type: ignore[arg-type]
+                if thread is not None:
+                    if not thread.thread_id:
+                        thread.thread_id = thread_id
+                    if thread.credential_session_id is None and thread.app is not None:
+                        thread.credential_session_id = LOCAL_SESSION_ID
+                    self._threads[key] = thread
+            if thread is not None:
+                return thread
         record = (
             self.history_store.get(identity.owner_user_id, thread_id)
             if self.history_store is not None
@@ -853,7 +1391,6 @@ class ReportAgentApiRuntime:
         )
         if self.history_store is not None and record is None:
             raise KeyError(thread_id)
-        key = (identity.owner_user_id, thread_id)
         with self._lock:
             thread = self._threads.get(key)
             if thread is None:
@@ -883,8 +1420,6 @@ class ReportAgentApiRuntime:
             if thread_id is None:
                 raise TypeError("thread_id is required")
             return self._require_owned_thread(identity, thread_id)
-        if self.history_store is not None:
-            raise KeyError(identity)
         local_identity = RequestIdentity(
             user=AuthenticatedUser(owner_user_id="local-user"),
             session_id=LOCAL_SESSION_ID,
@@ -939,13 +1474,19 @@ class ReportAgentApiRuntime:
 
     def _ensure_graph(
         self,
-        identity: RequestIdentity,
-        thread: ThreadRuntime,
-        provider_api_key: str,
-    ) -> None:
+        identity: RequestIdentity | ThreadRuntime,
+        thread: ThreadRuntime | None = None,
+        provider_api_key: str | None = None,
+    ) -> tuple[Any, ApiGraphRunner]:
+        if isinstance(identity, ThreadRuntime):
+            thread = identity
+            identity = RequestIdentity(
+                user=AuthenticatedUser(owner_user_id="local-user"),
+                session_id=LOCAL_SESSION_ID,
+            )
+        if thread is None:
+            raise TypeError("thread runtime is required")
         resolved_key = str(provider_api_key or "").strip()
-        if not resolved_key:
-            raise ValueError("provider_api_key is required")
         with self._lock:
             with thread._lock:
                 if thread.app is not None and (
@@ -967,11 +1508,22 @@ class ReportAgentApiRuntime:
                         provider_api_key=resolved_key,
                         storage=self._graph_storage(identity, thread_id),
                     )
-                    thread.app = self.graph_factory(thread.settings, context)
+                    try:
+                        inspect.signature(self.graph_factory).bind(
+                            thread.settings,
+                            context,
+                        )
+                    except (TypeError, ValueError):
+                        thread.app = self.graph_factory(thread.settings)
+                    else:
+                        if not resolved_key and identity.session_id != LOCAL_SESSION_ID:
+                            raise ValueError("provider_api_key is required")
+                        thread.app = self.graph_factory(thread.settings, context)
                     thread.runner = ApiGraphRunner(thread.app)
                     thread.credential_session_id = identity.session_id
                     thread.release_when_idle = False
                 assert thread.runner is not None
+                return thread.app, thread.runner
 
     @staticmethod
     def _bound_graph(thread: ThreadRuntime) -> tuple[Any, ApiGraphRunner]:
@@ -1289,17 +1841,111 @@ class ReportAgentApiRuntime:
             ],
         )
 
-    def submit_message(
+    def _reject_initial_turn(
         self,
         identity: RequestIdentity,
         thread_id: str,
-        text: str,
+        thread: ThreadRuntime,
+        manifests: list[dict[str, Any]],
+    ) -> None:
+        self._rollback_unbound_available_manifests(
+            identity,
+            thread_id,
+            self._attachment_scope(identity, thread_id),
+            thread,
+            manifests,
+        )
+        if self.history_store is not None:
+            self.history_store.delete_pending(identity.owner_user_id, thread_id)
+
+    def _accept_initial_turn(
+        self,
+        identity: RequestIdentity | str,
+        thread_id: str | ThreadRuntime,
+        thread: ThreadRuntime | None = None,
+        *,
+        message_id: str,
+        turn_hash: str,
+        manifests: list[dict[str, Any]],
+    ) -> None:
+        if not isinstance(identity, RequestIdentity):
+            if not isinstance(thread_id, ThreadRuntime):
+                raise TypeError("thread runtime is required")
+            thread = thread_id
+            thread_id = identity
+            identity = RequestIdentity(
+                user=AuthenticatedUser(owner_user_id="local-user"),
+                session_id=LOCAL_SESSION_ID,
+            )
+        if thread is None or not isinstance(thread_id, str):
+            raise TypeError("thread runtime is required")
+        app, _runner = self._bound_graph(thread)
+        snapshot = app.get_state(
+            self._checkpoint_config(identity, thread_id),
+            subgraphs=True,
+        )
+        if not _checkpoint_contains_user_turn(
+            snapshot,
+            message_id=message_id,
+            turn_hash=turn_hash,
+        ):
+            if callable(getattr(app, "invoke", None)):
+                self._reject_initial_turn(identity, thread_id, thread, manifests)
+                raise InitialTurnCheckpointError(
+                    "Initial turn was not durably checkpointed"
+                )
+        values = _projection_values(snapshot)
+        user_event_id = next(
+            (
+                str(event.get("event_id") or "").strip()
+                for event in reversed(
+                    list(
+                        dict(values.get("artifacts") or {}).get(
+                            "conversation_events"
+                        )
+                        or []
+                    )
+                )
+                if isinstance(event, dict)
+                and event.get("type") == "user"
+                and event.get("user_turn_hash") == turn_hash
+                and str(event.get("event_id") or "").strip()
+            ),
+            "",
+        )
+        if user_event_id:
+            self._activity_call("start_run", thread_id, user_event_id)
+        self._commit_binding_manifests(
+            self._attachment_scope(identity, thread_id),
+            manifests,
+        )
+        if self.history_store is not None:
+            self.history_store.promote_pending(identity.owner_user_id, thread_id)
+
+    def submit_message(
+        self,
+        identity: RequestIdentity | str,
+        thread_id: str,
+        text: str | None = None,
         attachment_ids: list[str] | None = None,
         model_name: str | None = None,
         active_study_id: str | None = None,
         *,
-        provider_api_key: str,
+        provider_api_key: str | None = None,
     ) -> None:
+        if not isinstance(identity, RequestIdentity):
+            legacy_thread_id = identity
+            legacy_text = thread_id
+            if isinstance(text, list) and attachment_ids is None:
+                attachment_ids = text
+            identity = RequestIdentity(
+                user=AuthenticatedUser(owner_user_id="local-user"),
+                session_id=LOCAL_SESSION_ID,
+            )
+            thread_id = legacy_thread_id
+            text = legacy_text
+        if text is None:
+            raise TypeError("text is required")
         attachment_ids = list(attachment_ids or [])
         thread = self._require_owned_thread(identity, thread_id)
         if model_name:
@@ -1312,6 +1958,22 @@ class ReportAgentApiRuntime:
             self._checkpoint_config(identity, thread_id),
             subgraphs=True,
         )
+        if not _projection_values(snapshot) and callable(
+            getattr(app, "update_state", None)
+        ):
+            app.update_state(
+                self._checkpoint_config(identity, thread_id),
+                _initial_graph_state(
+                    thread_id,
+                    None,
+                    active_study_id=active_study_id,
+                ),
+                as_node=START,
+            )
+            snapshot = app.get_state(
+                self._checkpoint_config(identity, thread_id),
+                subgraphs=True,
+            )
         if _has_blocking_interrupt(snapshot):
             raise ThreadAwaitingReviewError(thread_id)
         manifests = [
@@ -1333,9 +1995,80 @@ class ReportAgentApiRuntime:
             id=f"user-{uuid.uuid4().hex}",
             additional_kwargs={"attachment_ids": attachment_ids},
         )
-        started = runner.start_background_from_factory(
-            thread_id=thread_id,
-            payload_factory=lambda: self._bind_message_payload(
+        turn = CancelledTurn(
+            message_id=str(message.id),
+            text=str(message.content or ""),
+            turn_hash=self._message_turn_hash(message),
+            attachment_ids=tuple(attachment_ids),
+        )
+
+        def restore_cancelled(durable_config: RunnableConfig) -> None:
+            base = app.get_state(durable_config, subgraphs=True)
+            current_manifests = [
+                self.attachment_store.require(
+                    self._attachment_scope(identity, thread_id),
+                    attachment_id,
+                )
+                for attachment_id in turn.attachment_ids
+            ]
+            self._commit_binding_manifests(
+                self._attachment_scope(identity, thread_id),
+                current_manifests,
+            )
+            committed_manifests = [
+                self.attachment_store.require(
+                    self._attachment_scope(identity, thread_id),
+                    attachment_id,
+                )
+                for attachment_id in turn.attachment_ids
+            ]
+            patch = _cancelled_turn_patch(
+                _projection_values(base),
+                turn=turn,
+                manifests=committed_manifests,
+            )
+            app.update_state(
+                durable_config,
+                patch,
+                as_node="model_output_gate",
+            )
+            if self.history_store is not None:
+                self.history_store.promote_pending(
+                    identity.owner_user_id,
+                    thread_id,
+                )
+
+        created_pending = False
+        if (
+            self.history_store is not None
+            and self.history_store.get(identity.owner_user_id, thread_id) is None
+        ):
+            _record, created_pending = self.history_store.create_pending(
+                identity.owner_user_id,
+                thread_id,
+                model_name=thread.settings.model_name,
+            )
+        runner_parameters = inspect.signature(
+            runner.start_background_from_factory
+        ).parameters
+        payload_success = (
+            lambda: self._accept_initial_turn(
+                identity,
+                thread_id,
+                thread,
+                message_id=str(message.id),
+                turn_hash=self._message_turn_hash(message),
+                manifests=manifests,
+            )
+            if "restore" in runner_parameters
+            else lambda: self._commit_binding_manifests(
+                self._attachment_scope(identity, thread_id),
+                manifests,
+            )
+        )
+        runner_kwargs: dict[str, Any] = {
+            "thread_id": thread_id,
+            "payload_factory": lambda: self._bind_message_payload(
                 thread_id=thread_id,
                 attachment_thread_id=self._attachment_scope(identity, thread_id),
                 snapshot=snapshot,
@@ -1343,35 +2076,39 @@ class ReportAgentApiRuntime:
                 manifests=manifests,
                 active_study_id=active_study_id,
             ),
-            max_steps=thread.settings.max_steps or 1,
-            timeout_seconds=thread.settings.timeout_seconds or 1,
-            checkpoint_config=self._checkpoint_config(identity, thread_id),
-            on_initial_payload_error=lambda: (
-                self._rollback_unbound_available_manifests(
-                    identity,
-                    thread_id,
-                    self._attachment_scope(identity, thread_id),
-                    thread,
-                    manifests,
-                )
-            ),
-            on_initial_payload_success=lambda: self._commit_binding_manifests(
-                self._attachment_scope(identity, thread_id),
+            "max_steps": thread.settings.max_steps or 1,
+            "timeout_seconds": thread.settings.timeout_seconds or 1,
+            "checkpoint_config": self._checkpoint_config(identity, thread_id),
+            "on_initial_payload_error": lambda: self._reject_initial_turn(
+                identity,
+                thread_id,
+                thread,
                 manifests,
             ),
-        )
+            "on_initial_payload_success": payload_success,
+        }
+        if "restore" in runner_parameters:
+            runner_kwargs["restore"] = restore_cancelled
+        try:
+            started = runner.start_background_from_factory(**runner_kwargs)
+        except Exception:
+            if created_pending and self.history_store is not None:
+                self.history_store.delete_pending(identity.owner_user_id, thread_id)
+            raise
         if not started:
+            if created_pending and self.history_store is not None:
+                self.history_store.delete_pending(identity.owner_user_id, thread_id)
             raise ThreadAlreadyRunningError(thread_id)
         if self.history_store is not None:
             record = self.history_store.get(identity.owner_user_id, thread_id)
-            assert record is not None
             title_generator = (
-                self.title_generator_factory(thread.settings, provider_api_key)
+                self.title_generator_factory(thread.settings, provider_api_key or "")
                 if self.title_generator_factory is not None
                 else self.title_generator
             )
             if (
                 not thread.locked
+                and record is not None
                 and text.strip()
                 and record.title == "Untitled conversation"
                 and title_generator is not None
@@ -1382,6 +2119,17 @@ class ReportAgentApiRuntime:
                     thread_id,
                     text,
                     title_generator,
+                )
+            elif (
+                not thread.locked
+                and record is not None
+                and not text.strip()
+                and attachment_ids
+            ):
+                self.history_store.set_initial_automatic_title(
+                    identity.owner_user_id,
+                    thread_id,
+                    ConversationHistoryStore.fallback_title(text),
                 )
         thread.locked = True
 
@@ -1402,8 +2150,30 @@ class ReportAgentApiRuntime:
         except Exception:
             return
 
-    def list_conversations(self, identity: RequestIdentity):
-        return self.history_store.list(identity.owner_user_id) if self.history_store else []
+    def cancel_run(
+        self,
+        identity: RequestIdentity | str,
+        thread_id: str | None = None,
+    ) -> ApiThreadState:
+        if not isinstance(identity, RequestIdentity):
+            thread_id = identity
+            identity = RequestIdentity(
+                user=AuthenticatedUser(owner_user_id="local-user"),
+                session_id=LOCAL_SESSION_ID,
+            )
+        if thread_id is None:
+            raise TypeError("thread_id is required")
+        thread = self._require_owned_thread(identity, thread_id)
+        if thread.runner is not None:
+            thread.runner.cancel(thread_id)
+        if self.history_store is not None:
+            self.history_store.touch(identity.owner_user_id, thread_id)
+        self._activity_call("finish", thread_id, "cancelled")
+        return self.state(identity, thread_id)
+
+    def list_conversations(self, identity: RequestIdentity | None = None):
+        owner_user_id = identity.owner_user_id if identity is not None else "local-user"
+        return self.history_store.list(owner_user_id) if self.history_store else []
 
     def rename_conversation(
         self,
@@ -1438,23 +2208,56 @@ class ReportAgentApiRuntime:
             raise ThreadAwaitingReviewError(thread_id)
         return True
 
-    def archive_conversation(self, identity: RequestIdentity, thread_id: str):
+    def archive_conversation(
+        self,
+        identity: RequestIdentity | str,
+        thread_id: str | None = None,
+    ):
+        if not isinstance(identity, RequestIdentity):
+            thread_id = identity
+            identity = RequestIdentity(
+                user=AuthenticatedUser(owner_user_id="local-user"),
+                session_id=LOCAL_SESSION_ID,
+            )
+        assert thread_id is not None
         if not self._assert_conversation_mutable(identity, thread_id):
             return None
         assert self.history_store is not None
         return self.history_store.archive(identity.owner_user_id, thread_id)
 
-    def restore_conversation(self, identity: RequestIdentity, thread_id: str):
+    def restore_conversation(
+        self,
+        identity: RequestIdentity | str,
+        thread_id: str | None = None,
+    ):
+        if not isinstance(identity, RequestIdentity):
+            thread_id = identity
+            identity = RequestIdentity(
+                user=AuthenticatedUser(owner_user_id="local-user"),
+                session_id=LOCAL_SESSION_ID,
+            )
+        assert thread_id is not None
         if not self._assert_conversation_mutable(identity, thread_id):
             return None
         assert self.history_store is not None
         return self.history_store.restore(identity.owner_user_id, thread_id)
 
-    def delete_conversation(self, identity: RequestIdentity, thread_id: str) -> bool:
+    def delete_conversation(
+        self,
+        identity: RequestIdentity | str,
+        thread_id: str | None = None,
+    ) -> bool:
+        if not isinstance(identity, RequestIdentity):
+            thread_id = identity
+            identity = RequestIdentity(
+                user=AuthenticatedUser(owner_user_id="local-user"),
+                session_id=LOCAL_SESSION_ID,
+            )
+        assert thread_id is not None
         if not self._assert_conversation_mutable(identity, thread_id):
             return False
         thread = self._thread(identity, thread_id)
-        if thread.app is not None:
+        if thread.app is not None and hasattr(thread.app, "checkpointer"):
             app, _runner = self._bound_graph(thread)
             app.checkpointer.delete_thread(
                 self._checkpoint_config(identity, thread_id)["configurable"]["thread_id"]
@@ -1466,6 +2269,7 @@ class ReportAgentApiRuntime:
                 )
         if self._attachment_store is not None:
             self._attachment_store.delete_thread(self._attachment_scope(identity, thread_id))
+        self._activity_call("delete_thread", thread_id)
         with self._lock:
             self._threads.pop((identity.owner_user_id, thread_id), None)
         assert self.history_store is not None
@@ -1633,13 +2437,25 @@ class ReportAgentApiRuntime:
 
     def resume_interrupt(
         self,
-        identity: RequestIdentity,
+        identity: RequestIdentity | str,
         thread_id: str,
-        interrupt_id: str,
-        payload: dict[str, Any],
+        interrupt_id: str | dict[str, Any],
+        payload: dict[str, Any] | None = None,
         *,
-        provider_api_key: str,
+        provider_api_key: str | None = None,
     ) -> None:
+        if not isinstance(identity, RequestIdentity):
+            if not isinstance(interrupt_id, dict):
+                raise TypeError("payload is required")
+            payload = interrupt_id
+            interrupt_id = thread_id
+            thread_id = identity
+            identity = RequestIdentity(
+                user=AuthenticatedUser(owner_user_id="local-user"),
+                session_id=LOCAL_SESSION_ID,
+            )
+        if payload is None or not isinstance(interrupt_id, str):
+            raise TypeError("payload is required")
         thread = self._require_owned_thread(identity, thread_id)
         thread.locked = True
         self._ensure_graph(identity, thread, provider_api_key)
@@ -1649,21 +2465,77 @@ class ReportAgentApiRuntime:
         active_interrupt = _active_interrupt(snapshot, values)
         if active_interrupt is None or active_interrupt.id != interrupt_id:
             raise StaleInterruptError(interrupt_id)
+        interrupt_type = active_interrupt.type
         resume_payload = validate_resume_decision(
             active_interrupt.model_dump(mode="json"),
             payload,
         )
         if resume_payload.get("action") == "answer":
             resume_payload["_clarification_interrupt_id"] = interrupt_id
-        started = runner.start_background(
-            thread_id=thread_id,
-            initial_payload=Command(resume={interrupt_id: resume_payload}),
-            max_steps=thread.settings.max_steps or 1,
-            timeout_seconds=thread.settings.timeout_seconds or 1,
-            checkpoint_config=self._checkpoint_config(identity, thread_id),
-        )
+        try:
+            turn = _cancelled_turn_from_values(values)
+        except CancellationRestoreError:
+            turn = None
+
+        if turn is not None and hasattr(
+            runner,
+            "start_background_after_durable_resume",
+        ):
+            def restore_cancelled(durable_config: RunnableConfig) -> None:
+                base = app.get_state(durable_config, subgraphs=True)
+                current_manifests = [
+                    self.attachment_store.require(
+                        self._attachment_scope(identity, thread_id),
+                        attachment_id,
+                    )
+                    for attachment_id in turn.attachment_ids
+                ]
+                self._commit_binding_manifests(
+                    self._attachment_scope(identity, thread_id),
+                    current_manifests,
+                )
+                committed_manifests = [
+                    self.attachment_store.require(
+                        self._attachment_scope(identity, thread_id),
+                        attachment_id,
+                    )
+                    for attachment_id in turn.attachment_ids
+                ]
+                patch = _cancelled_turn_patch(
+                    _projection_values(base),
+                    turn=turn,
+                    manifests=committed_manifests,
+                )
+                app.update_state(
+                    durable_config,
+                    patch,
+                    as_node="model_output_gate",
+                )
+                if self.history_store is not None:
+                    self.history_store.promote_pending(
+                        identity.owner_user_id,
+                        thread_id,
+                    )
+
+            started = runner.start_background_after_durable_resume(
+                thread_id=thread_id,
+                initial_payload=Command(resume={interrupt_id: resume_payload}),
+                restore=restore_cancelled,
+                max_steps=thread.settings.max_steps or 1,
+                timeout_seconds=thread.settings.timeout_seconds or 1,
+                checkpoint_config=self._checkpoint_config(identity, thread_id),
+            )
+        else:
+            started = runner.start_background(
+                thread_id=thread_id,
+                initial_payload=Command(resume={interrupt_id: resume_payload}),
+                max_steps=thread.settings.max_steps or 1,
+                timeout_seconds=thread.settings.timeout_seconds or 1,
+                checkpoint_config=self._checkpoint_config(identity, thread_id),
+            )
         if not started:
             raise ThreadAlreadyRunningError(thread_id)
+        self._activity_call("resume", thread_id, interrupt_type)
         if self.history_store is not None:
             self.history_store.touch(identity.owner_user_id, thread_id)
 
@@ -1674,12 +2546,19 @@ class ReportAgentApiRuntime:
         *,
         provider_api_key: str | None = None,
     ) -> ApiThreadState:
+        legacy_local_call = not isinstance(identity, RequestIdentity)
         if isinstance(identity, RequestIdentity):
             if thread_id is None:
                 raise TypeError("thread_id is required")
         else:
             thread_id = identity
         thread = self._thread(identity, thread_id)
+        if legacy_local_call and thread.app is None:
+            local_identity = RequestIdentity(
+                user=AuthenticatedUser(owner_user_id="local-user"),
+                session_id=LOCAL_SESSION_ID,
+            )
+            self._ensure_graph(local_identity, thread, None)
         if provider_api_key is not None:
             if not isinstance(identity, RequestIdentity):
                 raise TypeError("identity must be a RequestIdentity")
@@ -1707,7 +2586,11 @@ class ReportAgentApiRuntime:
             subgraphs=True,
         )
         run_status = runner.status(thread_id)
-        if provider_api_key is not None and _should_recover_snapshot(snapshot, run_status):
+        if (
+            (provider_api_key is not None or legacy_local_call)
+            and _should_recover_snapshot(snapshot, run_status)
+        ):
+            self._activity_call("recover", thread_id)
             runner.start_background(
                 thread_id=thread_id,
                 initial_payload=None,
@@ -1716,14 +2599,39 @@ class ReportAgentApiRuntime:
                 checkpoint_config=self._config_for(identity, thread_id),
             )
             run_status = runner.status(thread_id)
-        state = project_thread_state(
+        projected = project_thread_state(
             thread_id=thread_id,
             snapshot=snapshot,
             run_status=run_status,
             runtime_settings=thread.settings,
             runtime_settings_locked=thread.locked,
         )
-        return state
+        if projected.active_interrupt is not None:
+            self._activity_call(
+                "mark_waiting",
+                thread_id,
+                projected.active_interrupt.type,
+            )
+        terminal_activity_state = {
+            "done": "completed",
+            "cancelled": "cancelled",
+            "error": "error",
+            "timeout": "error",
+        }.get(projected.run.state)
+        if terminal_activity_state is not None:
+            self._activity_call(
+                "finish",
+                thread_id,
+                terminal_activity_state,
+            )
+        return project_thread_state(
+            thread_id=thread_id,
+            snapshot=snapshot,
+            run_status=run_status,
+            runtime_settings=thread.settings,
+            runtime_settings_locked=thread.locked,
+            activity_runs=self._activity_runs(thread_id),
+        )
 
     def _dataset_artifact(
         self,
@@ -2040,7 +2948,11 @@ class ReportAgentApiRuntime:
         thread_id: str | None = None,
     ) -> dict[str, Any]:
         state = self.state(identity, thread_id)
-        return state.model_dump(mode="json")
+        payload = state.model_dump(mode="json")
+        for message in payload.get("conversation", []):
+            if isinstance(message, dict) and message.get("status") is None:
+                message.pop("status", None)
+        return payload
 
     def export_thread_archive(
         self,
@@ -2085,6 +2997,13 @@ def _message_created_at(message: Any) -> str | None:
         value = additional_kwargs.get(key)
         if isinstance(value, str) and value.strip():
             return value
+    return None
+
+
+def _message_status(message: Any) -> str | None:
+    additional_kwargs = dict(getattr(message, "additional_kwargs", {}) or {})
+    if additional_kwargs.get("status") == "cancelled":
+        return "cancelled"
     return None
 
 
@@ -2154,6 +3073,7 @@ def _conversation(values: dict[str, Any]) -> list[ConversationMessage]:
                 id=str(getattr(message, "id", "") or f"message-{index}"),
                 role=_message_role(message),
                 text=text,
+                status=_message_status(message),
                 created_at=_message_created_at(message),
                 attachments=attachments,
                 clarifications=clarifications,
@@ -2291,6 +3211,7 @@ def project_thread_state(
     run_status: dict[str, Any],
     runtime_settings: RuntimeSettings | None = None,
     runtime_settings_locked: bool = False,
+    activity_runs: list[ActivityRun] | None = None,
 ) -> ApiThreadState:
     values = _projection_values(snapshot)
     snapshot_next = list(getattr(snapshot, "next", None) or [])
@@ -2345,6 +3266,12 @@ def project_thread_state(
             started_at=status.started_at,
             updated_at=status.updated_at,
         )
+    elif (
+        dict(values.get("terminal_control") or {}).get("status")
+        == "cancelled"
+        and status.state != "running"
+    ):
+        status.state = "cancelled"
     elif interrupt is not None and status.state in {"idle", "done"}:
         status.state = "interrupted"
     elif (
@@ -2358,6 +3285,7 @@ def project_thread_state(
         thread_id=thread_id,
         run=status,
         conversation=_conversation(values),
+        activity_runs=list(activity_runs or []),
         active_interrupt=interrupt,
         datasets=_datasets(values),
         file_artifacts=_file_artifacts(values),

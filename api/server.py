@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 import os
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,7 @@ from api.provider_credentials import (
     ProviderKeyValidator,
 )
 from api.runtime import (
+    CancellationRestoreError,
     ReportAgentApiRuntime,
     StaleInterruptError,
     ThreadAlreadyRunningError,
@@ -262,6 +264,25 @@ def create_app(
     @app.get("/api/public-config", response_model=PublicAppConfig)
     def get_public_config() -> PublicAppConfig:
         return public_config
+
+    if token_verifier is None:
+        @app.post("/api/threads/{thread_id}/cancel", response_model=ApiThreadState)
+        def cancel_local_compatibility_run(thread_id: str) -> ApiThreadState:
+            try:
+                return runtime.cancel_run(thread_id)
+            except KeyError as exc:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Conversation not found",
+                ) from exc
+            except CancellationRestoreError as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "CANCELLATION_RESTORE_FAILED",
+                        "message": str(exc),
+                    },
+                ) from exc
 
     api = APIRouter(dependencies=[Depends(require_identity)])
 
@@ -662,6 +683,27 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return runtime.state(identity, thread_id)
+
+    @api.post("/api/threads/{thread_id}/cancel")
+    def cancel_run(
+        thread_id: str,
+        identity: RequestIdentity = Depends(require_identity),
+    ) -> ApiThreadState:
+        try:
+            cancel_run_parameters = inspect.signature(runtime.cancel_run).parameters
+            if len(cancel_run_parameters) == 1:
+                return runtime.cancel_run(thread_id)
+            return runtime.cancel_run(identity, thread_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Conversation not found") from exc
+        except CancellationRestoreError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "CANCELLATION_RESTORE_FAILED",
+                    "message": str(exc),
+                },
+            ) from exc
 
     @api.post("/api/threads/{thread_id}/interrupts/{interrupt_id}/resume")
     def resume_interrupt(

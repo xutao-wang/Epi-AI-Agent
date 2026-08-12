@@ -10,6 +10,7 @@ import {
   listConversations,
   markConversationOpened,
   archiveConversation,
+  cancelRun,
   renameConversation,
   restoreConversation,
   getRuntimeInfo,
@@ -44,6 +45,28 @@ const threadState: ApiThreadState = {
     updated_at: null,
   },
   conversation: [],
+  activity_runs: [
+    {
+      id: "run-1",
+      thread_id: "thread-1",
+      user_message_id: "user-1",
+      state: "running",
+      activities: [
+        {
+          id: "activity-1",
+          sequence: 1,
+          label: "Understanding your request",
+          status: "running",
+          tool_name: null,
+          tool_call_id: null,
+          created_at: "2026-08-11T00:00:00+00:00",
+          updated_at: "2026-08-11T00:00:00+00:00",
+        },
+      ],
+      created_at: "2026-08-11T00:00:00+00:00",
+      updated_at: "2026-08-11T00:00:00+00:00",
+    },
+  ],
   active_interrupt: null,
   runtime_settings: null,
   runtime_settings_locked: false,
@@ -371,6 +394,22 @@ describe("apiClient", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/threads/thread-1/state");
   });
 
+  it("cancels the active run and returns the restored thread state", async () => {
+    const cancelledState = {
+      ...threadState,
+      run: { ...threadState.run, state: "cancelled" as const },
+    };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(cancelledState));
+
+    await expect(
+      cancelRun(fetchMock, "http://api.test", "thread with/slash"),
+    ).resolves.toEqual(cancelledState);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://api.test/api/threads/thread%20with%2Fslash/cancel",
+      { method: "POST" },
+    );
+  });
+
   it("gets runtime info", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(runtimeInfo));
 
@@ -625,6 +664,28 @@ describe("apiClient", () => {
       2,
       "/api/threads/thread-1/state",
       { headers: expect.any(Headers) },
+    );
+  });
+
+  it("authenticates cancellation through the factory client", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(threadState));
+    const client = createApiClient({
+      apiBase: "http://api.test",
+      fetchImpl: fetchMock,
+      getAccessToken: async () => "access-token",
+      sessionId: "11111111-1111-4111-8111-111111111111",
+    });
+
+    await client.cancelRun("thread-1");
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://api.test/api/threads/thread-1/cancel");
+    expect(init.method).toBe("POST");
+    const headers = new Headers(init.headers);
+    expect(headers.get("Authorization")).toBe("Bearer access-token");
+    expect(headers.get("X-Epi-Session-ID")).toBe(
+      "11111111-1111-4111-8111-111111111111",
     );
   });
 

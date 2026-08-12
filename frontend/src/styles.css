@@ -957,6 +957,151 @@ select {
   border-top-color: #b56b00;
 }
 
+.agent-activity-timeline {
+  width: min(100%, 720px);
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #d79a24;
+  border-radius: 8px;
+  background: #fff7df;
+}
+
+.agent-activity-summary {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: #7a4b00;
+  padding: 11px 14px;
+  text-align: left;
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.agent-activity-summary-content {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-activity-summary-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.agent-activity-summary-status {
+  overflow: hidden;
+  color: #493600;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-activity-summary-indicator,
+.agent-activity-summary-terminal {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+}
+
+.agent-activity-summary-indicator--running {
+  box-sizing: border-box;
+  border: 2px solid #f5db93;
+  border-top-color: #b56b00;
+  border-radius: 50%;
+  animation: activity-spin 0.9s linear infinite;
+}
+
+.agent-activity-summary-indicator--waiting {
+  color: #9a6700;
+}
+
+.agent-activity-summary:hover,
+.agent-activity-summary:focus-visible {
+  background: #ffedb5;
+}
+
+.agent-activity-summary:focus-visible {
+  outline: 2px solid #0969da;
+  outline-offset: -2px;
+}
+
+.agent-activity-list {
+  display: grid;
+  gap: 9px;
+  margin: 0;
+  padding: 12px 14px;
+  list-style: none;
+}
+
+.agent-activity-history {
+  max-height: 280px;
+  overflow-y: auto;
+  border-top: 1px solid #efd38d;
+}
+
+.agent-activity-list--completed {
+  padding-top: 12px;
+}
+
+.agent-activity-item {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: start;
+  gap: 4px 8px;
+  min-width: 0;
+  color: #493600;
+}
+
+.agent-activity-status {
+  display: inline-grid;
+  grid-row: 1 / span 2;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  color: #1a7f37;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.agent-activity-item--running .agent-activity-status {
+  box-sizing: border-box;
+  border: 2px solid #f5db93;
+  border-top-color: #b56b00;
+  border-radius: 50%;
+  animation: activity-spin 0.9s linear infinite;
+}
+
+.agent-activity-item--waiting .agent-activity-status {
+  color: #9a6700;
+}
+
+.agent-activity-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.agent-activity-label {
+  font-weight: 600;
+}
+
+.agent-activity--completed,
+.agent-activity--cancelled,
+.agent-activity--error {
+  border-color: #d8dee4;
+  background: #f6f8fa;
+}
+
+.agent-activity--completed .agent-activity-summary,
+.agent-activity--cancelled .agent-activity-summary,
+.agent-activity--error .agent-activity-summary {
+  color: #4b5563;
+}
+
 .message-system {
   justify-self: start;
 }
@@ -972,6 +1117,32 @@ select {
   font-size: 13px;
   font-weight: 600;
   text-transform: capitalize;
+}
+
+.message-status-cancelled {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  border-radius: 999px;
+  width: fit-content;
+  background: #fff1f0;
+  color: #a40e26;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 2px 8px;
+}
+
+.message-cancelled .message-bubble {
+  opacity: 0.78;
+}
+
+.message-form .cancel-run-button {
+  border-color: #cf222e;
+  background: #cf222e;
+}
+
+.message-form .cancel-run-button:hover:not(:disabled) {
+  background: #a40e26;
 }
 
 .message p {
