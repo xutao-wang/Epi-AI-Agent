@@ -25,6 +25,14 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="Use this study-package folder for this command without changing .env.",
     )
+    parser.add_argument(
+        "--expected-study-id",
+        help="Require a single archive to declare this study ID before installation.",
+    )
+    parser.add_argument(
+        "--expected-package-version",
+        help="Require a single archive to declare this version before installation.",
+    )
     return parser
 
 
@@ -77,10 +85,22 @@ def main(argv: list[str] | None = None) -> int:
     load_app_environment(PROJECT_ROOT)
     args = _parser().parse_args(argv)
     try:
+        if args.study is None and (
+            args.expected_study_id is not None
+            or args.expected_package_version is not None
+        ):
+            raise ValueError(
+                "expected identity options are only valid with --study"
+            )
         selected_study_root = args.study_root or configure_study_root()
         studies_root = selected_study_root / "studies"
         if args.study is not None:
-            installed = install_study_archives(args.study, studies_root)
+            installed = install_study_archives(
+                args.study,
+                studies_root,
+                expected_study_id=args.expected_study_id,
+                expected_package_version=args.expected_package_version,
+            )
             for package in installed:
                 for warning in package.warnings:
                     print(f"Warning: {warning.message}")

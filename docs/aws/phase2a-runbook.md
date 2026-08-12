@@ -106,12 +106,37 @@ terminal state is inspected once and never resent automatically. Confirm that
 `0.2.0` directory remains installed, and that public and local health/readiness
 remain successful.
 
-Study rollback is explicit rather than automatic. After separate approval, run
-the current release's `study_installer.py --activate
-report-india-synthetic@0.2.0` as `epi-agent-web`, restart
-`epi-agent.service` once, and require health and readiness before accepting the
-rollback. Preserve the failed installation command and logs so rollback does
-not hide the original compatibility failure.
+Study rollback is explicit rather than automatic. After separate approval, an
+administrator with Session Manager access starts one audited session:
+
+```sh
+aws ssm start-session --target i-0f9ed9c133ea2358b
+```
+
+In that session, run the fixed interpreter and study root under the service
+account, then restart the service exactly once and verify both local endpoints:
+
+```sh
+cd /opt/epi-agent/current
+sudo /usr/sbin/runuser --user epi-agent-web -- /usr/bin/env -i \
+  PATH=/opt/epi-agent/current/.venv/bin:/usr/bin \
+  LANG=C.UTF-8 \
+  LC_ALL=C.UTF-8 \
+  PYTHONUTF8=1 \
+  REPORT_AGENT_STUDY_ROOT=/srv/epi-agent/study_data \
+  /opt/epi-agent/current/.venv/bin/python \
+  /opt/epi-agent/current/study_installer.py \
+  --activate report-india-synthetic@0.2.0 \
+  --study-root /srv/epi-agent/study_data
+sudo systemctl restart epi-agent.service
+curl --fail --silent --show-error http://127.0.0.1:8000/api/health
+curl --fail --silent --show-error http://127.0.0.1:8000/api/readiness
+```
+
+Accept the rollback only when health reports `ok` and readiness reports
+`ready`. Preserve the failed installation command and logs so rollback does not
+hide the original compatibility failure. If any command fails, stop and inspect
+that failure; do not repeat the installation command automatically.
 
 Replace only the uppercase placeholders after reviewing the matching change set
 or immutable release metadata; never paste a provider key into a command.

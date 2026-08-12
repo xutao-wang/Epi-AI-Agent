@@ -25,6 +25,48 @@ def test_cli_installs_local_study_archive_into_explicit_study_root(tmp_path, cap
     assert "Installed: example-study@1.0.0" in capsys.readouterr().out
 
 
+def test_cli_expected_identity_mismatch_does_not_mutate_installed_studies(
+    tmp_path,
+    capsys,
+) -> None:
+    study_root = tmp_path / "study_data"
+    baseline_archive = create_package_archive(
+        tmp_path / "baseline",
+        manifest=minimal_manifest(study_id="baseline-study", package_version="1.0.0"),
+    )
+    assert main(
+        ["--study", str(baseline_archive), "--study-root", str(study_root)]
+    ) == 0
+    unexpected_archive = create_package_archive(
+        tmp_path / "unexpected",
+        manifest=minimal_manifest(
+            study_id="unexpected-study",
+            package_version="9.9.9",
+        ),
+    )
+
+    exit_code = main(
+        [
+            "--study",
+            str(unexpected_archive),
+            "--study-root",
+            str(study_root),
+            "--expected-study-id",
+            "requested-study",
+            "--expected-package-version",
+            "2.0.0",
+        ]
+    )
+
+    assert exit_code == 1
+    assert "does not match expected identity requested-study@2.0.0" in (
+        capsys.readouterr().err
+    )
+    studies_root = study_root / "studies"
+    assert load_registry(studies_root).active == {"baseline-study": "1.0.0"}
+    assert not (studies_root / "packages" / "unexpected-study").exists()
+
+
 def test_cli_uses_saved_study_root_setting(
     tmp_path,
     capsys,
@@ -67,6 +109,26 @@ def test_cli_rejects_invalid_activation_target(tmp_path, capsys) -> None:
 
     assert exit_code == 1
     assert "ERROR:" in capsys.readouterr().err
+
+
+def test_cli_rejects_expected_identity_guard_for_activation(tmp_path, capsys) -> None:
+    exit_code = main(
+        [
+            "--activate",
+            "example-study@1.0.0",
+            "--study-root",
+            str(tmp_path / "study_data"),
+            "--expected-study-id",
+            "example-study",
+            "--expected-package-version",
+            "1.0.0",
+        ]
+    )
+
+    assert exit_code == 1
+    assert "expected identity options are only valid with --study" in (
+        capsys.readouterr().err
+    )
 
 
 def test_cli_prints_nonfatal_unconsumed_file_warning(tmp_path, capsys) -> None:

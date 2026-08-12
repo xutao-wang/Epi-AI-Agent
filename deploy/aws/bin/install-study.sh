@@ -71,7 +71,9 @@ aws s3 cp "s3://$bucket/$study_key" "$archive_path"
 printf '%s  %s\n' "$study_sha256" "$archive_path" | sha256sum -c -
 chown -R -h epi-agent-web:epi-agent-web "$study_root" "$staging_dir"
 "${study_python[@]}" /opt/epi-agent/current/study_installer.py \
-  "--study" "$archive_path"
+  "--study" "$archive_path" \
+  "--expected-study-id" "$study_id" \
+  "--expected-package-version" "$package_version"
 
 "${study_python[@]}" - "$study_root" "$study_id" "$package_version" <<'PY'
 import json

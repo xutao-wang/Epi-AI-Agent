@@ -185,6 +185,8 @@ def test_study_installer_verifies_archive_and_preserves_prior_versions() -> None
     assert "/opt/epi-agent/current/.venv/bin/python" in source
     assert "/opt/epi-agent/current/study_installer.py" in source
     assert '"--study" "$archive_path"' in source
+    assert '"--expected-study-id" "$study_id"' in source
+    assert '"--expected-package-version" "$package_version"' in source
     assert "study-package.json" in source
     assert "study_id" in source
     assert "package_version" in source
@@ -211,6 +213,22 @@ def test_study_installer_verifies_archive_and_preserves_prior_versions() -> None
     assert "AWS_ACCESS_KEY_ID" not in source
     assert "eval " not in source
     assert "bash -c" not in source
+
+
+def test_phase2a_runbook_has_executable_study_rollback_procedure() -> None:
+    source = _asset("docs/aws/phase2a-runbook.md")
+
+    assert "aws ssm start-session --target i-0f9ed9c133ea2358b" in source
+    assert "cd /opt/epi-agent/current" in source
+    assert "/usr/sbin/runuser --user epi-agent-web -- /usr/bin/env -i" in source
+    assert "REPORT_AGENT_STUDY_ROOT=/srv/epi-agent/study_data" in source
+    assert "/opt/epi-agent/current/.venv/bin/python" in source
+    assert "/opt/epi-agent/current/study_installer.py" in source
+    assert "--activate report-india-synthetic@0.2.0" in source
+    assert "--study-root /srv/epi-agent/study_data" in source
+    assert "sudo systemctl restart epi-agent.service" in source
+    assert "curl --fail --silent --show-error http://127.0.0.1:8000/api/health" in source
+    assert "curl --fail --silent --show-error http://127.0.0.1:8000/api/readiness" in source
 
 
 def test_certificate_and_cloudwatch_assets_are_present() -> None:

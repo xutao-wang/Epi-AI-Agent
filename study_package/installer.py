@@ -404,14 +404,38 @@ def _cleanup_staged(staged: StagedStudy) -> None:
 def install_study_archives(
     archives: Sequence[Path],
     studies_root: Path,
+    *,
+    expected_study_id: str | None = None,
+    expected_package_version: str | None = None,
 ) -> tuple[InstalledStudy, ...]:
     if not archives:
         raise ValueError("At least one study archive is required")
+    if (expected_study_id is None) != (expected_package_version is None):
+        raise ValueError(
+            "Expected study ID and package version must be provided together"
+        )
 
     staged_studies: list[StagedStudy] = []
     try:
         for archive in archives:
             staged_studies.append(stage_study_archive(archive, studies_root))
+
+        if expected_study_id is not None and expected_package_version is not None:
+            if len(staged_studies) != 1:
+                raise ValueError(
+                    "Expected study identity can only guard one archive at a time"
+                )
+            actual_manifest = staged_studies[0].manifest
+            if (
+                actual_manifest.study_id != expected_study_id
+                or actual_manifest.package_version != expected_package_version
+            ):
+                raise ValueError(
+                    "Study archive identity "
+                    f"{actual_manifest.study_id}@{actual_manifest.package_version} "
+                    "does not match expected identity "
+                    f"{expected_study_id}@{expected_package_version}"
+                )
 
         seen_study_ids: set[str] = set()
         for staged in staged_studies:
