@@ -1,9 +1,24 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ActivityRun, ActivityRunState } from "./types";
+import type { ActivityItem as ActivityItemType, ActivityRun, ActivityRunState } from "./types";
 
 
 function isActive(state: ActivityRunState): boolean {
   return state === "running" || state === "waiting";
+}
+
+function ActivityTimelineItem({ activity }: { activity: ActivityItemType }) {
+  return (
+    <li className={`agent-activity-item agent-activity-item--${activity.status}`}>
+      <span className="agent-activity-status" aria-hidden="true">
+        {activity.status === "completed"
+          ? "✓"
+          : activity.status === "waiting"
+            ? "⚠"
+            : ""}
+      </span>
+      <span className="agent-activity-label">{activity.label}</span>
+    </li>
+  );
 }
 
 export default function AgentActivityTimeline({ run }: { run: ActivityRun }) {
@@ -14,19 +29,14 @@ export default function AgentActivityTimeline({ run }: { run: ActivityRun }) {
     () => [...run.activities].sort((left, right) => left.sequence - right.sequence),
     [run.activities],
   );
-  const toolTotals = useMemo(() => {
-    const totals = new Map<string, number>();
-    for (const activity of activities) {
-      if (activity.tool_name) {
-        totals.set(activity.tool_name, (totals.get(activity.tool_name) ?? 0) + 1);
-      }
-    }
-    return totals;
-  }, [activities]);
-  const toolOccurrences = new Map<string, number>();
   const liveActivity = [...activities]
     .reverse()
     .find((activity) => activity.status === "running" || activity.status === "waiting");
+  const historyActivities = liveActivity
+    ? activities.filter((activity) => activity.id !== liveActivity.id)
+    : activities;
+  const latestLabel = liveActivity?.label ?? "Working on your request";
+  const indicatorStatus = liveActivity?.status ?? (run.state === "waiting" ? "waiting" : "running");
 
   useEffect(() => {
     const wasActive = isActive(previousState.current);
@@ -38,10 +48,8 @@ export default function AgentActivityTimeline({ run }: { run: ActivityRun }) {
     previousState.current = run.state;
   }, [active, run.state]);
 
-  const countLabel = `${activities.length} ${
-    activities.length === 1 ? "activity" : "activities"
-  }`;
-  const actionLabel = expanded ? "Hide agent activity" : "View agent activity";
+  const countLabel = `${activities.length} ${activities.length === 1 ? "step" : "steps"}`;
+  const actionLabel = expanded ? "Hide activity history" : "Show activity history";
 
   return (
     <li
@@ -54,47 +62,39 @@ export default function AgentActivityTimeline({ run }: { run: ActivityRun }) {
         aria-expanded={expanded}
         onClick={() => setExpanded((current) => !current)}
       >
-        {actionLabel} · {countLabel}
+        <span className="agent-activity-summary-content">
+          {active ? (
+            <span
+              aria-hidden="true"
+              className={`agent-activity-summary-indicator agent-activity-summary-indicator--${indicatorStatus}`}
+            >
+              {indicatorStatus === "waiting" ? "⚠" : null}
+            </span>
+          ) : (
+            <span aria-hidden="true" className="agent-activity-summary-terminal">
+              {run.state === "completed" ? "✓" : run.state === "error" ? "!" : "–"}
+            </span>
+          )}
+          <span className="agent-activity-summary-text">
+            <span className="agent-activity-summary-action">
+              {actionLabel} · {countLabel}
+            </span>
+            {active ? (
+              <span aria-live="polite" className="agent-activity-summary-status">
+                {latestLabel}
+              </span>
+            ) : null}
+          </span>
+        </span>
       </button>
-      {expanded ? (
-        <ol className="agent-activity-list">
-          {activities.map((activity) => {
-            let occurrence: number | null = null;
-            if (activity.tool_name) {
-              occurrence = (toolOccurrences.get(activity.tool_name) ?? 0) + 1;
-              toolOccurrences.set(activity.tool_name, occurrence);
-            }
-            const repeated = Boolean(
-              activity.tool_name && (toolTotals.get(activity.tool_name) ?? 0) > 1,
-            );
-            return (
-              <li
-                key={activity.id}
-                className={`agent-activity-item agent-activity-item--${activity.status}`}
-              >
-                <span className="agent-activity-status" aria-hidden="true">
-                  {activity.status === "completed"
-                    ? "✓"
-                    : activity.status === "waiting"
-                      ? "⚠"
-                      : ""}
-                </span>
-                <span
-                  className="agent-activity-label"
-                  aria-live={liveActivity?.id === activity.id ? "polite" : undefined}
-                >
-                  {activity.label}
-                </span>
-                {activity.tool_name ? (
-                  <span className="agent-activity-tool">
-                    <code>{activity.tool_name}</code>
-                    {repeated ? <span>Call {occurrence}</span> : null}
-                  </span>
-                ) : null}
-              </li>
-            );
-          })}
-        </ol>
+      {expanded && historyActivities.length > 0 ? (
+        <div className="agent-activity-history">
+          <ol className="agent-activity-list agent-activity-list--completed">
+            {historyActivities.map((activity) => (
+              <ActivityTimelineItem activity={activity} key={activity.id} />
+            ))}
+          </ol>
+        </div>
       ) : null}
     </li>
   );

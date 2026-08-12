@@ -53,62 +53,92 @@ const waitingRun: ActivityRun = {
 };
 
 describe("AgentActivityTimeline", () => {
-  it("collapses a completed run and reveals repeated technical calls", () => {
+  it("shows a plain-language completed history without tool details", () => {
     render(<AgentActivityTimeline run={completedRun} />);
 
     const button = screen.getByRole("button", {
-      name: "View agent activity · 2 activities",
+      name: "Show activity history · 2 steps",
     });
     expect(button).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByText("dbrag-search_catalog")).not.toBeInTheDocument();
 
     fireEvent.click(button);
 
     expect(button).toHaveAttribute("aria-expanded", "true");
     expect(screen.getAllByText("Searching the data catalog")).toHaveLength(2);
-    expect(screen.getAllByText("dbrag-search_catalog")).toHaveLength(2);
-    expect(screen.getByText("Call 1")).toBeInTheDocument();
-    expect(screen.getByText("Call 2")).toBeInTheDocument();
+    expect(screen.queryByText("dbrag-search_catalog")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Call 1|Call 2/)).not.toBeInTheDocument();
   });
 
-  it("starts waiting work expanded with a polite status update", () => {
-    const { container } = render(<AgentActivityTimeline run={waitingRun} />);
+  it("keeps the newest running status visible while its history is collapsed", () => {
+    const runningRun: ActivityRun = {
+      ...completedRun,
+      id: "run-3",
+      state: "running",
+      activities: [
+        ...completedRun.activities,
+        {
+          ...completedRun.activities[1],
+          id: "activity-running",
+          sequence: 3,
+          label: "Checking table relationships",
+          status: "running",
+        },
+      ],
+    };
+    const { container } = render(<AgentActivityTimeline run={runningRun} />);
 
+    expect(screen.getByText("Checking table relationships")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Hide agent activity · 1 activity" }),
-    ).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByText("Waiting for dataset approval")).toBeInTheDocument();
-    expect(container.querySelector('[aria-live="polite"]')).toHaveTextContent(
-      "Waiting for dataset approval",
-    );
-    expect(screen.queryByText(/failed/i)).not.toBeInTheDocument();
-  });
-
-  it("collapses when live work transitions to a terminal state", () => {
-    const { rerender } = render(
-      <AgentActivityTimeline run={{ ...completedRun, state: "running" }} />,
-    );
+      container.querySelector(".agent-activity-summary-indicator--running"),
+    ).toBeInTheDocument();
     expect(screen.getByRole("button")).toHaveAttribute("aria-expanded", "true");
 
-    rerender(<AgentActivityTimeline run={completedRun} />);
+    fireEvent.click(screen.getByRole("button"));
 
     expect(screen.getByRole("button")).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText("Checking table relationships")).toBeInTheDocument();
+    expect(container.querySelector(".agent-activity-history")).toBeNull();
   });
 
-  it("keeps cancelled work collapsed without a running indicator", () => {
+  it("uses a waiting status above completed history without a spinner", () => {
     const { container } = render(
       <AgentActivityTimeline
         run={{
-          ...completedRun,
-          state: "cancelled",
-          activities: [
-            { ...completedRun.activities[0], status: "completed" },
-          ],
+          ...waitingRun,
+          activities: [...completedRun.activities, ...waitingRun.activities],
         }}
       />,
     );
 
+    expect(
+      screen.getByRole("button", { name: /Hide activity history · 3 steps/ }),
+    ).toHaveAttribute("aria-expanded", "true");
+    expect(container.querySelector('[aria-live="polite"]')).toHaveTextContent(
+      "Waiting for dataset approval",
+    );
+    expect(
+      container.querySelector(".agent-activity-summary-indicator--running"),
+    ).toBeNull();
+    expect(container.querySelector(".agent-activity-history")).toBeInTheDocument();
+    expect(screen.getAllByText("Waiting for dataset approval")).toHaveLength(1);
+  });
+
+  it("collapses terminal work and removes the running summary indicator", () => {
+    const { container, rerender } = render(
+      <AgentActivityTimeline run={{ ...completedRun, state: "running" }} />,
+    );
+    expect(
+      container.querySelector(".agent-activity-summary-indicator--running"),
+    ).toBeInTheDocument();
+
+    rerender(<AgentActivityTimeline run={completedRun} />);
+
     expect(screen.getByRole("button")).toHaveAttribute("aria-expanded", "false");
-    expect(container.querySelector(".agent-activity-item--running")).toBeNull();
+    expect(
+      container.querySelector(".agent-activity-summary-indicator--running"),
+    ).toBeNull();
+    expect(container.querySelector(".agent-activity-summary-terminal")).toHaveTextContent(
+      "✓",
+    );
   });
 });
