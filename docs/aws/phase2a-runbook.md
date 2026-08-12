@@ -52,15 +52,21 @@ In **Cognito → User pools → epi-agent-phase2a → Users**, choose **Create u
 to send the first invitation.
 
 Upload immutable packages with `upload-release RELEASE releases/ID.tar.gz` and
-`upload-study STUDY studies/ID.tar.gz`. When retained study permissions prevent
-the current application from starting, first create, inspect, approve, and
-execute the change set that adds `epi-agent-recover-study-access`. Start the
-exact stack instance, invoke `recover-study-access` with its exact instance
-confirmation, and require SSM `Success` plus healthy local endpoints before
-invoking `deploy-release`. Never deploy first and plan to repair the retained
-study afterward: the release installer's current-service gate will fail closed.
-In **CloudWatch → Alarms/Logs**, check status, CPU, credits, memory, disk, and
-service errors.
+`upload-study STUDY studies/ID.tar.gz`. Install a study only through the
+stack-provided `epi-agent-install-study` document after reviewing and executing
+the CloudFormation change set that creates it. The guarded operation verifies
+the S3 checksum metadata, targets only the stack instance, runs the production
+installer as `epi-agent-web`, restarts the service once, and requires local
+health, readiness, active-version identity, and installed archive checksum.
+
+When retained study permissions prevent the current application from starting,
+first create, inspect, approve, and execute the change set that adds
+`epi-agent-recover-study-access`. Start the exact stack instance, invoke
+`recover-study-access` with its exact instance confirmation, and require SSM
+`Success` plus healthy local endpoints before invoking `deploy-release`. Never
+deploy first and plan to repair the retained study afterward: the release
+installer's current-service gate will fail closed. In **CloudWatch →
+Alarms/Logs**, check status, CPU, credits, memory, disk, and service errors.
 
 > **Warning:** terminate, retained bucket/volume cleanup, and snapshot deletion
 > are separate destructive actions. Stopping the instance retains EBS/EIP cost;
@@ -78,9 +84,10 @@ CloudWatch logs/alarms, SNS, Cognito, Route 53 hosted-zone and DNS-query charges
 # Administrator-only Console action: the pinned xutao-dev CLI cannot bootstrap.
 python scripts/aws_phase2a.py execute-change-set CHANGE_SET_ARN --confirm-account 641379499556
 python scripts/aws_phase2a.py upload-release dist/aws/epi-agent-SHA.tar.gz releases/SHA.tar.gz
-python scripts/aws_phase2a.py upload-study study.tar.gz studies/STUDY.tar.gz
+python scripts/aws_phase2a.py upload-study report-india-synthetic-0.3.0.tar.gz studies/report-india-synthetic-0.3.0.tar.gz
 python scripts/aws_phase2a.py recover-study-access --confirm-instance i-0f9ed9c133ea2358b
 python scripts/aws_phase2a.py deploy-release releases/SHA.tar.gz SHA256 RELEASE_SHA epiagent.org ops@example.org
+python scripts/aws_phase2a.py install-study studies/report-india-synthetic-0.3.0.tar.gz c1cd71222657502d214a745a236018f984e1092cab0ddbf7479b5d14b15493d4 report-india-synthetic 0.3.0 --confirm-instance i-0f9ed9c133ea2358b
 ```
 
 `recover-study-access` is a separately authorized, parameter-free recovery
@@ -89,6 +96,22 @@ instance is SSM Online. Record the emitted
 `study access recovery command ID: COMMAND_ID` line; on any non-success terminal
 state, inspect that exact invocation once, do not retry the command ID, stop the
 instance, and return to source diagnosis.
+
+`install-study` is also a separately authorized operation. Run it only after
+the named SSM document exists, the exact archive has been uploaded, its S3
+`sha256` metadata matches the command, and the instance is SSM Online. Record
+the emitted `study installation command ID: COMMAND_ID` line. A non-success
+terminal state is inspected once and never resent automatically. Confirm that
+`registry.json` activates `report-india-synthetic@0.3.0`, that the versioned
+`0.2.0` directory remains installed, and that public and local health/readiness
+remain successful.
+
+Study rollback is explicit rather than automatic. After separate approval, run
+the current release's `study_installer.py --activate
+report-india-synthetic@0.2.0` as `epi-agent-web`, restart
+`epi-agent.service` once, and require health and readiness before accepting the
+rollback. Preserve the failed installation command and logs so rollback does
+not hide the original compatibility failure.
 
 Replace only the uppercase placeholders after reviewing the matching change set
 or immutable release metadata; never paste a provider key into a command.
