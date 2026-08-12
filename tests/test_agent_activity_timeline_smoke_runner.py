@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import time
+from typing import Any
 
 import pytest
 
+from api.auth import LOCAL_SESSION_ID
 import scripts.e2e_agent_activity_timeline_real as smoke
 
 
@@ -210,3 +212,45 @@ def test_browser_diagnostics_are_captured_before_browser_closes() -> None:
             raise RuntimeError("browser flow failed")
 
     assert events == ["flow", "diagnostics", "close"]
+
+
+class JsonResponse:
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self.payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, Any]:
+        return self.payload
+
+
+def test_thread_state_sends_the_canonical_local_session_header(monkeypatch) -> None:
+    calls: list[tuple[str, dict[str, Any]]] = []
+    responses = iter(
+        [
+            JsonResponse({"items": [{"thread_id": "thread-456"}]}),
+            JsonResponse({"run": {"state": "running"}}),
+        ]
+    )
+
+    def fake_get(url: str, **kwargs: Any) -> JsonResponse:
+        calls.append((url, kwargs))
+        return next(responses)
+
+    monkeypatch.setattr(smoke.requests, "get", fake_get)
+
+    assert smoke._thread_state("http://127.0.0.1:8000") == {
+        "run": {"state": "running"}
+    }
+    expected_headers = {"X-Epi-Session-ID": LOCAL_SESSION_ID}
+    assert calls == [
+        (
+            "http://127.0.0.1:8000/api/conversations",
+            {"headers": expected_headers, "timeout": 5},
+        ),
+        (
+            "http://127.0.0.1:8000/api/threads/thread-456/state",
+            {"headers": expected_headers, "timeout": 5},
+        ),
+    ]
