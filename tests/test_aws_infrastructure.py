@@ -739,6 +739,10 @@ def test_phase2a_recovery_document_is_fixed_and_parameter_free() -> None:
     privilege_drop = (
         "/usr/sbin/runuser --user epi-agent-web -- /usr/bin/env -i"
     )
+    runtime_install = (
+        "install -d -m 0750 -o epi-agent-web -g epi-agent-web "
+        "/run/epi-agent"
+    )
     assert "readonly study_root=/srv/epi-agent/study_data" in command
     assert command.startswith("exec /usr/bin/bash -Eeuo pipefail <<'BASH'\n")
     assert command.rstrip().endswith("BASH")
@@ -749,8 +753,12 @@ def test_phase2a_recovery_document_is_fixed_and_parameter_free() -> None:
     assert "LC_ALL=C.UTF-8" in command
     assert "PYTHONUTF8=1" in command
     assert "REPORT_AGENT_STUDY_ROOT=/srv/epi-agent/study_data" in command
+    assert runtime_install in command
     assert command.index(ownership) < command.index(privilege_drop)
-    assert command.index(privilege_drop) < command.index(
+    assert command.index("active study index is not readable") < command.index(
+        runtime_install
+    )
+    assert command.index(runtime_install) < command.index(
         "systemctl restart epi-agent.service"
     )
     assert command.index("systemctl restart epi-agent.service") < command.index(

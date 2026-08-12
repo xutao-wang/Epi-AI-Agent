@@ -696,6 +696,7 @@ Resources:
                               "active study index is not readable, writable, and searchable"
                           )
                   PY
+                  install -d -m 0750 -o epi-agent-web -g epi-agent-web /run/epi-agent
                   systemctl restart epi-agent.service
                   recovery_deadline=$((SECONDS + recovery_deadline_seconds))
                   while :; do

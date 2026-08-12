@@ -9,6 +9,9 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE = ROOT / "infra" / "aws" / "phase2a" / "template.yaml"
+RUNTIME_INSTALL = (
+    "install -d -m 0750 -o epi-agent-web -g epi-agent-web /run/epi-agent"
+)
 
 
 class CloudFormationLoader(yaml.SafeLoader):
@@ -35,6 +38,7 @@ def _container_recovery(
     tmp_path: Path,
     *,
     remove_chown: bool = False,
+    fail_runtime_install: bool = False,
     deadline_seconds: int = 120,
     retained_state: str = "valid",
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
@@ -64,6 +68,12 @@ def _container_recovery(
         "readonly recovery_deadline_seconds=120",
         f"readonly recovery_deadline_seconds={deadline_seconds}",
     )
+    if fail_runtime_install:
+        failed_command = command.replace(RUNTIME_INSTALL, "false")
+        assert (
+            failed_command != command
+        ), "recovery runtime install command is missing"
+        command = failed_command
     if remove_chown:
         command = command.replace(
             'chown -R -h epi-agent-web:epi-agent-web "$study_root"', ":"
@@ -75,6 +85,7 @@ def _container_recovery(
         """#!/usr/bin/bash
 set -u
 useradd --uid 1001 --create-home epi-agent-web
+rm -rf /run/epi-agent
 study_root=/srv/epi-agent/study_data
 package_root=$study_root/studies/packages/report-india-synthetic/0.2.0
 index_root=$package_root/database/index
@@ -98,7 +109,16 @@ ln -sf /usr/local/bin/python3 /usr/bin/python3.12
 cat > /usr/bin/systemctl <<'SYSTEMCTL'
 #!/usr/bin/bash
 printf 'systemctl %s\\n' "$*" >> /work/operations
-case "$1" in restart) : > /work/service-running ;; is-active) test -f /work/service-running ;; status) exit 0 ;; *) exit 64 ;; esac
+case "$1" in
+  restart)
+    test -d /run/epi-agent || exit 65
+    stat -c '%u:%g %a' /run/epi-agent > /work/runtime-directory-stat
+    : > /work/service-running
+    ;;
+  is-active) test -f /work/service-running ;;
+  status) exit 0 ;;
+  *) exit 64 ;;
+esac
 SYSTEMCTL
 cat > /usr/bin/curl <<'CURL'
 #!/usr/bin/bash
@@ -139,6 +159,9 @@ def test_recovery_repairs_root_owned_study_with_real_uid_switch(tmp_path: Path) 
     assert (work / "registry-stat").read_text().strip() == "1001:1001 600"
     assert (work / "sentinel-stat").read_text().strip() == "1001:1001 400"
     assert (work / "sentinel-content").read_bytes() == b"preserve retained Chroma data"
+    assert (
+        work / "runtime-directory-stat"
+    ).read_text().strip() == "1001:1001 750"
     assert (work / "operations").read_text().splitlines() == [
         "systemctl restart epi-agent.service",
         "curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8000/api/health",
@@ -149,6 +172,19 @@ def test_recovery_repairs_root_owned_study_with_real_uid_switch(tmp_path: Path) 
     assert (work / "recovery.sh").read_text().startswith("exec /usr/bin/bash")
     assert (work / "driver.sh").read_text().find("/bin/sh /work/recovery.sh") != -1
     assert (work / "sentinel-stat").is_file()
+
+
+def test_recovery_stops_before_restart_when_runtime_directory_creation_fails(
+    tmp_path: Path,
+) -> None:
+    completed, work = _container_recovery(
+        tmp_path,
+        fail_runtime_install=True,
+    )
+
+    assert completed.returncode != 0
+    assert not (work / "operations").exists()
+    assert not (work / "runtime-directory-stat").exists()
 
 
 def test_recovery_without_chown_fails_before_restart(tmp_path: Path) -> None:
