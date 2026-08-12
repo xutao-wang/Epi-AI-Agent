@@ -65,6 +65,11 @@ def test_web_service_runs_the_api_with_least_privilege() -> None:
     assert "StandardError=append:/var/log/epi-agent/application.log" in source
     assert "UMask=0027" in source
     assert "NoNewPrivileges=true" in source
+    assert source.count("RuntimeDirectory=epi-agent") == 1
+    assert source.count("RuntimeDirectoryMode=0750") == 1
+    service_section = source.split("[Service]\n", 1)[1].split("\n[Install]", 1)[0]
+    assert "RuntimeDirectory=epi-agent" in service_section
+    assert "RuntimeDirectoryMode=0750" in service_section
     assert "ReadWritePaths=/srv/epi-agent/runtime /srv/epi-agent/study_data /run/epi-agent" in source
     assert "ReadOnlyPaths=/opt/epi-agent/current" in source
     assert "ReadWritePaths=/opt/epi-agent/releases" not in source
