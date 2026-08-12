@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import re
 import shlex
 import tempfile
 from collections.abc import Mapping
@@ -11,6 +13,23 @@ from pathlib import Path
 DEFAULT_CORS_ALLOW_ORIGIN_REGEX = r"^http://(127\.0\.0\.1|localhost):\d+$"
 _PYTHON_WORKER_PATH = "/usr/local/libexec/epi-agent-python-worker"
 _PYTHON_WORKER_LAUNCHER = ("/usr/bin/sudo", "-n", _PYTHON_WORKER_PATH)
+_RELEASE_ID_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+_DEFAULT_RELEASE_MANIFEST = Path(__file__).resolve().parents[1] / "release.json"
+
+
+def release_id_from_manifest(path: Path) -> str:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "development"
+    if not isinstance(payload, dict):
+        return "development"
+    release_id = payload.get("commit_sha")
+    if not isinstance(release_id, str) or not _RELEASE_ID_PATTERN.fullmatch(
+        release_id
+    ):
+        return "development"
+    return release_id
 
 
 def python_worker_launcher(environ: Mapping[str, str]) -> tuple[str, ...] | None:
@@ -36,12 +55,21 @@ class DeploymentState:
     release_id: str
 
     @classmethod
-    def from_environ(cls, environ: Mapping[str, str]) -> "DeploymentState":
+    def from_environ(
+        cls,
+        environ: Mapping[str, str],
+        *,
+        release_manifest_path: Path | None = None,
+    ) -> "DeploymentState":
         configured = str(environ.get("REPORT_AGENT_MAINTENANCE_FILE", "")).strip()
-        release_id = str(environ.get("REPORT_AGENT_RELEASE_ID", "development")).strip()
+        release_id = str(environ.get("REPORT_AGENT_RELEASE_ID", "")).strip()
+        if not release_id:
+            release_id = release_id_from_manifest(
+                release_manifest_path or _DEFAULT_RELEASE_MANIFEST
+            )
         return cls(
             maintenance_file=Path(configured) if configured else None,
-            release_id=release_id or "development",
+            release_id=release_id,
         )
 
     def maintenance_enabled(self) -> bool:
