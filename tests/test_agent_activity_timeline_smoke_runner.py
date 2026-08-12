@@ -43,6 +43,15 @@ class StepwiseReviewPage:
         return HiddenLocator()
 
 
+def test_default_query_uses_only_supported_baseline_fields() -> None:
+    assert smoke.DEFAULT_QUERY == (
+        "Create a baseline index-case dataset from Form 2A - INDEX CASE: "
+        "Clinical/Demographic Form with participant ID, age, sex, and marital "
+        "status. Present the dataset plan for review."
+    )
+    assert "diabetes" not in smoke.DEFAULT_QUERY.casefold()
+
+
 def test_review_wait_stops_when_api_run_is_already_terminal() -> None:
     wait_for_review = getattr(smoke, "_wait_for_dataset_plan_review", None)
     assert wait_for_review is not None
@@ -60,6 +69,21 @@ def test_review_wait_stops_when_api_run_is_already_terminal() -> None:
             NoReviewPage(),
             api_url="http://unused.test",
             deadline=time.monotonic() + 60,
+            state_reader=lambda _url: state,
+        )
+
+
+def test_review_wait_fails_when_run_completes_without_review() -> None:
+    state = {"run": {"state": "done"}}
+
+    with pytest.raises(
+        RuntimeError,
+        match="Agent run ended before dataset-plan review:.*state done",
+    ):
+        smoke._wait_for_dataset_plan_review(
+            NoReviewPage(),
+            api_url="http://unused.test",
+            deadline=time.monotonic() + 0.1,
             state_reader=lambda _url: state,
         )
 
@@ -103,64 +127,30 @@ def test_review_wait_accepts_the_initial_stepwise_review_controls() -> None:
     )
 
 
-def test_review_wait_answers_expected_diabetes_clarification() -> None:
-    events: list[str] = []
-
-    class InteractiveLocator:
-        def __init__(self, action: str):
-            self.action = action
-
-        def is_visible(self, *, timeout: int) -> bool:
-            assert timeout == 100
-            return self.action == "review" and "continue" in events
-
-        def check(self) -> None:
-            events.append(self.action)
-
-        def click(self) -> None:
-            events.append(self.action)
-
-    class ClarificationPage:
-        def get_by_role(self, role: str, *, name: str, exact: bool):
-            assert exact is True
-            if role == "heading" and name == "Review dataset plan":
-                return InteractiveLocator("review")
-            if role == "button" and name == "Approve & continue":
-                return InteractiveLocator("review")
-            if role == "button" and name == "Approve plan and extract":
-                return HiddenLocator()
-            if role == "button" and name == "Continue":
-                return InteractiveLocator("continue")
-            raise AssertionError((role, name))
-
-        def get_by_label(self, name: str, *, exact: bool):
-            assert exact is True
-            assert name == "Use medication as the diabetes proxy"
-            return InteractiveLocator("medication_proxy")
-
+def test_review_wait_rejects_unexpected_scientific_clarification() -> None:
     state = {
         "run": {"state": "interrupted"},
         "active_interrupt": {
             "id": "clarification-1",
             "type": "agent_clarification",
+            "question": "Which scientific proxy should be used?",
             "options": [
-                {
-                    "id": "medication_proxy",
-                    "label": "Use medication as the diabetes proxy",
-                },
-                {"id": "omit_diabetes", "label": "Omit diabetes"},
+                {"id": "proxy", "label": "Use a proxy"},
+                {"id": "omit", "label": "Omit the variable"},
             ],
         },
     }
 
-    smoke._wait_for_dataset_plan_review(
-        ClarificationPage(),
-        api_url="http://unused.test",
-        deadline=time.monotonic() + 0.5,
-        state_reader=lambda _url: state,
-    )
-
-    assert events == ["medication_proxy", "continue"]
+    with pytest.raises(
+        RuntimeError,
+        match="unexpected clarification.*Which scientific proxy",
+    ):
+        smoke._wait_for_dataset_plan_review(
+            NoReviewPage(),
+            api_url="http://unused.test",
+            deadline=time.monotonic() + 0.1,
+            state_reader=lambda _url: state,
+        )
 
 
 def test_timeline_label_wait_accepts_repeated_matching_rows() -> None:

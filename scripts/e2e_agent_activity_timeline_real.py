@@ -29,9 +29,9 @@ from api.auth import LOCAL_SESSION_ID
 LOCAL_API_HEADERS = {"X-Epi-Session-ID": LOCAL_SESSION_ID}
 MESSAGE_LABEL = "Ask a question about your dataset!"
 DEFAULT_QUERY = (
-    "Create a cohort dataset from the database to study factors associated with "
-    "loss to follow up among index cases. Include marital status, alcohol use, "
-    "diabetes, gender, and the loss-to-follow-up outcome."
+    "Create a baseline index-case dataset from Form 2A - INDEX CASE: "
+    "Clinical/Demographic Form with participant ID, age, sex, and marital "
+    "status. Present the dataset plan for review."
 )
 
 
@@ -107,7 +107,6 @@ def _wait_for_dataset_plan_review(
     deadline: float,
     state_reader: Any = _thread_state,
 ) -> None:
-    answered_interrupt_ids: set[str] = set()
     while time.monotonic() < deadline:
         heading = page.get_by_role(
             "heading",
@@ -139,7 +138,7 @@ def _wait_for_dataset_plan_review(
             continue
         run = state.get("run") or {}
         run_state = str(run.get("state") or "")
-        if run_state in {"cancelled", "error", "timeout"}:
+        if run_state in {"done", "cancelled", "error", "timeout"}:
             error_code = str(run.get("error_code") or "AGENT_RUN_TERMINATED")
             message = str(
                 run.get("user_message")
@@ -152,34 +151,15 @@ def _wait_for_dataset_plan_review(
             )
 
         interrupt = state.get("active_interrupt") or {}
-        interrupt_id = str(interrupt.get("id") or "")
-        if (
-            interrupt.get("type") == "agent_clarification"
-            and interrupt_id not in answered_interrupt_ids
-        ):
-            options = list(interrupt.get("options") or [])
-            preferred = next(
-                (
-                    option
-                    for option in options
-                    if option.get("id") == "medication_proxy"
-                ),
-                options[0] if options else None,
+        if interrupt.get("type") == "agent_clarification":
+            question = str(
+                interrupt.get("question")
+                or "The agent did not provide clarification text."
             )
-            if preferred is None:
-                raise RuntimeError(
-                    "Agent requested clarification without selectable options."
-                )
-            page.get_by_label(
-                str(preferred["label"]),
-                exact=True,
-            ).check()
-            page.get_by_role(
-                "button",
-                name="Continue",
-                exact=True,
-            ).click()
-            answered_interrupt_ids.add(interrupt_id)
+            raise RuntimeError(
+                "Agent requested unexpected clarification before "
+                f"dataset-plan review: {question}"
+            )
         time.sleep(0.25)
     raise TimeoutError("Timed out waiting for dataset-plan review.")
 
