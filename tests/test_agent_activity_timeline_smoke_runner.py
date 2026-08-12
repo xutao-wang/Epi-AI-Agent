@@ -9,6 +9,19 @@ from api.auth import LOCAL_SESSION_ID
 import scripts.e2e_agent_activity_timeline_real as smoke
 
 
+def test_plain_language_timeline_accepts_friendly_activity_labels() -> None:
+    smoke._assert_plain_language_timeline(
+        "Searching the data catalog\nWaiting for dataset plan review"
+    )
+
+
+def test_plain_language_timeline_rejects_technical_tool_name_leakage() -> None:
+    with pytest.raises(AssertionError, match="technical tool-name leakage"):
+        smoke._assert_plain_language_timeline(
+            "Searching the data catalog\ndbrag-search_catalog"
+        )
+
+
 class HiddenLocator:
     def is_visible(self, *, timeout: int) -> bool:
         assert timeout == 100

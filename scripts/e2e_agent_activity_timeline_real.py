@@ -175,6 +175,18 @@ def _wait_for_timeline_label(
     )
 
 
+def _assert_plain_language_timeline(rendered_text: str) -> None:
+    normalized_text = rendered_text.casefold()
+    if "dbrag-" in normalized_text:
+        raise AssertionError(
+            "The public timeline exposed technical tool-name leakage."
+        )
+    if "fail" in normalized_text:
+        raise AssertionError(
+            "The public timeline exposed a tool-call failure."
+        )
+
+
 @contextmanager
 def _diagnostic_browser(browser: Any, record_failure: Any):
     try:
@@ -401,14 +413,7 @@ def run(args: argparse.Namespace) -> int:
                     "Waiting for dataset plan review",
                     deadline=deadline,
                 )
-                if timeline.locator("code").filter(has_text="dbrag-").count() < 1:
-                    raise AssertionError(
-                        "Expanded activity timeline did not show a DB-RAG tool name."
-                    )
-                if "fail" in timeline.inner_text().casefold():
-                    raise AssertionError(
-                        "The public timeline exposed a tool-call failure."
-                    )
+                _assert_plain_language_timeline(timeline.inner_text())
 
                 state = _thread_state(api_url)
                 _assert_waiting_activity_state(state)
