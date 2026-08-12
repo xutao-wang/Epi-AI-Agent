@@ -685,7 +685,7 @@ describe("App", () => {
     expect(screen.getAllByLabelText("Agent activity timeline")).toHaveLength(1);
   });
 
-  it("renders repeated successful calls as separate rows", async () => {
+  it("renders repeated successful calls as separate plain-language rows", async () => {
     const first = {
       ...activityRun().activities[0],
       status: "completed" as const,
@@ -732,8 +732,8 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
     expect(await screen.findAllByText("Searching the data catalog")).toHaveLength(2);
-    expect(screen.getByText("Call 1")).toBeInTheDocument();
-    expect(screen.getByText("Call 2")).toBeInTheDocument();
+    expect(screen.queryByText("dbrag-search_catalog")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Call 1|Call 2/)).not.toBeInTheDocument();
   });
 
   it("keeps a waiting timeline last in the message list before its review card", async () => {
@@ -816,7 +816,7 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
     expect(
-      await screen.findByRole("button", { name: "View agent activity · 1 activity" }),
+      await screen.findByRole("button", { name: "Show activity history · 1 step" }),
     ).toHaveAttribute("aria-expanded", "false");
   });
 
