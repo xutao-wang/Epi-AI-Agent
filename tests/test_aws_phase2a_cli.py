@@ -1,5 +1,6 @@
 import builtins
 import importlib.util
+import json
 from pathlib import Path
 import pytest
 spec=importlib.util.spec_from_file_location("cli",Path(__file__).parents[1]/"scripts/aws_phase2a.py"); cli=importlib.util.module_from_spec(spec); spec.loader.exec_module(cli)
@@ -60,7 +61,7 @@ def test_all_aws_commands_use_immutable_target_flags():
  s=_source(); assert 'EXPECTED_PROFILE="xutao-dev"' in s and 'EXPECTED_REGION="us-east-1"' in s and '"--profile",EXPECTED_PROFILE,"--region",EXPECTED_REGION' in s
 def test_mutating_helpers_guard_identity_first():
  s=_source()
- for name in ("plan(","plan_bootstrap(","execute(","execute_bootstrap(","upload(","lifecycle(","deploy("):
+ for name in ("plan(","plan_bootstrap(","execute(","execute_bootstrap(","upload(","lifecycle(","deploy(","install_study("):
   start=s.index("def "+name); assert "require_expected_identity(r)" in s[start:start+500]
 
 def test_plan_stack_parser_requires_application_parameters():
@@ -211,3 +212,109 @@ def test_recover_study_access_times_out_without_resending(monkeypatch,capsys):
  assert sum("get-command-invocation" in call for call in calls)==1
  assert sleeps==[cli.POLL_INTERVAL_SECONDS]
  assert capsys.readouterr().out=="study access recovery command ID: timeout-command\n"
+
+@pytest.mark.parametrize(
+ ("key","sha","study_id","version"),
+ [
+  ("releases/study.tar.gz","a"*64,"study","1.0.0"),
+  ("studies/../study.tar.gz","a"*64,"study","1.0.0"),
+  ("studies/study.tar.gz","A"*64,"study","1.0.0"),
+  ("studies/study.tar.gz","a"*63,"study","1.0.0"),
+  ("studies/study.tar.gz","a"*64,"Study","1.0.0"),
+  ("studies/study.tar.gz","a"*64,"study","version/one"),
+ ],
+)
+def test_install_study_rejects_invalid_input_before_aws(key,sha,study_id,version):
+ runner=R("{}")
+ with pytest.raises(cli.OperatorError,match="invalid study installation input"):
+  cli.install_study(runner,key,sha,study_id,version,"i-confirmed")
+ assert runner.calls==[]
+
+def test_install_study_parser_requires_exact_instance_confirmation():
+ source=_source(); start=source.index('q=s.add_parser("install-study")'); end=source.index('q=s.add_parser("plan-stack")'); section=source[start:end]
+ assert 'q.add_argument("key")' in section
+ assert 'q.add_argument("sha")' in section
+ assert 'q.add_argument("study_id")' in section
+ assert 'q.add_argument("version")' in section
+ assert 'q.add_argument("--confirm-instance",required=True)' in section
+
+def _install_outputs():
+ return {"ApplicationBucketName":"stack-bucket","ApplicationInstanceId":"i-stack","InstallStudyDocumentName":"epi-agent-install-study"}
+
+def test_install_study_uses_stack_targets_and_verified_object(monkeypatch,capsys):
+ import subprocess
+ calls=[]; events=[]
+ class SequenceRunner:
+  def run(self,argv,*,capture_output=True):
+   calls.append(list(argv))
+   if "get-caller-identity" in argv:
+    events.append("identity"); payload='{"Account":"641379499556","Arn":"arn:aws:iam::641379499556:user/xutao-dev"}'
+   elif "head-object" in argv:
+    events.append("head"); payload='{"Metadata":{"sha256":"'+"a"*64+'"}}'
+   elif "send-command" in argv:
+    events.append("send"); payload='{"Command":{"CommandId":"new-study-command"}}'
+   elif "get-command-invocation" in argv:
+    events.append("poll"); payload='{"Status":"Success"}'
+   else: raise AssertionError(argv)
+   return subprocess.CompletedProcess(argv,0,payload,"")
+ def fixed_outputs(_runner): events.append("outputs"); return _install_outputs()
+ monkeypatch.setattr(cli,"outputs",fixed_outputs)
+ cli.install_study(SequenceRunner(),"studies/report-india-synthetic-0.3.0.tar.gz","a"*64,"report-india-synthetic","0.3.0","i-stack")
+ head=next(call for call in calls if "head-object" in call)
+ assert head[head.index("--bucket")+1]=="stack-bucket"
+ assert head[head.index("--key")+1]=="studies/report-india-synthetic-0.3.0.tar.gz"
+ sent=next(call for call in calls if "send-command" in call)
+ assert sent[sent.index("--document-name")+1]=="epi-agent-install-study"
+ assert sent[sent.index("--instance-ids")+1]=="i-stack"
+ assert json.loads(sent[sent.index("--parameters")+1])=={"Bucket":["stack-bucket"],"StudyKey":["studies/report-india-synthetic-0.3.0.tar.gz"],"StudySha256":["a"*64],"StudyId":["report-india-synthetic"],"PackageVersion":["0.3.0"]}
+ polled=next(call for call in calls if "get-command-invocation" in call)
+ assert polled[polled.index("--command-id")+1]=="new-study-command"
+ assert events==["identity","outputs","head","send","poll"]
+ assert capsys.readouterr().out=="study installation command ID: new-study-command\n"
+
+def test_install_study_rejects_wrong_instance_before_object_or_send(monkeypatch):
+ import subprocess
+ calls=[]
+ class IdentityRunner:
+  def run(self,argv,*,capture_output=True):
+   calls.append(list(argv)); return subprocess.CompletedProcess(argv,0,'{"Account":"641379499556","Arn":"arn:aws:iam::641379499556:user/xutao-dev"}',"")
+ monkeypatch.setattr(cli,"outputs",lambda _runner:_install_outputs())
+ with pytest.raises(cli.OperatorError,match="confirm the exact stack instance ID"):
+  cli.install_study(IdentityRunner(),"studies/report-india-synthetic-0.3.0.tar.gz","a"*64,"report-india-synthetic","0.3.0","i-wrong")
+ assert not any("head-object" in call or "send-command" in call for call in calls)
+
+@pytest.mark.parametrize("metadata",[{}, {"sha256":"b"*64}])
+def test_install_study_rejects_missing_or_mismatched_object_checksum(monkeypatch,metadata):
+ import subprocess
+ calls=[]
+ class MetadataRunner:
+  def run(self,argv,*,capture_output=True):
+   calls.append(list(argv))
+   if "get-caller-identity" in argv: payload='{"Account":"641379499556","Arn":"arn:aws:iam::641379499556:user/xutao-dev"}'
+   elif "head-object" in argv: payload=json.dumps({"Metadata":metadata})
+   else: raise AssertionError(argv)
+   return subprocess.CompletedProcess(argv,0,payload,"")
+ monkeypatch.setattr(cli,"outputs",lambda _runner:_install_outputs())
+ with pytest.raises(cli.OperatorError,match="study object checksum metadata does not match"):
+  cli.install_study(MetadataRunner(),"studies/report-india-synthetic-0.3.0.tar.gz","a"*64,"report-india-synthetic","0.3.0","i-stack")
+ assert not any("send-command" in call for call in calls)
+
+@pytest.mark.parametrize("status",["Failed","TimedOut","Cancelled"])
+def test_install_study_fails_closed_on_terminal_failure(monkeypatch,capsys,status):
+ import subprocess
+ calls=[]
+ class FailedRunner:
+  def run(self,argv,*,capture_output=True):
+   calls.append(list(argv))
+   if "get-caller-identity" in argv: payload='{"Account":"641379499556","Arn":"arn:aws:iam::641379499556:user/xutao-dev"}'
+   elif "head-object" in argv: payload='{"Metadata":{"sha256":"'+"a"*64+'"}}'
+   elif "send-command" in argv: payload='{"Command":{"CommandId":"failed-study-command"}}'
+   elif "get-command-invocation" in argv: payload='{"Status":"'+status+'"}'
+   else: raise AssertionError(argv)
+   return subprocess.CompletedProcess(argv,0,payload,"")
+ monkeypatch.setattr(cli,"outputs",lambda _runner:_install_outputs())
+ with pytest.raises(cli.OperatorError,match="study installation command did not succeed"):
+  cli.install_study(FailedRunner(),"studies/report-india-synthetic-0.3.0.tar.gz","a"*64,"report-india-synthetic","0.3.0","i-stack")
+ assert sum("send-command" in call for call in calls)==1
+ assert sum("get-command-invocation" in call for call in calls)==1
+ assert capsys.readouterr().out=="study installation command ID: failed-study-command\n"

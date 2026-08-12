@@ -11,6 +11,8 @@ BOOTSTRAP_STACK="epi-agent-bootstrap"; APPLICATION_STACK="epi-agent-phase2a"
 POLL_INTERVAL_SECONDS=1
 CHANGE_SET_TIMEOUT_SECONDS=1800
 DEPLOY_TIMEOUT_SECONDS=3600
+STUDY_KEY_PATTERN=re.compile(r"^studies/[A-Za-z0-9][A-Za-z0-9._-]*\.tar\.gz$")
+STUDY_TOKEN_PATTERN=re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 class OperatorError(RuntimeError): pass
 class Runner(Protocol):
  def run(self, argv: Sequence[str], *, capture_output: bool=True) -> subprocess.CompletedProcess[str]: ...
@@ -118,6 +120,17 @@ def recover_study_access(r:Runner,confirm:str)->None:
  sent=run_json(r,aws("ssm","send-command","--document-name",document,"--instance-ids",instance)); command=sent["Command"]["CommandId"]
  print(f"study access recovery command ID: {command}",flush=True)
  wait_for_ssm_command(r,command,instance,"study access recovery")
+def install_study(r:Runner,key:str,sha:str,study_id:str,version:str,confirm:str)->None:
+ if not STUDY_KEY_PATTERN.fullmatch(key) or ".." in key or not re.fullmatch(r"[0-9a-f]{64}",sha) or not STUDY_TOKEN_PATTERN.fullmatch(study_id) or not STUDY_TOKEN_PATTERN.fullmatch(version): raise OperatorError("invalid study installation input")
+ require_expected_identity(r); o=outputs(r); bucket=o.get("ApplicationBucketName",""); instance=o.get("ApplicationInstanceId",""); document=o.get("InstallStudyDocumentName","")
+ if not bucket or not instance or not document: raise OperatorError("required study installation outputs missing")
+ if confirm!=instance: raise OperatorError("confirm the exact stack instance ID")
+ remote=run_json(r,aws("s3api","head-object","--bucket",bucket,"--key",key))
+ if (remote.get("Metadata") or {}).get("sha256")!=sha: raise OperatorError("study object checksum metadata does not match")
+ params=json.dumps({"Bucket":[bucket],"StudyKey":[key],"StudySha256":[sha],"StudyId":[study_id],"PackageVersion":[version]})
+ sent=run_json(r,aws("ssm","send-command","--document-name",document,"--instance-ids",instance,"--parameters",params)); command=sent["Command"]["CommandId"]
+ print(f"study installation command ID: {command}",flush=True)
+ wait_for_ssm_command(r,command,instance,"study installation")
 def main(argv=None, runner:Runner|None=None)->int:
  r=runner or SubprocessRunner(); p=argparse.ArgumentParser(); s=p.add_subparsers(dest="cmd",required=True)
  s.add_parser("identity"); s.add_parser("validate"); s.add_parser("outputs")
@@ -129,6 +142,7 @@ def main(argv=None, runner:Runner|None=None)->int:
  for n in ("stop","start"):
   q=s.add_parser(n); q.add_argument("--confirm-instance",required=True)
  q=s.add_parser("recover-study-access"); q.add_argument("--confirm-instance",required=True)
+ q=s.add_parser("install-study"); q.add_argument("key"); q.add_argument("sha"); q.add_argument("study_id"); q.add_argument("version"); q.add_argument("--confirm-instance",required=True)
  q=s.add_parser("plan-stack"); q.add_argument("--domain-name",required=True); q.add_argument("--hosted-zone-id",required=True); q.add_argument("--certificate-email",required=True); q.add_argument("--alert-email",default=""); q.add_argument("--data-volume-gib",default="50"); q.add_argument("--data-snapshot-id",default="")
  q=s.add_parser("deploy-release"); q.add_argument("key"); q.add_argument("sha"); q.add_argument("release_id"); q.add_argument("domain"); q.add_argument("email")
  a=p.parse_args(argv)
@@ -151,6 +165,7 @@ def main(argv=None, runner:Runner|None=None)->int:
    upload(r,a.file,a.key); return 0
   if a.cmd in ("stop","start"): lifecycle(r,a.cmd,a.confirm_instance); return 0
   if a.cmd=="recover-study-access": recover_study_access(r,a.confirm_instance); return 0
+  if a.cmd=="install-study": install_study(r,a.key,a.sha,a.study_id,a.version,a.confirm_instance); return 0
   if a.cmd=="deploy-release": deploy(r,a.key,a.sha,a.release_id,a.domain,a.email); return 0
   raise OperatorError("subcommand requires explicit operator arguments")
  except OperatorError as e: print(f"error: {e}",file=sys.stderr); return 2
