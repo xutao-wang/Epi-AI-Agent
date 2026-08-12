@@ -92,6 +92,20 @@ def test_nginx_only_exposes_safe_operational_routes() -> None:
     assert "location = /api/ops/deployment-status { deny all; }" in source
 
 
+def test_nginx_csp_allows_only_required_cognito_connections() -> None:
+    source = _asset("deploy/aws/nginx/epi-agent.conf")
+    expected = (
+        'add_header Content-Security-Policy "default-src \'self\'; '
+        "connect-src 'self' https://cognito-idp.us-east-1.amazonaws.com "
+        "https://*.auth.us-east-1.amazoncognito.com; "
+        "frame-ancestors 'none'; base-uri 'self'\" always;"
+    )
+
+    assert expected in source
+    assert "connect-src *" not in source
+    assert "connect-src https:" not in source
+
+
 def test_environment_example_has_only_hosted_non_secret_configuration() -> None:
     source = _asset("deploy/aws/env/app.env.example")
     expected = """REPORT_AGENT_AUTH_MODE=cognito
