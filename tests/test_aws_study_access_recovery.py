@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 
@@ -31,8 +32,34 @@ def _recovery_command() -> str:
 
 
 def _container_recovery(
-    tmp_path: Path, *, remove_chown: bool = False, deadline_seconds: int = 120
+    tmp_path: Path,
+    *,
+    remove_chown: bool = False,
+    deadline_seconds: int = 120,
+    retained_state: str = "valid",
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
+    retained_state_mutation = {
+        "valid": ":",
+        "no-active-package": (
+            "printf '%s\\n' "
+            "'{\"format_version\":1,\"active\":{}}' "
+            '> "$study_root/studies/registry.json"'
+        ),
+        "manifest-mismatch": (
+            "printf '%s\\n' "
+            "'{\"study_id\":\"report-india-synthetic\","
+            "\"package_version\":\"9.9.9\","
+            "\"database\":{\"index\":\"database/index\"}}' "
+            '> "$package_root/study-package.json"'
+        ),
+        "unsafe-index": (
+            "printf '%s\\n' "
+            "'{\"study_id\":\"report-india-synthetic\","
+            "\"package_version\":\"0.2.0\","
+            "\"database\":{\"index\":\"../outside\"}}' "
+            '> "$package_root/study-package.json"'
+        ),
+    }[retained_state]
     command = _recovery_command().replace(
         "readonly recovery_deadline_seconds=120",
         f"readonly recovery_deadline_seconds={deadline_seconds}",
@@ -59,6 +86,7 @@ chown -R root:root /srv/epi-agent
 chmod 0700 "$study_root" "$study_root/studies" "$package_root" "$package_root/database" "$index_root"
 chmod 0600 "$study_root/studies/registry.json" "$package_root/study-package.json"
 chmod 0400 "$index_root/sentinel.bin"
+__RETAINED_STATE_MUTATION__
 cat > /opt/epi-agent/current/.venv/bin/python <<'PYTHON'
 #!/usr/bin/bash
 id -u > /work/validation-uid
@@ -85,7 +113,7 @@ stat -c '%u:%g %a' "$study_root/studies/registry.json" > /work/registry-stat
 stat -c '%u:%g %a' "$index_root/sentinel.bin" > /work/sentinel-stat
 cat "$index_root/sentinel.bin" > /work/sentinel-content
 exit "$result"
-""",
+""".replace("__RETAINED_STATE_MUTATION__", retained_state_mutation),
         encoding="utf-8",
     )
     driver.chmod(0o755)
@@ -129,6 +157,29 @@ def test_recovery_without_chown_fails_before_restart(tmp_path: Path) -> None:
     assert completed.returncode != 0
     assert not (work / "operations").exists()
     assert (work / "registry-stat").read_text().strip() == "0:0 600"
+
+
+@pytest.mark.parametrize(
+    ("retained_state", "expected_error"),
+    (
+        ("no-active-package", "study registry has no active package"),
+        ("manifest-mismatch", "active study manifest does not match registry"),
+        ("unsafe-index", "active study index path is unsafe"),
+    ),
+)
+def test_recovery_rejects_inconsistent_retained_state_after_ownership_repair(
+    tmp_path: Path,
+    retained_state: str,
+    expected_error: str,
+) -> None:
+    completed, work = _container_recovery(tmp_path, retained_state=retained_state)
+
+    assert completed.returncode != 0
+    assert expected_error in completed.stderr
+    assert (work / "registry-stat").read_text().strip() == "1001:1001 600"
+    assert (work / "sentinel-stat").read_text().strip() == "1001:1001 400"
+    assert (work / "sentinel-content").read_bytes() == b"preserve retained Chroma data"
+    assert not (work / "operations").exists()
 
 
 def test_recovery_rejects_ready_response_after_deadline_without_waiting(tmp_path: Path) -> None:
