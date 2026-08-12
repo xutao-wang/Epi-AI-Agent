@@ -726,6 +726,120 @@ Resources:
                   done
                   BASH
 
+  EpiAgentInstallStudyDocument:
+    Type: AWS::SSM::Document
+    Properties:
+      DocumentType: Command
+      DocumentFormat: YAML
+      Name: epi-agent-install-study
+      UpdateMethod: NewVersion
+      Content:
+        schemaVersion: '2.2'
+        description: Install and activate one verified Epi Agent study package.
+        parameters:
+          Bucket:
+            type: String
+            interpolationType: ENV_VAR
+            allowedPattern: '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
+          StudyKey:
+            type: String
+            interpolationType: ENV_VAR
+            allowedPattern: '^studies/[A-Za-z0-9][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)*\.tar\.gz$'
+          StudySha256:
+            type: String
+            interpolationType: ENV_VAR
+            allowedPattern: '^[0-9a-f]{64}$'
+          StudyId:
+            type: String
+            interpolationType: ENV_VAR
+            allowedPattern: '^[a-z0-9][a-z0-9._-]*$'
+          PackageVersion:
+            type: String
+            interpolationType: ENV_VAR
+            allowedPattern: '^[a-z0-9][a-z0-9._-]*$'
+        mainSteps:
+          - action: aws:runShellScript
+            name: installStudy
+            inputs:
+              runCommand:
+                - |
+                  exec /usr/bin/bash -Eeuo pipefail <<'BASH'
+                  readonly study_root=/srv/epi-agent/study_data
+                  readonly current_python=/opt/epi-agent/current/.venv/bin/python
+                  readonly install_deadline_seconds=120
+
+                  /usr/local/sbin/install-study.sh \
+                    "$SSM_Bucket" \
+                    "$SSM_StudyKey" \
+                    "$SSM_StudySha256" \
+                    "$SSM_StudyId" \
+                    "$SSM_PackageVersion"
+
+                  systemctl restart epi-agent.service
+                  install_deadline=$((SECONDS + install_deadline_seconds))
+                  while :; do
+                    remaining_seconds=$((install_deadline - SECONDS))
+                    [ "$remaining_seconds" -gt 0 ] || exit 1
+                    request_timeout=$((remaining_seconds < 5 ? remaining_seconds : 5))
+                    if curl --fail --silent --show-error --max-time "$request_timeout" \
+                      http://127.0.0.1:8000/api/health >/dev/null; then
+                      remaining_seconds=$((install_deadline - SECONDS))
+                      [ "$remaining_seconds" -gt 0 ] || exit 1
+                      request_timeout=$((remaining_seconds < 5 ? remaining_seconds : 5))
+                      if readiness=$(curl --fail --silent --show-error \
+                        --max-time "$request_timeout" \
+                        http://127.0.0.1:8000/api/readiness); then
+                        if printf '%s' "$readiness" | /usr/bin/python3.12 -c \
+                          'import json, sys; raise SystemExit(0 if json.load(sys.stdin).get("status") == "ready" else 1)'; then
+                          break
+                        fi
+                      fi
+                    fi
+                    systemctl is-active --quiet epi-agent.service
+                    remaining_seconds=$((install_deadline - SECONDS))
+                    [ "$remaining_seconds" -gt 0 ] || exit 1
+                    sleep_seconds=$((remaining_seconds < 2 ? remaining_seconds : 2))
+                    sleep "$sleep_seconds"
+                  done
+
+                  cd /opt/epi-agent/current
+                  /usr/sbin/runuser --user epi-agent-web -- /usr/bin/env -i \
+                    PATH=/opt/epi-agent/current/.venv/bin:/usr/bin \
+                    LANG=C.UTF-8 \
+                    LC_ALL=C.UTF-8 \
+                    PYTHONUTF8=1 \
+                    REPORT_AGENT_STUDY_ROOT=/srv/epi-agent/study_data \
+                    "$current_python" - "$study_root" "$SSM_StudyId" \
+                    "$SSM_PackageVersion" "$SSM_StudySha256" <<'PY'
+                  from pathlib import Path
+                  import sys
+
+                  from study_package.installer import load_installed_study
+                  from study_package.registry import load_registry, package_root
+
+                  study_root = Path(sys.argv[1])
+                  study_id = sys.argv[2]
+                  package_version = sys.argv[3]
+                  expected_sha256 = sys.argv[4]
+                  studies_root = study_root / "studies"
+                  registry = load_registry(studies_root)
+                  if registry.active.get(study_id) != package_version:
+                      raise SystemExit("installed study version is not active")
+                  installed = load_installed_study(
+                      package_root(studies_root, study_id, package_version)
+                  )
+                  if (installed.study_id, installed.package_version) != (
+                      study_id,
+                      package_version,
+                  ):
+                      raise SystemExit("installed study identity does not match request")
+                  if installed.archive_sha256 != expected_sha256:
+                      raise SystemExit(
+                          "installed study archive checksum does not match request"
+                      )
+                  PY
+                  BASH
+
   ApplicationDataVolumeLifecycleRole:
     Type: AWS::IAM::Role
     Properties:
@@ -977,3 +1091,6 @@ Outputs:
   RecoverStudyAccessDocumentName:
     Description: Parameter-free SSM document for retained study access recovery
     Value: !Ref EpiAgentRecoverStudyAccessDocument
+  InstallStudyDocumentName:
+    Description: Name of the SSM Command document used to install study packages.
+    Value: !Ref EpiAgentInstallStudyDocument

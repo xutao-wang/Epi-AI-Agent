@@ -774,3 +774,74 @@ def test_phase2a_recovery_document_is_fixed_and_parameter_free() -> None:
     assert template["Outputs"]["RecoverStudyAccessDocumentName"]["Value"] == {
         "Ref": "EpiAgentRecoverStudyAccessDocument"
     }
+
+
+def test_phase2a_install_study_document_is_constrained_and_verified() -> None:
+    template = phase2a_template()
+    document = template["Resources"]["EpiAgentInstallStudyDocument"]
+
+    assert document["Type"] == "AWS::SSM::Document"
+    properties = document["Properties"]
+    assert properties["Name"] == "epi-agent-install-study"
+    assert properties["DocumentType"] == "Command"
+    assert properties["DocumentFormat"] == "YAML"
+    assert properties["UpdateMethod"] == "NewVersion"
+    content = properties["Content"]
+    assert content["schemaVersion"] == "2.2"
+    parameters = content["parameters"]
+    assert set(parameters) == {
+        "Bucket",
+        "StudyKey",
+        "StudySha256",
+        "StudyId",
+        "PackageVersion",
+    }
+    assert all(
+        parameter["type"] == "String"
+        and parameter["interpolationType"] == "ENV_VAR"
+        and parameter["allowedPattern"]
+        for parameter in parameters.values()
+    )
+    assert re.fullmatch(
+        parameters["StudyKey"]["allowedPattern"],
+        "studies/report-india-synthetic-0.3.0.tar.gz",
+    )
+    for unsafe in (
+        "studies/../secret.tar.gz",
+        "studies/package..tar.gz",
+        "studies/nested/package.tar.gz",
+    ):
+        assert not re.fullmatch(parameters["StudyKey"]["allowedPattern"], unsafe)
+
+    step = content["mainSteps"][0]
+    assert step["action"] == "aws:runShellScript"
+    command = "\n".join(step["inputs"]["runCommand"])
+    assert command.startswith("exec /usr/bin/bash -Eeuo pipefail <<'BASH'\n")
+    assert command.rstrip().endswith("BASH")
+    order = (
+        '/usr/local/sbin/install-study.sh \\\n  "$SSM_Bucket" \\\n  "$SSM_StudyKey"',
+        "systemctl restart epi-agent.service",
+        "http://127.0.0.1:8000/api/health",
+        "http://127.0.0.1:8000/api/readiness",
+        "cd /opt/epi-agent/current",
+        "/usr/sbin/runuser --user epi-agent-web -- /usr/bin/env -i",
+        "load_installed_study",
+        "installed.archive_sha256 != expected_sha256",
+    )
+    positions = [command.index(token) for token in order]
+    assert positions == sorted(positions)
+    assert "readonly study_root=/srv/epi-agent/study_data" in command
+    assert "readonly current_python=/opt/epi-agent/current/.venv/bin/python" in command
+    assert "REPORT_AGENT_STUDY_ROOT=/srv/epi-agent/study_data" in command
+    assert 'registry.active.get(study_id) != package_version' in command
+    assert 'systemctl is-active --quiet epi-agent.service' in command
+    assert "remaining_seconds=$((install_deadline - SECONDS))" in command
+    assert '--max-time "$request_timeout"' in command
+    assert "OPENAI_API_KEY" not in command
+    assert "AWS_ACCESS_KEY_ID" not in command
+    assert "eval " not in command
+    assert "bash -c" not in command
+    assert "rm -rf" not in command
+    assert template["Outputs"]["InstallStudyDocumentName"]["Value"] == {
+        "Ref": "EpiAgentInstallStudyDocument"
+    }

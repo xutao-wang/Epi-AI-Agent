@@ -129,6 +129,54 @@ def main() -> None:
         "Ref": "EpiAgentRecoverStudyAccessDocument"
     }:
         raise AssertionError("study access recovery output does not match its document")
+    install = phase2a["Resources"]["EpiAgentInstallStudyDocument"]["Properties"]
+    if install["Name"] != "epi-agent-install-study":
+        raise AssertionError("study installation document name changed")
+    if install.get("UpdateMethod") != "NewVersion":
+        raise AssertionError("study installation updates must create a new version")
+    install_parameters = install["Content"]["parameters"]
+    unsupported_install_patterns = ("(?=", "(?!", "(?<=", "(?<")
+    for name, parameter in install_parameters.items():
+        if parameter.get("interpolationType") != "ENV_VAR":
+            raise AssertionError(f"{name} does not export its SSM environment variable")
+        if any(
+            token in parameter["allowedPattern"]
+            for token in unsupported_install_patterns
+        ):
+            raise AssertionError(f"{name} uses lookaround unsupported by AWS SSM")
+    study_key = re.compile(install_parameters["StudyKey"]["allowedPattern"])
+    if not study_key.fullmatch("studies/report-india-synthetic-0.3.0.tar.gz"):
+        raise AssertionError("study-key pattern rejects the intended immutable package")
+    for unsafe_key in (
+        "studies/../secret.tar.gz",
+        "studies/package..tar.gz",
+        "studies/nested/package.tar.gz",
+    ):
+        if study_key.fullmatch(unsafe_key):
+            raise AssertionError(
+                f"study-key pattern accepts unsafe key {unsafe_key!r}"
+            )
+    install_command = "\n".join(
+        install["Content"]["mainSteps"][0]["inputs"]["runCommand"]
+    )
+    install_order = (
+        "/usr/local/sbin/install-study.sh",
+        "systemctl restart epi-agent.service",
+        "http://127.0.0.1:8000/api/health",
+        "http://127.0.0.1:8000/api/readiness",
+        "/usr/sbin/runuser --user epi-agent-web -- /usr/bin/env -i",
+        "load_installed_study",
+        "installed.archive_sha256 != expected_sha256",
+    )
+    install_positions = [install_command.index(token) for token in install_order]
+    if install_positions != sorted(install_positions):
+        raise AssertionError("study installation command order is unsafe")
+    if any(token in install_command for token in ("eval ", "bash -c", "rm -rf")):
+        raise AssertionError("study installation contains an unsafe shell operation")
+    if phase2a["Outputs"]["InstallStudyDocumentName"]["Value"] != {
+        "Ref": "EpiAgentInstallStudyDocument"
+    }:
+        raise AssertionError("study installation output does not match its document")
     assert_release_archive_extractor_works(phase2a)
     lifecycle = phase2a["Resources"]["ApplicationDataVolumeLifecyclePolicy"]["Properties"]
     if not re.fullmatch(r"[0-9A-Za-z _-]+", lifecycle["Description"]):
