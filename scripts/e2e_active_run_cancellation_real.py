@@ -21,6 +21,11 @@ import requests
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+from api.auth import LOCAL_SESSION_ID
+
+
+LOCAL_API_HEADERS = {"X-Epi-Session-ID": LOCAL_SESSION_ID}
 MESSAGE_LABEL = "Ask a question about your dataset!"
 
 
@@ -71,6 +76,7 @@ def _wait_for_health(
 def _thread_state(api_url: str) -> dict[str, Any]:
     conversations = requests.get(
         f"{api_url}/api/conversations",
+        headers=LOCAL_API_HEADERS,
         timeout=5,
     )
     conversations.raise_for_status()
@@ -82,6 +88,7 @@ def _thread_state(api_url: str) -> dict[str, Any]:
     thread_id = items[0]["thread_id"]
     response = requests.get(
         f"{api_url}/api/threads/{thread_id}/state",
+        headers=LOCAL_API_HEADERS,
         timeout=5,
     )
     response.raise_for_status()

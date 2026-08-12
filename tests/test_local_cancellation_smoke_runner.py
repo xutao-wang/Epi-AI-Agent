@@ -3,8 +3,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import subprocess
+from typing import Any
 
-from scripts.e2e_active_run_cancellation_real import _launch_browser
+from api.auth import LOCAL_SESSION_ID
+import scripts.e2e_active_run_cancellation_real as smoke
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -64,5 +66,47 @@ def test_browser_launch_falls_back_to_installed_chrome() -> None:
     chromium = Chromium()
     playwright = type("Playwright", (), {"chromium": chromium})()
 
-    assert _launch_browser(playwright) is expected_browser
+    assert smoke._launch_browser(playwright) is expected_browser
     assert chromium.calls == [{}, {"channel": "chrome"}]
+
+
+class JsonResponse:
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self.payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, Any]:
+        return self.payload
+
+
+def test_thread_state_sends_the_canonical_local_session_header(monkeypatch) -> None:
+    calls: list[tuple[str, dict[str, Any]]] = []
+    responses = iter(
+        [
+            JsonResponse({"items": [{"thread_id": "thread-123"}]}),
+            JsonResponse({"run": {"state": "cancelled"}}),
+        ]
+    )
+
+    def fake_get(url: str, **kwargs: Any) -> JsonResponse:
+        calls.append((url, kwargs))
+        return next(responses)
+
+    monkeypatch.setattr(smoke.requests, "get", fake_get)
+
+    assert smoke._thread_state("http://127.0.0.1:8000") == {
+        "run": {"state": "cancelled"}
+    }
+    expected_headers = {"X-Epi-Session-ID": LOCAL_SESSION_ID}
+    assert calls == [
+        (
+            "http://127.0.0.1:8000/api/conversations",
+            {"headers": expected_headers, "timeout": 5},
+        ),
+        (
+            "http://127.0.0.1:8000/api/threads/thread-123/state",
+            {"headers": expected_headers, "timeout": 5},
+        ),
+    ]
