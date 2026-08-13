@@ -99,10 +99,11 @@ def main() -> None:
 
     phase2a = _load("infra/aws/phase2a/template.yaml")
     resources = phase2a["Resources"]
-    www_dns = resources.get("ApplicationWwwDnsRecord")
+    if "ApplicationWwwDnsRecord" in resources:
+        raise AssertionError("Phase 2A must not own the www DNS alias")
+    www_dns = _load("infra/aws/www-dns/template.yaml")["Resources"].get("ApplicationWwwDnsRecord")
     expected_www_dns = {
         "Type": "AWS::Route53::RecordSet",
-        "DependsOn": "ApplicationDnsRecord",
         "Properties": {
             "HostedZoneId": {"Ref": "HostedZoneId"},
             "Name": {"Fn::Sub": "www.${DomainName}"},
@@ -119,8 +120,8 @@ def main() -> None:
     if sum(
         resource["Type"] == "AWS::Route53::RecordSet"
         for resource in resources.values()
-    ) != 2:
-        raise AssertionError("Phase 2A must manage only the apex and www DNS records")
+    ) != 1:
+        raise AssertionError("Phase 2A must manage only the apex DNS record")
     recovery = phase2a["Resources"]["EpiAgentRecoverStudyAccessDocument"]["Properties"]
     if recovery["Name"] != "epi-agent-recover-study-access":
         raise AssertionError("study access recovery document name changed")

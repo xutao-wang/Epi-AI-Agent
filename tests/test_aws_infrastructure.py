@@ -15,6 +15,7 @@ from scripts.smoke_aws_phase2a_template_regressions import assert_release_archiv
 ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAP_TEMPLATE = ROOT / "infra" / "aws" / "bootstrap" / "template.yaml"
 PHASE2A_TEMPLATE = ROOT / "infra" / "aws" / "phase2a" / "template.yaml"
+WWW_DNS_TEMPLATE = ROOT / "infra" / "aws" / "www-dns" / "template.yaml"
 PHASE2A_PARAMETERS = ROOT / "infra" / "aws" / "phase2a" / "parameters.example.json"
 PHASE2A_LINT_REQUIREMENTS = ROOT / "infra" / "aws" / "phase2a" / "cfn-lint-requirements.txt"
 
@@ -37,6 +38,10 @@ def bootstrap_template() -> dict:
 
 def phase2a_template() -> dict:
     return yaml.load(PHASE2A_TEMPLATE.read_text(encoding="utf-8"), Loader=CloudFormationLoader)
+
+
+def www_dns_template() -> dict:
+    return yaml.load(WWW_DNS_TEMPLATE.read_text(encoding="utf-8"), Loader=CloudFormationLoader)
 
 
 def test_bootstrap_stack_uses_a_parameterized_developer_group() -> None:
@@ -482,12 +487,12 @@ def test_phase2a_cognito_is_invitation_only_without_a_client_secret() -> None:
     }
 
 
-def test_phase2a_dns_uses_existing_zone_and_maps_apex_and_www() -> None:
+def test_phase2a_dns_uses_existing_zone_and_maps_apex_only() -> None:
     template = phase2a_template()
     resources = template["Resources"]
     types = Counter(resource["Type"] for resource in resources.values())
 
-    assert types["AWS::Route53::RecordSet"] == 2
+    assert types["AWS::Route53::RecordSet"] == 1
     assert all("HostedZone" not in resource_type and "Domains" not in resource_type for resource_type in types)
     assert resources["ApplicationDnsRecord"]["Properties"] == {
         "HostedZoneId": {"Ref": "HostedZoneId"},
@@ -496,19 +501,27 @@ def test_phase2a_dns_uses_existing_zone_and_maps_apex_and_www() -> None:
         "TTL": "300",
         "ResourceRecords": [{"Ref": "ApplicationElasticIp"}],
     }
-    assert resources["ApplicationWwwDnsRecord"] == {
-        "Type": "AWS::Route53::RecordSet",
-        "DependsOn": "ApplicationDnsRecord",
-        "Properties": {
-            "HostedZoneId": {"Ref": "HostedZoneId"},
-            "Name": {"Fn::Sub": "www.${DomainName}"},
-            "Type": "A",
-            "AliasTarget": {
-                "DNSName": {"Ref": "DomainName"},
+    assert "ApplicationWwwDnsRecord" not in resources
+
+
+def test_www_dns_stack_owns_only_the_compatibility_alias() -> None:
+    template = www_dns_template()
+
+    assert set(template["Parameters"]) == {"DomainName", "HostedZoneId"}
+    assert template["Resources"] == {
+        "ApplicationWwwDnsRecord": {
+            "Type": "AWS::Route53::RecordSet",
+            "Properties": {
                 "HostedZoneId": {"Ref": "HostedZoneId"},
-                "EvaluateTargetHealth": False,
+                "Name": {"Fn::Sub": "www.${DomainName}"},
+                "Type": "A",
+                "AliasTarget": {
+                    "DNSName": {"Ref": "DomainName"},
+                    "HostedZoneId": {"Ref": "HostedZoneId"},
+                    "EvaluateTargetHealth": False,
+                },
             },
-        },
+        }
     }
 
 
