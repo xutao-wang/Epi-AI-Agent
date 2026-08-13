@@ -75,21 +75,36 @@ def test_web_service_runs_the_api_with_least_privilege() -> None:
     assert "ReadWritePaths=/opt/epi-agent/releases" not in source
 
 
-def test_nginx_only_exposes_safe_operational_routes() -> None:
+def test_nginx_only_serves_the_application_on_the_canonical_apex() -> None:
     source = _asset("deploy/aws/nginx/epi-agent.conf")
 
-    assert "client_max_body_size" in source
-    assert "proxy_connect_timeout" in source
-    assert "proxy_read_timeout" in source
-    assert "add_header X-Content-Type-Options" in source
-    assert "proxy_http_version 1.1" in source
-    assert 'proxy_set_header Upgrade $http_upgrade' in source
-    assert 'proxy_set_header Connection "upgrade"' in source
-    assert "location ^~ /.well-known/acme-challenge/" in source
-    assert "return 301 https://$host$request_uri" in source
-    assert "location = /api/health" in source
-    assert "location = /api/readiness" in source
-    assert "location = /api/ops/deployment-status { deny all; }" in source
+    assert source.count("return 301 https://epiagent.org$request_uri;") == 2
+    assert "return 301 https://$host$request_uri;" not in source
+    assert source.count("server_name epiagent.org www.epiagent.org;") == 1
+    assert source.count("server_name www.epiagent.org;") == 1
+    assert source.count("server_name epiagent.org;") == 1
+    assert source.count("location ^~ /.well-known/acme-challenge/") == 1
+    assert source.count("proxy_pass http://127.0.0.1:8000;") == 3
+
+    www_position = source.index("server_name www.epiagent.org;")
+    www_redirect_position = source.index(
+        "return 301 https://epiagent.org$request_uri;", www_position
+    )
+    apex_position = source.index("server_name epiagent.org;", www_redirect_position)
+    proxy_position = source.index("proxy_pass http://127.0.0.1:8000;", apex_position)
+    assert www_position < www_redirect_position < apex_position < proxy_position
+
+    apex_source = source[apex_position:]
+    assert "client_max_body_size 25m;" in apex_source
+    assert "proxy_connect_timeout" in apex_source
+    assert "proxy_read_timeout" in apex_source
+    assert "add_header X-Content-Type-Options" in apex_source
+    assert "proxy_http_version 1.1" in apex_source
+    assert 'proxy_set_header Upgrade $http_upgrade' in apex_source
+    assert 'proxy_set_header Connection "upgrade"' in apex_source
+    assert "location = /api/health" in apex_source
+    assert "location = /api/readiness" in apex_source
+    assert "location = /api/ops/deployment-status { deny all; }" in apex_source
 
 
 def test_nginx_csp_allows_only_required_cognito_connections() -> None:
