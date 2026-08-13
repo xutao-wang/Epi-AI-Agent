@@ -253,6 +253,15 @@ def test_phase2a_runbook_has_guarded_www_redirect_rollout() -> None:
     assert 'HOSTED_ZONE_ID="Z02132461LVJ2PFOYFXFU"' in source
     assert "--confirm-account 641379499556" in source
     assert "smoke_www_apex_redirect_real.py" in source
+
+
+def test_phase2a_runbook_requires_explicit_ami_maintenance_releases() -> None:
+    source = _asset("docs/aws/phase2a-runbook.md")
+
+    assert "--application-ami-id" in source
+    assert "ami-07a5b367e8dc8bd92" in source
+    assert "explicit maintenance release" in source
+    assert "EC2 replacement" in source
     assert "never retry it automatically" in source
     assert "modifies or replaces EC2" in source
 
