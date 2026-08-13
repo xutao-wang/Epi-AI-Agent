@@ -519,7 +519,6 @@ def test_phase2a_parameters_examples_and_pinned_linter_contract() -> None:
         "DomainName",
         "HostedZoneId",
         "InstanceType",
-        "ApplicationAmiId",
         "RootVolumeGiB",
         "DataVolumeGiB",
         "CertificateEmail",
@@ -544,27 +543,10 @@ def test_phase2a_parameters_examples_and_pinned_linter_contract() -> None:
         {"ParameterKey": "DomainName", "ParameterValue": "epiagent.org"},
         {"ParameterKey": "HostedZoneId", "ParameterValue": "Z02132461LVJ2PFOYFXFU"},
         {"ParameterKey": "InstanceType", "ParameterValue": "t3.large"},
-        {"ParameterKey": "ApplicationAmiId", "ParameterValue": "ami-07a5b367e8dc8bd92"},
         {"ParameterKey": "RootVolumeGiB", "ParameterValue": "30"},
         {"ParameterKey": "DataVolumeGiB", "ParameterValue": "50"},
     ]
     assert PHASE2A_LINT_REQUIREMENTS.read_text(encoding="utf-8") == "cfn-lint==1.53.1\n"
-
-
-def test_phase2a_pins_application_ami_for_routine_updates() -> None:
-    template = phase2a_template()
-    parameters = template["Parameters"]
-
-    assert parameters["ApplicationAmiId"] == {
-        "Type": "AWS::EC2::Image::Id",
-        "Default": "ami-07a5b367e8dc8bd92",
-        "Description": "Pinned Amazon Linux AMI ID; change only in an approved maintenance release.",
-        "AllowedPattern": "^ami-[a-f0-9]{8,17}$",
-    }
-    assert template["Resources"]["ApplicationInstance"]["Properties"]["ImageId"] == {
-        "Ref": "ApplicationAmiId"
-    }
-    assert "ami-amazon-linux-latest" not in PHASE2A_TEMPLATE.read_text(encoding="utf-8")
 
 
 def test_phase2a_compute_uses_a_hardened_single_worker_with_retained_data() -> None:
@@ -576,7 +558,7 @@ def test_phase2a_compute_uses_a_hardened_single_worker_with_retained_data() -> N
     assert instance["Type"] == "AWS::EC2::Instance"
     assert properties["InstanceType"] == "t3.large"
     assert properties["CreditSpecification"] == {"CPUCredits": "standard"}
-    assert properties["ImageId"] == {"Ref": "ApplicationAmiId"}
+    assert properties["ImageId"] == "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}"
     assert properties["DisableApiTermination"] is True
     assert properties["MetadataOptions"] == {
         "HttpEndpoint": "enabled",

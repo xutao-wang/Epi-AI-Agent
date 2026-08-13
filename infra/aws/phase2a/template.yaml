@@ -13,7 +13,6 @@ Metadata:
           default: Application host configuration
         Parameters:
           - InstanceType
-          - ApplicationAmiId
           - RootVolumeGiB
           - CertificateEmail
           - AlertEmail
@@ -36,11 +35,6 @@ Parameters:
     Type: String
     Default: t3.large
     Description: Instance type reserved for the Phase 2A application host.
-  ApplicationAmiId:
-    Type: AWS::EC2::Image::Id
-    Default: ami-07a5b367e8dc8bd92
-    Description: Pinned Amazon Linux AMI ID; change only in an approved maintenance release.
-    AllowedPattern: '^ami-[a-f0-9]{8,17}$'
   RootVolumeGiB:
     Type: Number
     Default: 30
@@ -416,7 +410,7 @@ Resources:
   ApplicationInstance:
     Type: AWS::EC2::Instance
     Properties:
-      ImageId: !Ref ApplicationAmiId
+      ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
       InstanceType: t3.large
       CreditSpecification:
         CPUCredits: standard
