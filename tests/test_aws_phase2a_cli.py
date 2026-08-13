@@ -66,20 +66,17 @@ def test_mutating_helpers_guard_identity_first():
 
 def test_plan_stack_parser_requires_application_parameters():
  s=_source(); assert 'q.add_argument("--domain-name",required=True)' in s and 'q.add_argument("--hosted-zone-id",required=True)' in s and 'q.add_argument("--certificate-email",required=True)' in s
-def test_plan_stack_passes_the_default_pinned_application_ami(monkeypatch):
+def test_plan_stack_www_delivery_does_not_send_an_ami_parameter(monkeypatch):
  captured={}
  def record_plan(*args): captured["parameters"]=args[-1]
  monkeypatch.setattr(cli,"plan",record_plan)
  assert cli.main(["plan-stack","--domain-name","epiagent.org","--hosted-zone-id","Z02132461LVJ2PFOYFXFU","--certificate-email","ops@example.org"],runner=R("{}"))==0
- assert "ParameterKey=ApplicationAmiId,ParameterValue=ami-07a5b367e8dc8bd92" in captured["parameters"]
-def test_plan_stack_rejects_an_invalid_application_ami_id(monkeypatch):
- monkeypatch.setattr(cli,"plan",lambda *args: pytest.fail("plan must not run"))
- assert cli.main(["plan-stack","--domain-name","epiagent.org","--hosted-zone-id","Z02132461LVJ2PFOYFXFU","--certificate-email","ops@example.org","--application-ami-id","latest"],runner=R("{}"))==2
+ assert not any("ApplicationAmiId" in parameter for parameter in captured["parameters"])
 def test_recover_study_access_parser_requires_exact_instance_confirmation():
  s=_source(); start=s.index('s.add_parser("recover-study-access")'); end=s.index('q=s.add_parser("plan-stack")'); section=s[start:end]
  assert 'q.add_argument("--confirm-instance",required=True)' in section
 def test_plan_stack_builds_cloudformation_parameter_values():
- s=_source(); assert '"ParameterKey={k},ParameterValue={v}"' in s and '"DataSnapshotId":a.data_snapshot_id' in s and '"ApplicationAmiId":a.application_ami_id' in s
+ s=_source(); assert '"ParameterKey={k},ParameterValue={v}"' in s and '"DataSnapshotId":a.data_snapshot_id' in s and '"ApplicationAmiId":a.application_ami_id' not in s
 def test_role_is_placed_only_on_application_change_set_create():
  s=_source(); create=s[s.index('"create-change-set"'):s.index('"describe-change-set"')]; assert '"--role-arn",role' in create
  assert 'describe-change-set","--stack-name",stack,"--change-set-name",name)' in s

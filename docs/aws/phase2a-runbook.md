@@ -78,27 +78,6 @@ DNS and certificate configuration through a reviewed change set. Cost inventory:
 EC2 runtime, EIP, root/data EBS, 14-day snapshots, S3 objects/requests,
 CloudWatch logs/alarms, SNS, Cognito, Route 53 hosted-zone and DNS-query charges.
 
-## AMI maintenance releases
-
-Routine stack updates must pass the current pinned application AMI:
-
-```sh
-APPLICATION_AMI_ID="ami-07a5b367e8dc8bd92"
-.venv/bin/python scripts/aws_phase2a.py plan-stack \
-  --domain-name epiagent.org \
-  --hosted-zone-id "$HOSTED_ZONE_ID" \
-  --certificate-email "$CERT_EMAIL" \
-  --alert-email "$ALERT_EMAIL" \
-  --data-volume-gib 50 \
-  --application-ami-id "$APPLICATION_AMI_ID"
-```
-
-Changing `APPLICATION_AMI_ID` is an explicit maintenance release. It is
-expected to require EC2 replacement: first create and inspect the change set,
-confirm data-recovery readiness and the maintenance window, then obtain
-separate approval before execution. Do not use the Amazon Linux `latest` SSM
-parameter for routine changes.
-
 ## Add the www compatibility redirect
 
 Keep `https://epiagent.org` canonical. The `www` DNS alias, expanded
@@ -120,14 +99,15 @@ Create a reviewed CloudFormation change set only:
   --hosted-zone-id "$HOSTED_ZONE_ID" \
   --certificate-email "$CERT_EMAIL" \
   --alert-email "$ALERT_EMAIL" \
-  --data-volume-gib 50 \
-  --application-ami-id ami-07a5b367e8dc8bd92
+  --data-volume-gib 50
 ```
 
 Require exactly one infrastructure action: Add
 `ApplicationWwwDnsRecord` (`AWS::Route53::RecordSet`). Stop if the change set
 modifies or replaces EC2, EIP, EBS, Cognito, the hosted zone, or any unrelated
-resource. Execute only after explicit review and account confirmation:
+resource. The separately planned AMI-pinning maintenance implementation is
+preserved on the local `planned-ami-maintenance` branch and is not part of this
+rollout. Execute only after explicit review and account confirmation:
 
 ```sh
 .venv/bin/python scripts/aws_phase2a.py execute-change-set CHANGE_SET_ARN \

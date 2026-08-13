@@ -13,8 +13,6 @@ CHANGE_SET_TIMEOUT_SECONDS=1800
 DEPLOY_TIMEOUT_SECONDS=3600
 STUDY_KEY_PATTERN=re.compile(r"^studies/[A-Za-z0-9][A-Za-z0-9._-]*\.tar\.gz$")
 STUDY_TOKEN_PATTERN=re.compile(r"^[a-z0-9][a-z0-9._-]*$")
-APPLICATION_AMI_PATTERN=re.compile(r"^ami-[a-f0-9]{8,17}$")
-DEFAULT_APPLICATION_AMI_ID="ami-07a5b367e8dc8bd92"
 class OperatorError(RuntimeError): pass
 class Runner(Protocol):
  def run(self, argv: Sequence[str], *, capture_output: bool=True) -> subprocess.CompletedProcess[str]: ...
@@ -145,7 +143,7 @@ def main(argv=None, runner:Runner|None=None)->int:
   q=s.add_parser(n); q.add_argument("--confirm-instance",required=True)
  q=s.add_parser("recover-study-access"); q.add_argument("--confirm-instance",required=True)
  q=s.add_parser("install-study"); q.add_argument("key"); q.add_argument("sha"); q.add_argument("study_id"); q.add_argument("version"); q.add_argument("--confirm-instance",required=True)
- q=s.add_parser("plan-stack"); q.add_argument("--domain-name",required=True); q.add_argument("--hosted-zone-id",required=True); q.add_argument("--certificate-email",required=True); q.add_argument("--alert-email",default=""); q.add_argument("--data-volume-gib",default="50"); q.add_argument("--data-snapshot-id",default=""); q.add_argument("--application-ami-id",default=DEFAULT_APPLICATION_AMI_ID)
+ q=s.add_parser("plan-stack"); q.add_argument("--domain-name",required=True); q.add_argument("--hosted-zone-id",required=True); q.add_argument("--certificate-email",required=True); q.add_argument("--alert-email",default=""); q.add_argument("--data-volume-gib",default="50"); q.add_argument("--data-snapshot-id",default="")
  q=s.add_parser("deploy-release"); q.add_argument("key"); q.add_argument("sha"); q.add_argument("release_id"); q.add_argument("domain"); q.add_argument("email")
  a=p.parse_args(argv)
  try:
@@ -157,8 +155,8 @@ def main(argv=None, runner:Runner|None=None)->int:
   if a.cmd=="outputs": print(json.dumps(outputs(r),sort_keys=True)); return 0
   if a.cmd=="plan-bootstrap": plan_bootstrap(r,str(Path(__file__).resolve().parents[1]/"infra/aws/bootstrap/template.yaml")); return 0
   if a.cmd=="plan-stack":
-   if not re.fullmatch(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+",a.domain_name) or not re.fullmatch(r"Z[A-Z0-9]+",a.hosted_zone_id) or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+",a.certificate_email) or not APPLICATION_AMI_PATTERN.fullmatch(a.application_ami_id): raise OperatorError("invalid stack parameter")
-   vals={"DomainName":a.domain_name,"HostedZoneId":a.hosted_zone_id,"CertificateEmail":a.certificate_email,"AlertEmail":a.alert_email,"DataVolumeGiB":a.data_volume_gib,"DataSnapshotId":a.data_snapshot_id,"ApplicationAmiId":a.application_ami_id}
+   if not re.fullmatch(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+",a.domain_name) or not re.fullmatch(r"Z[A-Z0-9]+",a.hosted_zone_id) or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+",a.certificate_email): raise OperatorError("invalid stack parameter")
+   vals={"DomainName":a.domain_name,"HostedZoneId":a.hosted_zone_id,"CertificateEmail":a.certificate_email,"AlertEmail":a.alert_email,"DataVolumeGiB":a.data_volume_gib,"DataSnapshotId":a.data_snapshot_id}
    plan(r,APPLICATION_STACK,str(Path(__file__).resolve().parents[1]/"infra/aws/phase2a/template.yaml"),[f"ParameterKey={k},ParameterValue={v}" for k,v in vals.items()]); return 0
   if a.cmd=="execute-bootstrap": execute_bootstrap(r,a.change_set_arn,a.confirm_account); return 0
   if a.cmd=="execute-change-set": execute(r,a.change_set_arn,a.confirm_account); return 0
