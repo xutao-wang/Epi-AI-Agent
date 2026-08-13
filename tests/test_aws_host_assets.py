@@ -246,6 +246,17 @@ def test_phase2a_runbook_has_executable_study_rollback_procedure() -> None:
     assert "curl --fail --silent --show-error http://127.0.0.1:8000/api/readiness" in source
 
 
+def test_phase2a_runbook_has_guarded_www_redirect_rollout() -> None:
+    source = _asset("docs/aws/phase2a-runbook.md")
+
+    assert "ApplicationWwwDnsRecord" in source
+    assert 'HOSTED_ZONE_ID="Z02132461LVJ2PFOYFXFU"' in source
+    assert "--confirm-account 641379499556" in source
+    assert "smoke_www_apex_redirect_real.py" in source
+    assert "never retry it automatically" in source
+    assert "modifies or replaces EC2" in source
+
+
 def test_certificate_and_cloudwatch_assets_are_present() -> None:
     certificate_service = _asset(
         "deploy/aws/systemd/epi-agent-certificate-renew.service"

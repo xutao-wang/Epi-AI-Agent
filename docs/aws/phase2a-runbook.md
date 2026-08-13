@@ -78,6 +78,60 @@ DNS and certificate configuration through a reviewed change set. Cost inventory:
 EC2 runtime, EIP, root/data EBS, 14-day snapshots, S3 objects/requests,
 CloudWatch logs/alarms, SNS, Cognito, Route 53 hosted-zone and DNS-query charges.
 
+## Add the www compatibility redirect
+
+Keep `https://epiagent.org` canonical. The `www` DNS alias, expanded
+certificate, and Nginx redirect must roll out in that order. Before creating a
+change set, set the current certificate and alert contact values locally; do
+not save either value in this repository.
+
+```sh
+HOSTED_ZONE_ID="Z02132461LVJ2PFOYFXFU"
+CERT_EMAIL="the current certificate contact email"
+ALERT_EMAIL="the current alert contact email, or empty if none"
+```
+
+Create a reviewed CloudFormation change set only:
+
+```sh
+.venv/bin/python scripts/aws_phase2a.py plan-stack \
+  --domain-name epiagent.org \
+  --hosted-zone-id "$HOSTED_ZONE_ID" \
+  --certificate-email "$CERT_EMAIL" \
+  --alert-email "$ALERT_EMAIL" \
+  --data-volume-gib 50
+```
+
+Require exactly one infrastructure action: Add
+`ApplicationWwwDnsRecord` (`AWS::Route53::RecordSet`). Stop if the change set
+modifies or replaces EC2, EIP, EBS, Cognito, the hosted zone, or any unrelated
+resource. Execute only after explicit review and account confirmation:
+
+```sh
+.venv/bin/python scripts/aws_phase2a.py execute-change-set CHANGE_SET_ARN \
+  --confirm-account 641379499556
+```
+
+Replace `CHANGE_SET_ARN` only with the exact ARN emitted by the reviewed plan.
+After the stack reaches `UPDATE_COMPLETE`, confirm `www.epiagent.org` resolves,
+then upload and deploy the clean committed release through the existing guarded
+commands. The installer expands the certificate once and fails closed before
+activating Nginx if ACME validation fails.
+
+Run the dedicated production smoke exactly once; never retry it automatically:
+
+```sh
+.venv/bin/python scripts/smoke_www_apex_redirect_real.py \
+  --allow-live-aws \
+  --artifact-dir artifacts/www-apex-redirect
+```
+
+On failure, preserve `artifacts/www-apex-redirect`, the exact SSM command ID,
+and the applicable Nginx/Certbot logs. Do not remove the apex record or existing
+certificate. Roll back only the release/Nginx configuration after reviewing
+whether the two-name certificate has already been issued; removing the `www`
+record is a separate reviewed CloudFormation change.
+
 ## Exact reviewed actions
 
 ```sh
