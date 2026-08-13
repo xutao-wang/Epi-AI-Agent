@@ -285,6 +285,9 @@ def _release_harness(
     service_inactive: bool = False,
     previous_release_exists: bool = True,
     runtime_repair_fails: bool = False,
+    certificate_exists: bool = True,
+    certificate_covers_www: bool = True,
+    certificate_issue_fails: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path, Path, Path]:
     root = tmp_path / "host"
     fake_bin = tmp_path / "bin"
@@ -365,6 +368,16 @@ fi
 fi
 /usr/bin/mktemp "$@"
 """,
+        "nginx": "exit 0\n",
+        "openssl": """if [ "$TEST_CERTIFICATE_COVERS_WWW" = 1 ]; then
+  printf '%s\\n' 'Hostname www.example.org does match certificate'
+else
+  printf '%s\\n' 'Hostname www.example.org does NOT match certificate'
+fi
+""",
+        "certbot": """printf 'certbot %s\\n' "$*" >> "$TEST_OPERATION_LOG"
+[ "$TEST_CERTBOT_FAILS" = 0 ]
+""",
         "python3": 'exec "$TEST_PYTHON" "$@"\n',
     }.items():
         _write_executable(fake_bin / name, "#!/usr/bin/env bash\nset -eu\n" + body)
@@ -376,7 +389,10 @@ fi
         "/srv/epi-agent/runtime", str(root / "srv" / "epi-agent" / "runtime")
     )
     source = source.replace("/etc/letsencrypt", str(root / "etc" / "letsencrypt"))
+    source = source.replace("/etc/nginx", str(root / "etc" / "nginx"))
     source = source.replace("/var/www/certbot", str(root / "var" / "www" / "certbot"))
+    source = source.replace("/usr/bin/certbot", "certbot")
+    source = source.replace("/usr/bin/openssl", "openssl")
     source = source.replace("/usr/bin/python3.12", "python3")
     source = source.replace(
         "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -390,8 +406,9 @@ fi
     if previous_release_exists:
         current_link.symlink_to("/previous/release")
     certificate = root / "etc" / "letsencrypt" / "live" / "example.org" / "fullchain.pem"
-    certificate.parent.mkdir(parents=True)
-    certificate.touch()
+    if certificate_exists:
+        certificate.parent.mkdir(parents=True)
+        certificate.write_text("fake certificate\n", encoding="utf-8")
     systemctl_log = tmp_path / "systemctl.log"
     environment = os.environ | {
         "TEST_ARCHIVE": str(archive_path),
@@ -405,6 +422,8 @@ fi
         "TEST_SERVICE_INACTIVE": "1" if service_inactive else "0",
         "TEST_RUNTIME_REPAIR_FAILS": "1" if runtime_repair_fails else "0",
         "TEST_RUNTIME_DIR": str(root / "srv" / "epi-agent" / "runtime"),
+        "TEST_CERTIFICATE_COVERS_WWW": "1" if certificate_covers_www else "0",
+        "TEST_CERTBOT_FAILS": "1" if certificate_issue_fails else "0",
     }
     completed = subprocess.run(
         [
@@ -429,6 +448,77 @@ fi
         root / "opt" / "epi-agent",
         systemctl_log,
     )
+
+
+def test_release_installer_issues_both_names_on_first_certificate(
+    tmp_path: Path,
+) -> None:
+    completed, _, _, _, _ = _release_harness(
+        tmp_path,
+        invalid_archive=False,
+        readiness_fails=False,
+        certificate_exists=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    operations = (tmp_path / "operation.log").read_text(encoding="utf-8").splitlines()
+    certbot_call = next(line for line in operations if line.startswith("certbot "))
+    assert "--cert-name example.org" in certbot_call
+    assert "-d example.org" in certbot_call
+    assert "-d www.example.org" in certbot_call
+    assert "--expand" not in certbot_call
+    assert not (
+        tmp_path / "host" / "etc" / "nginx" / "conf.d" / "epi-agent-www-acme.conf"
+    ).exists()
+
+
+def test_release_installer_expands_an_apex_only_certificate(tmp_path: Path) -> None:
+    completed, _, _, _, _ = _release_harness(
+        tmp_path,
+        invalid_archive=False,
+        readiness_fails=False,
+        certificate_covers_www=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    operations = (tmp_path / "operation.log").read_text(encoding="utf-8").splitlines()
+    certbot_call = next(line for line in operations if line.startswith("certbot "))
+    assert "--cert-name example.org" in certbot_call
+    assert "--expand" in certbot_call
+    assert "-d example.org" in certbot_call
+    assert "-d www.example.org" in certbot_call
+
+
+def test_release_installer_does_not_reissue_a_complete_certificate(
+    tmp_path: Path,
+) -> None:
+    completed, _, _, _, _ = _release_harness(
+        tmp_path,
+        invalid_archive=False,
+        readiness_fails=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    operations = (tmp_path / "operation.log").read_text(encoding="utf-8").splitlines()
+    assert not any(line.startswith("certbot ") for line in operations)
+
+
+def test_release_installer_removes_temporary_www_bootstrap_on_certbot_failure(
+    tmp_path: Path,
+) -> None:
+    completed, _, maintenance_file, _, _ = _release_harness(
+        tmp_path,
+        invalid_archive=False,
+        readiness_fails=False,
+        certificate_exists=False,
+        certificate_issue_fails=True,
+    )
+
+    assert completed.returncode != 0
+    assert not maintenance_file.exists()
+    assert not (
+        tmp_path / "host" / "etc" / "nginx" / "conf.d" / "epi-agent-www-acme.conf"
+    ).exists()
 
 
 def test_release_installer_rolls_back_after_readiness_failure(tmp_path: Path) -> None:

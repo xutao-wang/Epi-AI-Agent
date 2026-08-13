@@ -12,6 +12,10 @@ readonly current_link=/opt/epi-agent/current
 readonly maintenance_file=/run/epi-agent/maintenance
 readonly drain_deadline_seconds=600
 readonly startup_deadline_seconds=120
+readonly staged_nginx_config=/etc/nginx/staged/epi-agent.conf
+readonly live_nginx_config=/etc/nginx/conf.d/epi-agent.conf
+readonly bootstrap_nginx_config=/etc/nginx/conf.d/epi-agent-bootstrap.conf
+readonly www_acme_nginx_config=/etc/nginx/conf.d/epi-agent-www-acme.conf
 
 usage() {
   printf '%s\n' 'usage: install-release.sh <bucket> <release-key> <sha256> <release-id> <domain> <certificate-email> [--force]' >&2
@@ -43,6 +47,10 @@ cleanup() {
   local exit_status=$?
   trap - EXIT ERR
   set +e
+  if [ "${www_bootstrap_created:-false}" = true ]; then
+    rm -f -- "$www_acme_nginx_config"
+    nginx -t && systemctl reload nginx.service || true
+  fi
   if [ "${activated:-false}" = true ]; then
     restore_previous_release
   fi
@@ -177,6 +185,10 @@ is_safe_s3_key "$release_key" || fail 'release key is invalid'
 is_safe_domain "$domain" || fail 'domain is invalid'
 is_safe_email "$certificate_email" || fail 'certificate email is invalid'
 
+www_domain="www.$domain"
+certificate_path="/etc/letsencrypt/live/$domain/fullchain.pem"
+www_bootstrap_created=false
+
 trap cleanup EXIT
 trap 'exit $?' ERR
 
@@ -232,16 +244,55 @@ rm -f -- "$maintenance_file"
 check_service
 activated=false
 
-if [ ! -e "/etc/letsencrypt/live/$domain/fullchain.pem" ]; then
-  /usr/bin/certbot certonly --webroot -w /var/www/certbot --non-interactive --agree-tos \
-    --email "$certificate_email" -d "$domain"
-fi
+create_www_acme_bootstrap() {
+  install -d -m 0755 /etc/nginx/conf.d
+  cat >"$www_acme_nginx_config" <<EOF
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $www_domain;
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+        default_type text/plain;
+    }
+    location / { return 404; }
+}
+EOF
+  www_bootstrap_created=true
+  if nginx -t && systemctl reload nginx.service; then
+    return 0
+  fi
+  rm -f -- "$www_acme_nginx_config"
+  www_bootstrap_created=false
+  nginx -t && systemctl reload nginx.service || true
+  return 1
+}
 
-readonly staged_nginx_config=/etc/nginx/staged/epi-agent.conf
-readonly live_nginx_config=/etc/nginx/conf.d/epi-agent.conf
-readonly bootstrap_nginx_config=/etc/nginx/conf.d/epi-agent-bootstrap.conf
+certificate_covers_www() {
+  /usr/bin/openssl x509 -in "$certificate_path" -noout -checkhost "$www_domain" \
+    | /usr/bin/grep -Fqx "Hostname $www_domain does match certificate"
+}
+
+ensure_domain_certificate() {
+  if [ ! -e "$certificate_path" ]; then
+    create_www_acme_bootstrap
+    /usr/bin/certbot certonly --webroot -w /var/www/certbot \
+      --non-interactive --agree-tos --email "$certificate_email" \
+      --cert-name "$domain" -d "$domain" -d "$www_domain"
+    return 0
+  fi
+  if ! certificate_covers_www; then
+    /usr/bin/certbot certonly --webroot -w /var/www/certbot \
+      --non-interactive --agree-tos --email "$certificate_email" \
+      --cert-name "$domain" --expand -d "$domain" -d "$www_domain"
+  fi
+}
+
+ensure_domain_certificate
+
 restore_nginx_config() {
-  rm -f -- "$live_nginx_config" "$bootstrap_nginx_config"
+  rm -f -- "$live_nginx_config" "$bootstrap_nginx_config" "$www_acme_nginx_config"
+  www_bootstrap_created=false
   [ -f "$nginx_backup/live" ] && mv -Tf "$nginx_backup/live" "$live_nginx_config"
   [ -f "$nginx_backup/bootstrap" ] && mv -Tf "$nginx_backup/bootstrap" "$bootstrap_nginx_config"
   nginx -t && systemctl reload nginx.service || true
@@ -251,7 +302,8 @@ activate_staged_nginx_config() {
   [ -f "$live_nginx_config" ] && cp -p -- "$live_nginx_config" "$nginx_backup/live"
   [ -f "$bootstrap_nginx_config" ] && cp -p -- "$bootstrap_nginx_config" "$nginx_backup/bootstrap"
   mv -Tf "$staged_nginx_config" "$live_nginx_config"
-  rm -f -- "$bootstrap_nginx_config"
+  rm -f -- "$bootstrap_nginx_config" "$www_acme_nginx_config"
+  www_bootstrap_created=false
   if nginx -t && systemctl reload nginx.service; then
     rm -rf -- "$nginx_backup"
     return 0
