@@ -249,7 +249,9 @@ def test_phase2a_runbook_has_executable_study_rollback_procedure() -> None:
 def test_phase2a_runbook_has_guarded_www_redirect_rollout() -> None:
     source = _asset("docs/aws/phase2a-runbook.md")
 
-    assert "ApplicationWwwDnsRecord" in source
+    assert "plan-www-dns" in source
+    assert "execute-www-dns-change-set" in source
+    assert "epi-agent-www-dns" in source
     assert 'HOSTED_ZONE_ID="Z02132461LVJ2PFOYFXFU"' in source
     assert "--confirm-account 641379499556" in source
     assert "smoke_www_apex_redirect_real.py" in source
@@ -262,7 +264,7 @@ def test_phase2a_runbook_defers_ami_pinning_from_www_rollout() -> None:
     assert "planned-ami-maintenance" in source
     assert "--application-ami-id" not in www_section
     assert "never retry it automatically" in source
-    assert "modifies or replaces EC2" in source
+    assert "any other resource action" in source
 
 
 def test_certificate_and_cloudwatch_assets_are_present() -> None:

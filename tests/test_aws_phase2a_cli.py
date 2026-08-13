@@ -72,6 +72,16 @@ def test_plan_stack_www_delivery_does_not_send_an_ami_parameter(monkeypatch):
  monkeypatch.setattr(cli,"plan",record_plan)
  assert cli.main(["plan-stack","--domain-name","epiagent.org","--hosted-zone-id","Z02132461LVJ2PFOYFXFU","--certificate-email","ops@example.org"],runner=R("{}"))==0
  assert not any("ApplicationAmiId" in parameter for parameter in captured["parameters"])
+def test_plan_www_dns_targets_the_isolated_dns_stack(monkeypatch):
+ captured={}
+ def record_plan(*args): captured["args"]=args
+ monkeypatch.setattr(cli,"plan",record_plan)
+ assert cli.main(["plan-www-dns","--domain-name","epiagent.org","--hosted-zone-id","Z02132461LVJ2PFOYFXFU"],runner=R("{}"))==0
+ assert captured["args"][1]==cli.WWW_DNS_STACK
+ assert captured["args"][2].endswith("infra/aws/www-dns/template.yaml")
+ assert captured["args"][3]==["ParameterKey=DomainName,ParameterValue=epiagent.org","ParameterKey=HostedZoneId,ParameterValue=Z02132461LVJ2PFOYFXFU"]
+def test_execute_www_dns_change_set_is_bound_to_the_dns_stack():
+ assert 'if a.cmd=="execute-www-dns-change-set": execute(r,a.change_set_arn,a.confirm_account,WWW_DNS_STACK)' in _source()
 def test_recover_study_access_parser_requires_exact_instance_confirmation():
  s=_source(); start=s.index('s.add_parser("recover-study-access")'); end=s.index('q=s.add_parser("plan-stack")'); section=s[start:end]
  assert 'q.add_argument("--confirm-instance",required=True)' in section

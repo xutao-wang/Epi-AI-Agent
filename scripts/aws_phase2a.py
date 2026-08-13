@@ -7,7 +7,7 @@ from typing import Protocol, Sequence
 
 EXPECTED_ACCOUNT="641379499556"; EXPECTED_PROFILE="xutao-dev"; EXPECTED_REGION="us-east-1"
 EXPECTED_PRINCIPAL_ARN="arn:aws:iam::641379499556:user/xutao-dev"
-BOOTSTRAP_STACK="epi-agent-bootstrap"; APPLICATION_STACK="epi-agent-phase2a"
+BOOTSTRAP_STACK="epi-agent-bootstrap"; APPLICATION_STACK="epi-agent-phase2a"; WWW_DNS_STACK="epi-agent-www-dns"
 POLL_INTERVAL_SECONDS=1
 CHANGE_SET_TIMEOUT_SECONDS=1800
 DEPLOY_TIMEOUT_SECONDS=3600
@@ -135,7 +135,7 @@ def main(argv=None, runner:Runner|None=None)->int:
  r=runner or SubprocessRunner(); p=argparse.ArgumentParser(); s=p.add_subparsers(dest="cmd",required=True)
  s.add_parser("identity"); s.add_parser("validate"); s.add_parser("outputs")
  s.add_parser("plan-bootstrap")
- for n in ("execute-bootstrap","execute-change-set"):
+ for n in ("execute-bootstrap","execute-change-set","execute-www-dns-change-set"):
   q=s.add_parser(n); q.add_argument("change_set_arn"); q.add_argument("--confirm-account",required=True)
  for n,prefix in (("upload-release","releases/"),("upload-study","studies/")):
   q=s.add_parser(n); q.add_argument("file"); q.add_argument("key"); q.set_defaults(prefix=prefix)
@@ -143,13 +143,14 @@ def main(argv=None, runner:Runner|None=None)->int:
   q=s.add_parser(n); q.add_argument("--confirm-instance",required=True)
  q=s.add_parser("recover-study-access"); q.add_argument("--confirm-instance",required=True)
  q=s.add_parser("install-study"); q.add_argument("key"); q.add_argument("sha"); q.add_argument("study_id"); q.add_argument("version"); q.add_argument("--confirm-instance",required=True)
+ q=s.add_parser("plan-www-dns"); q.add_argument("--domain-name",required=True); q.add_argument("--hosted-zone-id",required=True)
  q=s.add_parser("plan-stack"); q.add_argument("--domain-name",required=True); q.add_argument("--hosted-zone-id",required=True); q.add_argument("--certificate-email",required=True); q.add_argument("--alert-email",default=""); q.add_argument("--data-volume-gib",default="50"); q.add_argument("--data-snapshot-id",default="")
  q=s.add_parser("deploy-release"); q.add_argument("key"); q.add_argument("sha"); q.add_argument("release_id"); q.add_argument("domain"); q.add_argument("email")
  a=p.parse_args(argv)
  try:
   if a.cmd=="identity": print(json.dumps(require_expected_identity(r))); return 0
   if a.cmd=="validate":
-   root=Path(__file__).resolve().parents[1]; q=r.run(["uvx","--from","cfn-lint==1.53.1","cfn-lint",str(root/"infra/aws/bootstrap/template.yaml"),str(root/"infra/aws/phase2a/template.yaml")],capture_output=False)
+   root=Path(__file__).resolve().parents[1]; q=r.run(["uvx","--from","cfn-lint==1.53.1","cfn-lint",str(root/"infra/aws/bootstrap/template.yaml"),str(root/"infra/aws/phase2a/template.yaml"),str(root/"infra/aws/www-dns/template.yaml")],capture_output=False)
    if q.returncode:return q.returncode
    run_json(r,aws("cloudformation","validate-template","--template-body",f"file://{root/'infra/aws/phase2a/template.yaml'}")); return 0
   if a.cmd=="outputs": print(json.dumps(outputs(r),sort_keys=True)); return 0
@@ -158,8 +159,13 @@ def main(argv=None, runner:Runner|None=None)->int:
    if not re.fullmatch(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+",a.domain_name) or not re.fullmatch(r"Z[A-Z0-9]+",a.hosted_zone_id) or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+",a.certificate_email): raise OperatorError("invalid stack parameter")
    vals={"DomainName":a.domain_name,"HostedZoneId":a.hosted_zone_id,"CertificateEmail":a.certificate_email,"AlertEmail":a.alert_email,"DataVolumeGiB":a.data_volume_gib,"DataSnapshotId":a.data_snapshot_id}
    plan(r,APPLICATION_STACK,str(Path(__file__).resolve().parents[1]/"infra/aws/phase2a/template.yaml"),[f"ParameterKey={k},ParameterValue={v}" for k,v in vals.items()]); return 0
+  if a.cmd=="plan-www-dns":
+   if not re.fullmatch(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+",a.domain_name) or not re.fullmatch(r"Z[A-Z0-9]+",a.hosted_zone_id): raise OperatorError("invalid DNS stack parameter")
+   vals={"DomainName":a.domain_name,"HostedZoneId":a.hosted_zone_id}
+   plan(r,WWW_DNS_STACK,str(Path(__file__).resolve().parents[1]/"infra/aws/www-dns/template.yaml"),[f"ParameterKey={k},ParameterValue={v}" for k,v in vals.items()]); return 0
   if a.cmd=="execute-bootstrap": execute_bootstrap(r,a.change_set_arn,a.confirm_account); return 0
   if a.cmd=="execute-change-set": execute(r,a.change_set_arn,a.confirm_account); return 0
+  if a.cmd=="execute-www-dns-change-set": execute(r,a.change_set_arn,a.confirm_account,WWW_DNS_STACK); return 0
   if a.cmd.startswith("upload-"):
    if not a.key.startswith(a.prefix) or ".." in a.key: raise OperatorError("unsafe artifact key")
    upload(r,a.file,a.key); return 0

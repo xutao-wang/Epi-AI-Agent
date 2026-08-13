@@ -81,36 +81,30 @@ CloudWatch logs/alarms, SNS, Cognito, Route 53 hosted-zone and DNS-query charges
 ## Add the www compatibility redirect
 
 Keep `https://epiagent.org` canonical. The `www` DNS alias, expanded
-certificate, and Nginx redirect must roll out in that order. Before creating a
-change set, set the current certificate and alert contact values locally; do
-not save either value in this repository.
+certificate, and Nginx redirect must roll out in that order. The DNS alias has
+its own deliberately minimal stack, so this rollout cannot modify the EC2 host.
 
 ```sh
 HOSTED_ZONE_ID="Z02132461LVJ2PFOYFXFU"
-CERT_EMAIL="the current certificate contact email"
-ALERT_EMAIL="the current alert contact email, or empty if none"
 ```
 
 Create a reviewed CloudFormation change set only:
 
 ```sh
-.venv/bin/python scripts/aws_phase2a.py plan-stack \
+.venv/bin/python scripts/aws_phase2a.py plan-www-dns \
   --domain-name epiagent.org \
-  --hosted-zone-id "$HOSTED_ZONE_ID" \
-  --certificate-email "$CERT_EMAIL" \
-  --alert-email "$ALERT_EMAIL" \
-  --data-volume-gib 50
+  --hosted-zone-id "$HOSTED_ZONE_ID"
 ```
 
 Require exactly one infrastructure action: Add
-`ApplicationWwwDnsRecord` (`AWS::Route53::RecordSet`). Stop if the change set
-modifies or replaces EC2, EIP, EBS, Cognito, the hosted zone, or any unrelated
-resource. The separately planned AMI-pinning maintenance implementation is
-preserved on the local `planned-ami-maintenance` branch and is not part of this
-rollout. Execute only after explicit review and account confirmation:
+`ApplicationWwwDnsRecord` (`AWS::Route53::RecordSet`) in stack
+`epi-agent-www-dns`. Stop if the change set has any other resource action. The
+separately planned AMI-pinning maintenance implementation is preserved on the
+local `planned-ami-maintenance` branch and is not part of this rollout. Execute
+only after explicit review and account confirmation:
 
 ```sh
-.venv/bin/python scripts/aws_phase2a.py execute-change-set CHANGE_SET_ARN \
+.venv/bin/python scripts/aws_phase2a.py execute-www-dns-change-set CHANGE_SET_ARN \
   --confirm-account 641379499556
 ```
 
