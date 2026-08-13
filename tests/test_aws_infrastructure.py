@@ -482,12 +482,12 @@ def test_phase2a_cognito_is_invitation_only_without_a_client_secret() -> None:
     }
 
 
-def test_phase2a_dns_uses_existing_zone_and_maps_apex_to_eip() -> None:
+def test_phase2a_dns_uses_existing_zone_and_maps_apex_and_www() -> None:
     template = phase2a_template()
     resources = template["Resources"]
     types = Counter(resource["Type"] for resource in resources.values())
 
-    assert types["AWS::Route53::RecordSet"] == 1
+    assert types["AWS::Route53::RecordSet"] == 2
     assert all("HostedZone" not in resource_type and "Domains" not in resource_type for resource_type in types)
     assert resources["ApplicationDnsRecord"]["Properties"] == {
         "HostedZoneId": {"Ref": "HostedZoneId"},
@@ -495,6 +495,20 @@ def test_phase2a_dns_uses_existing_zone_and_maps_apex_to_eip() -> None:
         "Type": "A",
         "TTL": "300",
         "ResourceRecords": [{"Ref": "ApplicationElasticIp"}],
+    }
+    assert resources["ApplicationWwwDnsRecord"] == {
+        "Type": "AWS::Route53::RecordSet",
+        "DependsOn": "ApplicationDnsRecord",
+        "Properties": {
+            "HostedZoneId": {"Ref": "HostedZoneId"},
+            "Name": {"Fn::Sub": "www.${DomainName}"},
+            "Type": "A",
+            "AliasTarget": {
+                "DNSName": {"Ref": "DomainName"},
+                "HostedZoneId": {"Ref": "HostedZoneId"},
+                "EvaluateTargetHealth": False,
+            },
+        },
     }
 
 

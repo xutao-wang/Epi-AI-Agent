@@ -1057,6 +1057,18 @@ Resources:
       ResourceRecords:
         - !Ref ApplicationElasticIp
 
+  ApplicationWwwDnsRecord:
+    Type: AWS::Route53::RecordSet
+    DependsOn: ApplicationDnsRecord
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub 'www.${DomainName}'
+      Type: A
+      AliasTarget:
+        DNSName: !Ref DomainName
+        HostedZoneId: !Ref HostedZoneId
+        EvaluateTargetHealth: false
+
 Outputs:
   ApplicationBucketName:
     Description: Name of the private, versioned application bucket.

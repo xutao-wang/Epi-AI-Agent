@@ -98,6 +98,29 @@ def main() -> None:
         raise AssertionError("SSM document lifecycle permissions must remain scoped to epi-agent documents")
 
     phase2a = _load("infra/aws/phase2a/template.yaml")
+    resources = phase2a["Resources"]
+    www_dns = resources.get("ApplicationWwwDnsRecord")
+    expected_www_dns = {
+        "Type": "AWS::Route53::RecordSet",
+        "DependsOn": "ApplicationDnsRecord",
+        "Properties": {
+            "HostedZoneId": {"Ref": "HostedZoneId"},
+            "Name": {"Fn::Sub": "www.${DomainName}"},
+            "Type": "A",
+            "AliasTarget": {
+                "DNSName": {"Ref": "DomainName"},
+                "HostedZoneId": {"Ref": "HostedZoneId"},
+                "EvaluateTargetHealth": False,
+            },
+        },
+    }
+    if www_dns != expected_www_dns:
+        raise AssertionError("www DNS must alias the existing apex record")
+    if sum(
+        resource["Type"] == "AWS::Route53::RecordSet"
+        for resource in resources.values()
+    ) != 2:
+        raise AssertionError("Phase 2A must manage only the apex and www DNS records")
     recovery = phase2a["Resources"]["EpiAgentRecoverStudyAccessDocument"]["Properties"]
     if recovery["Name"] != "epi-agent-recover-study-access":
         raise AssertionError("study access recovery document name changed")
