@@ -26,7 +26,7 @@
 - Modify: `infra/aws/phase2a/parameters.example.json:1-9`
 
 **Interfaces:**
-- Produces: `Parameters.ApplicationAmiId`, a `String` parameter whose default and initial example value are `ami-07a5b367e8dc8bd92` and whose `AllowedPattern` is `^ami-[a-f0-9]{8,17}$`.
+- Produces: `Parameters.ApplicationAmiId`, an `AWS::EC2::Image::Id` parameter whose default and initial example value are `ami-07a5b367e8dc8bd92` and whose `AllowedPattern` is `^ami-[a-f0-9]{8,17}$`.
 - Produces: `Resources.ApplicationInstance.Properties.ImageId: !Ref ApplicationAmiId`.
 
 - [ ] **Step 1: Add a failing template contract test**
@@ -39,7 +39,7 @@ def test_phase2a_pins_application_ami_for_routine_updates() -> None:
     parameters = template["Parameters"]
 
     assert parameters["ApplicationAmiId"] == {
-        "Type": "String",
+        "Type": "AWS::EC2::Image::Id",
         "Default": "ami-07a5b367e8dc8bd92",
         "Description": "Pinned Amazon Linux AMI ID; change only in an approved maintenance release.",
         "AllowedPattern": "^ami-[a-f0-9]{8,17}$",
@@ -71,7 +71,7 @@ Add `ApplicationAmiId` to the `Application host configuration` parameter group, 
 
 ```yaml
   ApplicationAmiId:
-    Type: String
+    Type: AWS::EC2::Image::Id
     Default: ami-07a5b367e8dc8bd92
     Description: Pinned Amazon Linux AMI ID; change only in an approved maintenance release.
     AllowedPattern: '^ami-[a-f0-9]{8,17}$'

@@ -556,7 +556,7 @@ def test_phase2a_pins_application_ami_for_routine_updates() -> None:
     parameters = template["Parameters"]
 
     assert parameters["ApplicationAmiId"] == {
-        "Type": "String",
+        "Type": "AWS::EC2::Image::Id",
         "Default": "ami-07a5b367e8dc8bd92",
         "Description": "Pinned Amazon Linux AMI ID; change only in an approved maintenance release.",
         "AllowedPattern": "^ami-[a-f0-9]{8,17}$",

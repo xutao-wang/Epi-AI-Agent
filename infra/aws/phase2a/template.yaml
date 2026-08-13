@@ -37,7 +37,7 @@ Parameters:
     Default: t3.large
     Description: Instance type reserved for the Phase 2A application host.
   ApplicationAmiId:
-    Type: String
+    Type: AWS::EC2::Image::Id
     Default: ami-07a5b367e8dc8bd92
     Description: Pinned Amazon Linux AMI ID; change only in an approved maintenance release.
     AllowedPattern: '^ami-[a-f0-9]{8,17}$'
