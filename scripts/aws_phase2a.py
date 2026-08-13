@@ -152,7 +152,8 @@ def main(argv=None, runner:Runner|None=None)->int:
   if a.cmd=="validate":
    root=Path(__file__).resolve().parents[1]; q=r.run(["uvx","--from","cfn-lint==1.53.1","cfn-lint",str(root/"infra/aws/bootstrap/template.yaml"),str(root/"infra/aws/phase2a/template.yaml"),str(root/"infra/aws/www-dns/template.yaml")],capture_output=False)
    if q.returncode:return q.returncode
-   run_json(r,aws("cloudformation","validate-template","--template-body",f"file://{root/'infra/aws/phase2a/template.yaml'}")); return 0
+   for template in (root/"infra/aws/phase2a/template.yaml",root/"infra/aws/www-dns/template.yaml"): run_json(r,aws("cloudformation","validate-template","--template-body",f"file://{template}"))
+   return 0
   if a.cmd=="outputs": print(json.dumps(outputs(r),sort_keys=True)); return 0
   if a.cmd=="plan-bootstrap": plan_bootstrap(r,str(Path(__file__).resolve().parents[1]/"infra/aws/bootstrap/template.yaml")); return 0
   if a.cmd=="plan-stack":

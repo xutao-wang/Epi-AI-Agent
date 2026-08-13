@@ -47,6 +47,13 @@ def test_execute_change_set_rechecks_exact_arn_stack_and_status():
  s=_source(); assert 'd.get("ChangeSetId",d.get("ChangeSetArn"))!=arn' in s and 'd.get("Status")!="CREATE_COMPLETE"' in s
 def test_validate_runs_lint_before_aws_validation():
  s=_source(); assert s.index('"cfn-lint"') < s.index('"validate-template"')
+def test_validate_sends_both_deployment_templates_to_cloudformation():
+ r=R("{}")
+ assert cli.main(["validate"],runner=r)==0
+ validations=[call for call in r.calls if "validate-template" in call]
+ assert len(validations)==2
+ assert any("infra/aws/phase2a/template.yaml" in argument for call in validations for argument in call)
+ assert any("infra/aws/www-dns/template.yaml" in argument for call in validations for argument in call)
 def test_upload_enforces_release_and_study_prefixes():
  s=_source(); assert '("upload-release","releases/")' in s and '("upload-study","studies/")' in s
 def test_upload_has_checksum_size_and_no_overwrite_contract():
