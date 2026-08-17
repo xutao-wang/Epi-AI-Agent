@@ -38,13 +38,9 @@ class SchemaCatalog:
         self,
         catalog: dict[str, Any],
         *,
-        table_collection: Any | None = None,
-        column_collection: Any | None = None,
         default_source_id: str | None = None,
     ) -> None:
         self._catalog = dict(catalog)
-        self._table_collection = table_collection
-        self._column_collection = column_collection
         self._default_source_id = _as_text(default_source_id)
 
     def field_exists(self, table: str, column: str) -> bool:
@@ -99,59 +95,9 @@ class SchemaCatalog:
             return []
         if limit < 1:
             return [[] for _query in queries]
-        if self._table_collection is not None and self._column_collection is not None:
-            retrieved = retrieve_queries(
-                self._table_collection,
-                self._column_collection,
-                queries,
-                table_k=limit,
-                column_k=limit,
-            )
-            row_batches = [
-                _bounded_interleave(table_rows, column_rows, limit=limit)
-                for table_rows, column_rows in retrieved
-            ]
-        else:
-            row_batches = []
-            entries = [
-                *(
-                    dict(entry)
-                    for entry in self._catalog.get("tables", [])
-                    if isinstance(entry, dict)
-                ),
-                *(
-                    dict(entry)
-                    for entry in self._catalog.get("columns", [])
-                    if isinstance(entry, dict)
-                ),
-            ]
-            for query in queries:
-                terms = {
-                    term.casefold()
-                    for term in query.split()
-                    if term.strip()
-                }
-                row_batches.append(
-                    sorted(
-                        entries,
-                        key=lambda entry: sum(
-                            term in _as_text(entry.get("text")).casefold()
-                            for term in terms
-                        ),
-                        reverse=True,
-                    )[:limit]
-                )
-
-        return [
-            [
-                _schema_evidence_hit(
-                    row,
-                    default_source_id=self._default_source_id,
-                )
-                for row in rows[:limit]
-            ]
-            for rows in row_batches
-        ]
+        raise SemanticCatalogUnavailableError(
+            "Semantic catalog retrieval is unavailable for the selected study."
+        )
 
 
 class UnavailableSemanticSchemaCatalog(SchemaCatalog):

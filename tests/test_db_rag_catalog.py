@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from db_rag.catalog import (
+    SchemaCatalog,
     SemanticCatalogUnavailableError,
     SemanticSchemaCatalog,
     UnavailableSemanticSchemaCatalog,
@@ -59,6 +60,19 @@ def _catalog_data() -> dict[str, object]:
             }
         ],
     }
+
+
+def test_base_catalog_preserves_exact_operations_but_cannot_search() -> None:
+    catalog = SchemaCatalog(
+        _catalog_data(),
+        default_source_id="nhanes-2017-2018",
+    )
+
+    with pytest.raises(SemanticCatalogUnavailableError):
+        catalog.search_many(["glycohemoglobin"], limit=5)
+
+    assert catalog.inspect_table("nhanes-2017-2018", "GHB_J")
+    assert catalog.field_exists("GHB_J", "LBXGH")
 
 
 def test_semantic_catalog_runs_vector_and_exact_lexical_retrieval() -> None:
