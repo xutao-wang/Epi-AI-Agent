@@ -77,6 +77,23 @@ class _FailingCollection:
         raise RuntimeError("collection unavailable")
 
 
+class _EmptyCollection:
+    def query(self, **kwargs):
+        del kwargs
+        return {"ids": [[]], "metadatas": [[]]}
+
+
+class _MalformedMetadataCollection:
+    def __init__(self, chunk: StudyEvidenceChunk) -> None:
+        self.chunk = chunk
+
+    def query(self, **kwargs):
+        del kwargs
+        metadata = self.chunk.chroma_metadata()
+        metadata["source_kind"] = "study_design"
+        return {"ids": [[self.chunk.id]], "metadatas": [[metadata]]}
+
+
 def test_semantic_publication_search_requires_vector_and_boosts_lexical() -> None:
     local = _local()
     embedder = _EmbeddingFunction()
@@ -126,9 +143,81 @@ def test_semantic_publication_search_rejects_unverified_vector_ids() -> None:
         embedding_function=_EmbeddingFunction(),
     )
 
-    hits = knowledge.search("cohort eligibility", limit=5)
+    with pytest.raises(
+        local_knowledge.SemanticPublicationKnowledgeUnavailableError
+    ):
+        knowledge.search("cohort eligibility", limit=5)
 
-    assert "publication.not-locally-verified" not in {hit.id for hit in hits}
+
+def test_semantic_publication_search_rejects_empty_vector_partition() -> None:
+    knowledge = local_knowledge.SemanticPublicationKnowledge(
+        _local(),
+        collection=_EmptyCollection(),
+        embedding_function=_EmbeddingFunction(),
+    )
+
+    with pytest.raises(
+        local_knowledge.SemanticPublicationKnowledgeUnavailableError
+    ):
+        knowledge.search("cohort eligibility", limit=5)
+
+
+def test_semantic_publication_search_rejects_stale_vector_metadata() -> None:
+    local = _local()
+    knowledge = local_knowledge.SemanticPublicationKnowledge(
+        local,
+        collection=_MalformedMetadataCollection(local._chunks[0]),
+        embedding_function=_EmbeddingFunction(),
+    )
+
+    with pytest.raises(
+        local_knowledge.SemanticPublicationKnowledgeUnavailableError
+    ):
+        knowledge.search("cohort eligibility", limit=5)
+
+
+def test_semantic_publication_fusion_never_replaces_vector_candidates() -> None:
+    vector_chunks = (
+        _chunk(
+            "publication.semantic-1",
+            title="Renal outcomes",
+            text="Kidney outcomes.",
+        ),
+        _chunk(
+            "publication.semantic-2",
+            title="Treatment outcomes",
+            text="Treatment outcomes.",
+        ),
+    )
+    lexical_chunks = (
+        _chunk(
+            "publication.lexical-1",
+            title="Cohort definition",
+            text="Cohort enrollment.",
+        ),
+        _chunk(
+            "publication.lexical-2",
+            title="Cohort eligibility",
+            text="Cohort eligibility.",
+        ),
+    )
+    local = LocalPublicationKnowledge(
+        (*vector_chunks, *lexical_chunks),
+        {"cohort": 2},
+    )
+    knowledge = local_knowledge.SemanticPublicationKnowledge(
+        local,
+        collection=_Collection(vector_chunks),
+        embedding_function=_EmbeddingFunction(),
+    )
+
+    hits = knowledge.search("cohort", limit=2)
+
+    assert [hit.id for hit in hits] == [
+        "publication.semantic-1",
+        "publication.semantic-2",
+    ]
+    assert all(hit.provenance["matched_by"] == "vector" for hit in hits)
 
 
 def test_unavailable_semantic_publication_preserves_exact_source_opening() -> None:

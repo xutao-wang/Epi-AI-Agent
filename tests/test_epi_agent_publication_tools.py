@@ -17,6 +17,20 @@ class _UnavailableKnowledge:
             "semantic publication retrieval failed"
         )
 
+    def open_source(self, source_id: str, *, limit: int = 10):
+        del limit
+        return [
+            PublicationEvidenceHit(
+                id="publication.verified",
+                source_id=source_id,
+                title="Example publication",
+                section="Eligibility",
+                text="Verified eligibility evidence.",
+                path="doi_10.1000_example.json",
+                provenance={"authority": "publication_knowledge"},
+            )
+        ]
+
 
 class _HybridKnowledge:
     def search(self, query: str, *, limit: int = 5):
@@ -78,3 +92,18 @@ def test_publication_tool_translates_semantic_unavailability() -> None:
 
     assert raised.value.code == "SEMANTIC_STUDY_KNOWLEDGE_UNAVAILABLE"
     assert raised.value.recoverable is True
+
+
+def test_publication_tool_opens_exact_source_when_semantic_search_is_unavailable(
+) -> None:
+    context = _context(_UnavailableKnowledge())
+
+    result = build_publication_tool_registry(include_pubmed=False).invoke(
+        "publication-open_study_source",
+        {"source_id": "doi:10.1000/example"},
+        context=context,
+    )
+
+    observation = context.artifact_store.require(result.artifacts[0]).content
+    assert observation["source_id"] == "doi:10.1000/example"
+    assert observation["sections"][0]["title"] == "Example publication"

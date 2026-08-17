@@ -224,14 +224,15 @@ def _fuse_hits(
     scores: dict[str, float] = {}
     hits_by_id: dict[str, PublicationEvidenceHit] = {}
     matched_by: dict[str, list[str]] = {}
-    for weight, mode, hits in (
-        (1.0, "vector", vector_hits),
-        (1.5, "lexical", lexical_hits),
-    ):
-        for rank, hit in enumerate(hits, start=1):
-            hits_by_id.setdefault(hit.id, hit)
-            scores[hit.id] = scores.get(hit.id, 0.0) + weight / (_RRF_K + rank)
-            matched_by.setdefault(hit.id, []).append(mode)
+    for rank, hit in enumerate(vector_hits, start=1):
+        hits_by_id[hit.id] = hit
+        scores[hit.id] = 1.0 / (_RRF_K + rank)
+        matched_by[hit.id] = ["vector"]
+    for rank, hit in enumerate(lexical_hits, start=1):
+        if hit.id not in hits_by_id:
+            continue
+        scores[hit.id] += 1.5 / (_RRF_K + rank)
+        matched_by[hit.id].append("lexical")
     ordered_ids = sorted(
         scores,
         key=lambda chunk_id: (-scores[chunk_id], chunk_id),
@@ -277,6 +278,8 @@ class SemanticPublicationKnowledge:
     ) -> list[PublicationEvidenceHit]:
         if limit < 1 or not query.strip():
             return []
+        if not self._local._chunks:
+            return []
         candidate_limit = limit * 2
         try:
             embeddings = self._embedding_function.embed_query([query])
@@ -292,15 +295,31 @@ class SemanticPublicationKnowledge:
             metadatas = list(result["metadatas"][0])
             if len(ids) != len(metadatas):
                 raise ValueError("Publication vector result is malformed.")
-            verified_hits = {
-                chunk.id: _hit(chunk)
+            verified_chunks = {
+                chunk.id: chunk
                 for chunk in self._local._chunks
             }
-            vector_hits = [
-                verified_hits[str(chunk_id)]
-                for chunk_id in ids
-                if str(chunk_id) in verified_hits
-            ]
+            vector_hits: list[PublicationEvidenceHit] = []
+            seen_ids: set[str] = set()
+            for chunk_id, metadata in zip(ids, metadatas):
+                normalized_id = str(chunk_id)
+                chunk = verified_chunks.get(normalized_id)
+                if (
+                    chunk is None
+                    or normalized_id in seen_ids
+                    or not isinstance(metadata, dict)
+                ):
+                    raise ValueError("Publication vector result is unverified.")
+                expected_metadata = chunk.chroma_metadata()
+                if any(
+                    str(metadata.get(key) or "") != str(expected_value)
+                    for key, expected_value in expected_metadata.items()
+                ):
+                    raise ValueError("Publication vector metadata is stale.")
+                seen_ids.add(normalized_id)
+                vector_hits.append(_hit(chunk))
+            if not vector_hits:
+                raise ValueError("Publication vector partition is empty.")
         except Exception as error:
             raise SemanticPublicationKnowledgeUnavailableError(
                 "Semantic publication retrieval is unavailable for the selected study."

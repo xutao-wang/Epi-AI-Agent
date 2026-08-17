@@ -11,6 +11,7 @@ from db_rag.catalog import (
     SemanticSchemaCatalog,
 )
 from db_rag.config import DbRagRuntimePaths, EMBEDDING_MODEL
+from db_rag.knowledge import StudyEvidenceChunk
 from db_rag.local_knowledge import (
     LocalPublicationKnowledge,
     SemanticPublicationKnowledge,
@@ -276,6 +277,13 @@ class _IsolatedCollection:
     def query(self, **kwargs):
         self.client.query_count += 1
         count = len(kwargs["query_embeddings"])
+        if self.name == "study_knowledge":
+            self.client.knowledge_queries.append(dict(kwargs))
+            chunk = _publication_chunk(self.client.study_id)
+            return {
+                "ids": [[chunk.id] for _ in range(count)],
+                "metadatas": [[chunk.chroma_metadata()] for _ in range(count)],
+            }
         if self.name == "table_summaries":
             documents = [f"{self.client.table} records"]
             metadatas = [
@@ -312,11 +320,88 @@ class _IsolatedClient:
             self.table = "GHB_J"
             self.column = "LBXGH"
         self.query_count = 0
+        self.knowledge_queries: list[dict[str, object]] = []
         self.clients[resolved] = self
 
     def get_collection(self, name: str, *, embedding_function):
         del embedding_function
         return _IsolatedCollection(self, name)
+
+
+def _publication_chunk(study_id: str) -> StudyEvidenceChunk:
+    return StudyEvidenceChunk(
+        id=f"publication.{study_id}",
+        source_id=f"doi:10.1000/{study_id}",
+        title=f"{study_id} publication",
+        section="Eligibility",
+        text=f"Eligibility evidence for {study_id}.",
+        path=f"{study_id}.json",
+        knowledge_type="eligibility",
+        knowledge_role="historical_study_design_reference",
+        indexed_path="design_reference.eligibility",
+    )
+
+
+def _publication_knowledge(study_id: str) -> LocalPublicationKnowledge:
+    return LocalPublicationKnowledge(
+        (_publication_chunk(study_id),),
+        {"eligibility": 1},
+    )
+
+
+def test_selected_study_publications_cannot_cross_chroma_roots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_id = "report-india-synthetic"
+    second_id = "report-second-study"
+    first = _bundle(
+        tmp_path,
+        first_id,
+        "REPORT_TABLE",
+        knowledge=_publication_knowledge(first_id),
+    )
+    second = _bundle(
+        tmp_path,
+        second_id,
+        "SECOND_TABLE",
+        knowledge=_publication_knowledge(second_id),
+    )
+    _IsolatedClient.clients = {}
+    _IsolatedEmbeddingFunction.instances = []
+    monkeypatch.setattr(session_studies, "resolve_db_rag_readiness", _available)
+    monkeypatch.setattr(
+        session_studies.chromadb,
+        "PersistentClient",
+        _IsolatedClient,
+    )
+    monkeypatch.setattr(
+        session_studies,
+        "OpenAIEmbeddingFunction",
+        _IsolatedEmbeddingFunction,
+    )
+
+    bound = session_studies.bind_session_studies(
+        StudyRegistry([first, second]),
+        api_key="session-key",
+        expected_embedding_model=EMBEDDING_MODEL,
+    )
+
+    first_hits = bound.studies.require(first_id).knowledge.search(
+        "eligibility",
+        limit=1,
+    )
+    second_hits = bound.studies.require(second_id).knowledge.search(
+        "eligibility",
+        limit=1,
+    )
+
+    assert [hit.source_id for hit in first_hits] == [f"doi:10.1000/{first_id}"]
+    assert [hit.source_id for hit in second_hits] == [f"doi:10.1000/{second_id}"]
+    first_client = _IsolatedClient.clients[first.db_rag_paths.chroma_path]
+    second_client = _IsolatedClient.clients[second.db_rag_paths.chroma_path]
+    assert len(first_client.knowledge_queries) == 1
+    assert len(second_client.knowledge_queries) == 1
 
 
 def test_selected_study_catalogs_cannot_cross_chroma_roots(
