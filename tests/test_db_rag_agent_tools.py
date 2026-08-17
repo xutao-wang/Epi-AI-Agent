@@ -84,6 +84,33 @@ class _CatalogWithEmptyProbe(_ManyHitCatalog):
         return batches
 
 
+class _InspectableCatalog(_HybridCatalog):
+    def inspect_table(
+        self,
+        source: str,
+        table: str,
+        *,
+        offset: int = 0,
+        limit: int = 25,
+    ):
+        fields = [
+            SchemaEvidenceHit(
+                source=source,
+                table=table,
+                column=f"FIELD_{index:02d}",
+                text=f"Annotated field {index}",
+                provenance={
+                    "authority": "runtime_schema_catalog",
+                    "source_id": source,
+                    "table": table,
+                    "column": f"FIELD_{index:02d}",
+                },
+            )
+            for index in range(30)
+        ]
+        return fields[offset : offset + limit]
+
+
 def _context(catalog) -> ToolContext:
     return ToolContext(
         study=StudyBundle(
@@ -176,3 +203,49 @@ def test_catalog_tool_translates_semantic_unavailability() -> None:
 
     assert raised.value.code == "SEMANTIC_CATALOG_UNAVAILABLE"
     assert raised.value.recoverable is True
+
+
+def test_inspect_table_returns_explicit_next_page_metadata() -> None:
+    context = _context(_InspectableCatalog())
+
+    result = build_db_rag_tool_registry().invoke(
+        "dbrag-inspect_table",
+        {
+            "source": "nhanes-2017-2018",
+            "table": "DEMO_J",
+            "offset": 0,
+            "limit": 25,
+        },
+        context=context,
+    )
+
+    message = json.loads(result.message)
+    assert message["returned_count"] == 25
+    assert message["has_more"] is True
+    assert message["next_offset"] == 25
+    assert len(message["fields"]) == 25
+    assert set(message["fields"][0]) == {"column", "text", "source_kind"}
+
+
+def test_inspect_table_final_page_includes_null_next_offset() -> None:
+    context = _context(_InspectableCatalog())
+
+    result = build_db_rag_tool_registry().invoke(
+        "dbrag-inspect_table",
+        {
+            "source": "nhanes-2017-2018",
+            "table": "DEMO_J",
+            "offset": 25,
+            "limit": 25,
+        },
+        context=context,
+    )
+
+    message = json.loads(result.message)
+    assert message["returned_count"] == 5
+    assert message["has_more"] is False
+    assert "next_offset" in message
+    assert message["next_offset"] is None
+    assert [field["column"] for field in message["fields"]] == [
+        f"FIELD_{index:02d}" for index in range(25, 30)
+    ]

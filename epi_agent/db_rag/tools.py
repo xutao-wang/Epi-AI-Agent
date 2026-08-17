@@ -644,95 +644,44 @@ def _render_catalog_search(content: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _render_catalog(content: dict[str, Any]) -> dict[str, Any]:
-    collection_key = "hits" if "hits" in content else "fields"
-    item_limit = _MAX_SEARCH_HITS if collection_key == "hits" else _MAX_TABLE_FIELDS
-    hits = [
+def _compact_inspection_field(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: _bounded_text(value.get(key), limit=300)
+        for key in ("column", "text", "source_kind")
+        if value.get(key) is not None
+    }
+
+
+def _render_table_profile(content: dict[str, Any]) -> dict[str, Any]:
+    fields = [
         field
         for field in (
-            _safe_field(item)
-            for item in _collection(content, collection_key)
+            _compact_inspection_field(item)
+            for item in _collection(content, "fields")
         )
         if field
-    ][:item_limit]
-    rendered = {
-        key: value
-        for key, value in {
-            "query": _bounded_text(content.get("query")),
-            "queries": _safe_string_list(
-                _collection(content, "queries"),
-                limit=_MAX_CATALOG_QUERIES,
-            ),
-            "source": _bounded_text(content.get("source")),
-            "source_ids": _safe_string_list(
-                _collection(content, "source_ids"),
-                limit=50,
-            ),
-            "retrieval_mode": _bounded_text(
-                content.get("retrieval_mode"),
-                limit=100,
-            ),
-            "table": _bounded_text(content.get("table")),
-            "offset": content.get("offset"),
-            "next_offset": content.get("next_offset"),
-            collection_key: hits,
-        }.items()
-        if value not in ("", [], None)
+    ][:_MAX_TABLE_FIELDS]
+    offset = content.get("offset")
+    next_offset = content.get("next_offset")
+    return {
+        "source": _bounded_text(content.get("source"), limit=300),
+        "table": _bounded_text(content.get("table"), limit=300),
+        "offset": (
+            max(0, offset)
+            if isinstance(offset, int) and not isinstance(offset, bool)
+            else 0
+        ),
+        "returned_count": len(fields),
+        "has_more": bool(content.get("has_more")),
+        "next_offset": (
+            next_offset
+            if isinstance(next_offset, int) and not isinstance(next_offset, bool)
+            else None
+        ),
+        "fields": fields,
     }
-    summary = content.get("retrieval_summary")
-    if isinstance(summary, dict):
-        probes: list[dict[str, Any]] = []
-        for value in summary.get("probes") or []:
-            if not isinstance(value, dict):
-                continue
-            probe: dict[str, Any] = {
-                "query": _bounded_text(value.get("query"), limit=500),
-            }
-            for key in (
-                "table_hits",
-                "column_hits",
-                "unique_table_count",
-                "unique_column_count",
-            ):
-                count = value.get(key)
-                if isinstance(count, int) and not isinstance(count, bool):
-                    probe[key] = max(0, count)
-            probes.append(probe)
-        safe_summary: dict[str, Any] = {
-            "probe_count": (
-                summary.get("probe_count")
-                if isinstance(summary.get("probe_count"), int)
-                and not isinstance(summary.get("probe_count"), bool)
-                else len(probes)
-            ),
-            "unique_table_count": (
-                summary.get("unique_table_count")
-                if isinstance(summary.get("unique_table_count"), int)
-                and not isinstance(summary.get("unique_table_count"), bool)
-                else 0
-            ),
-            "unique_column_count": (
-                summary.get("unique_column_count")
-                if isinstance(summary.get("unique_column_count"), int)
-                and not isinstance(summary.get("unique_column_count"), bool)
-                else 0
-            ),
-            "vector_hits": (
-                summary.get("vector_hits")
-                if isinstance(summary.get("vector_hits"), int)
-                and not isinstance(summary.get("vector_hits"), bool)
-                else 0
-            ),
-            "lexical_hits": (
-                summary.get("lexical_hits")
-                if isinstance(summary.get("lexical_hits"), int)
-                and not isinstance(summary.get("lexical_hits"), bool)
-                else 0
-            ),
-            "probes": probes[:_MAX_CATALOG_QUERIES],
-        }
-        rendered["retrieval_summary"] = safe_summary
-    return rendered
 
 
 def _render_relationship(content: dict[str, Any]) -> dict[str, Any]:
@@ -931,7 +880,7 @@ _ARTIFACT_RENDERERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "relationship_profile": _render_relationship,
     "study_evidence": _render_evidence,
     "study_source": _render_evidence,
-    "table_profile": _render_catalog,
+    "table_profile": _render_table_profile,
 }
 
 
@@ -1242,13 +1191,16 @@ def _inspect_table(arguments: dict[str, Any], context: ToolContext) -> ToolResul
             "TABLE_NOT_FOUND",
             f"Runtime table is unavailable: {arguments['table']}",
         )
+    has_more = len(provider_fields) > limit
     content = {
         "source": arguments["source"],
         "table": arguments["table"],
         "offset": offset,
+        "returned_count": len(fields),
+        "has_more": has_more,
         "next_offset": (
             offset + limit
-            if len(provider_fields) > limit
+            if has_more
             else None
         ),
         "fields": fields,
@@ -1261,7 +1213,11 @@ def _inspect_table(arguments: dict[str, Any], context: ToolContext) -> ToolResul
         summary=f"Bounded schema profile for {arguments['table']}",
     )
     return ToolResult(
-        message=json.dumps(_render_catalog(content), sort_keys=True),
+        message=json.dumps(
+            _render_table_profile(content),
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
         artifacts=(reference,),
     )
 
