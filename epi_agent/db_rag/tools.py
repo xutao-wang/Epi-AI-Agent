@@ -65,8 +65,8 @@ from utils.dataset_artifacts import (
 
 _MAX_SEARCH_HITS = 10
 _MAX_CATALOG_QUERIES = 5
-_MAX_CATALOG_HITS = 25
 _MAX_TABLE_FIELDS = 25
+_MAX_MODEL_CATALOG_TEXT_CHARS = 80
 _MAX_EXCERPT_CHARS = 500
 _MAX_OPEN_CHARS = 4_000
 _DBRAG_TOOL_PREFIX = "dbrag-"
@@ -558,13 +558,95 @@ def _render_evidence(content: dict[str, Any]) -> dict[str, Any]:
     return rendered
 
 
+def _compact_catalog_hit(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    hit = {
+        key: _bounded_text(
+            value.get(key),
+            limit=(
+                _MAX_MODEL_CATALOG_TEXT_CHARS
+                if key == "text"
+                else 300
+            ),
+        )
+        for key in ("source", "table", "column", "text")
+        if value.get(key) is not None
+    }
+    matched_by = _safe_string_list(value.get("matched_by"), limit=2)
+    if matched_by:
+        hit["matched_by"] = [
+            mode for mode in matched_by if mode in {"vector", "lexical"}
+        ]
+    return hit
+
+
+def _render_catalog_search(content: dict[str, Any]) -> dict[str, Any]:
+    probes: list[dict[str, Any]] = []
+    for value in _collection(content, "probes")[:_MAX_CATALOG_QUERIES]:
+        if not isinstance(value, dict):
+            continue
+        hits = [
+            hit
+            for hit in (
+                _compact_catalog_hit(item)
+                for item in _collection(value, "hits")[:_MAX_SEARCH_HITS]
+            )
+            if hit
+        ]
+        probe: dict[str, Any] = {
+            "query": _bounded_text(value.get("query"), limit=500),
+            "returned_count": len(hits),
+            "hits": hits,
+        }
+        for key in (
+            "table_hits",
+            "column_hits",
+            "unique_table_count",
+            "unique_column_count",
+        ):
+            count = value.get(key)
+            probe[key] = (
+                max(0, count)
+                if isinstance(count, int) and not isinstance(count, bool)
+                else 0
+            )
+        probes.append(probe)
+
+    summary = content.get("retrieval_summary")
+    safe_summary: dict[str, Any] = {}
+    if isinstance(summary, dict):
+        for key in (
+            "probe_count",
+            "unique_table_count",
+            "unique_column_count",
+            "vector_hits",
+            "lexical_hits",
+        ):
+            count = summary.get(key)
+            safe_summary[key] = (
+                max(0, count)
+                if isinstance(count, int) and not isinstance(count, bool)
+                else 0
+            )
+
+    return {
+        "retrieval_mode": _bounded_text(
+            content.get("retrieval_mode"),
+            limit=100,
+        ),
+        "source_ids": _safe_string_list(
+            _collection(content, "source_ids"),
+            limit=50,
+        ),
+        "retrieval_summary": safe_summary,
+        "probes": probes,
+    }
+
+
 def _render_catalog(content: dict[str, Any]) -> dict[str, Any]:
     collection_key = "hits" if "hits" in content else "fields"
-    item_limit = (
-        _MAX_CATALOG_HITS
-        if collection_key == "hits"
-        else _MAX_TABLE_FIELDS
-    )
+    item_limit = _MAX_SEARCH_HITS if collection_key == "hits" else _MAX_TABLE_FIELDS
     hits = [
         field
         for field in (
@@ -840,7 +922,7 @@ def _render_dataset(content: dict[str, Any]) -> dict[str, Any]:
 
 
 _ARTIFACT_RENDERERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
-    "catalog_search": _render_catalog,
+    "catalog_search": _render_catalog_search,
     "dataset_plan": _render_dataset_plan,
     "dataset_quality_report": _render_quality,
     "db_rag_column_selection": _render_selection,
@@ -1015,10 +1097,10 @@ def _search_catalog(arguments: dict[str, Any], context: ToolContext) -> ToolResu
             recoverable=True,
         )
     source_ids = sorted(str(source_id) for source_id in study.data_sources)
-    hits: list[dict[str, Any]] = []
+    all_hits: list[dict[str, Any]] = []
     all_tables: set[tuple[str, str]] = set()
     all_columns: set[tuple[str, str, str]] = set()
-    probe_summaries: list[dict[str, Any]] = []
+    probe_results: list[dict[str, Any]] = []
     try:
         provider_batches = search_many(queries, limit=limit)
     except SemanticCatalogUnavailableError as error:
@@ -1035,7 +1117,7 @@ def _search_catalog(arguments: dict[str, Any], context: ToolContext) -> ToolResu
         )
     for query, provider_hits in zip(queries, provider_batches):
         normalized_hits: list[dict[str, Any]] = []
-        for provider_hit in provider_hits:
+        for provider_hit in provider_hits[:limit]:
             hit = _schema_evidence_hit(provider_hit)
             source = str(hit.get("source") or "").strip()
             if not source and len(source_ids) == 1:
@@ -1054,7 +1136,7 @@ def _search_catalog(arguments: dict[str, Any], context: ToolContext) -> ToolResu
                 }
             hit["retrieval_probe"] = query
             normalized_hits.append(hit)
-            hits.append(hit)
+            all_hits.append(hit)
         probe_tables = {
             (str(hit.get("source") or ""), str(hit.get("table") or ""))
             for hit in normalized_hits
@@ -1071,9 +1153,10 @@ def _search_catalog(arguments: dict[str, Any], context: ToolContext) -> ToolResu
         }
         all_tables.update(probe_tables)
         all_columns.update(probe_columns)
-        probe_summaries.append(
+        probe_results.append(
             {
                 "query": query,
+                "returned_count": len(normalized_hits),
                 "table_hits": sum(
                     1 for hit in normalized_hits if not hit.get("column")
                 ),
@@ -1082,6 +1165,7 @@ def _search_catalog(arguments: dict[str, Any], context: ToolContext) -> ToolResu
                 ),
                 "unique_table_count": len(probe_tables),
                 "unique_column_count": len(probe_columns),
+                "hits": normalized_hits,
             }
         )
     content = {
@@ -1093,14 +1177,13 @@ def _search_catalog(arguments: dict[str, Any], context: ToolContext) -> ToolResu
             "unique_table_count": len(all_tables),
             "unique_column_count": len(all_columns),
             "vector_hits": sum(
-                "vector" in hit.get("matched_by", []) for hit in hits
+                "vector" in hit.get("matched_by", []) for hit in all_hits
             ),
             "lexical_hits": sum(
-                "lexical" in hit.get("matched_by", []) for hit in hits
+                "lexical" in hit.get("matched_by", []) for hit in all_hits
             ),
-            "probes": probe_summaries,
         },
-        "hits": hits[:_MAX_CATALOG_HITS],
+        "probes": probe_results,
     }
     reference = _save_observation(
         context,
@@ -1108,12 +1191,17 @@ def _search_catalog(arguments: dict[str, Any], context: ToolContext) -> ToolResu
         content=content,
         producer="dbrag-search_catalog",
         summary=(
-            f"{len(content['hits'])} schema catalog hits for "
+            f"{sum(probe['returned_count'] for probe in probe_results)} "
+            "schema catalog hits for "
             f"{len(queries)} probes"
         ),
     )
     return ToolResult(
-        message=json.dumps(_render_catalog(content), sort_keys=True),
+        message=json.dumps(
+            _render_catalog_search(content),
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
         artifacts=(reference,),
     )
 

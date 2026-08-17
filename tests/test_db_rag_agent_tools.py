@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from db_rag.catalog import (
@@ -52,6 +54,36 @@ class _UnavailableCatalog:
         raise SemanticCatalogUnavailableError("semantic retrieval failed")
 
 
+class _ManyHitCatalog:
+    def search_many(self, queries: list[str], *, limit: int):
+        return [
+            [
+                SchemaEvidenceHit(
+                    source="nhanes-2017-2018",
+                    table=f"TABLE_{probe_index}_{hit_index}",
+                    column=f"FIELD_{probe_index}_{hit_index}",
+                    text=f"Evidence {probe_index}-{hit_index}",
+                    provenance={
+                        "authority": "runtime_schema_catalog",
+                        "source_id": "nhanes-2017-2018",
+                        "table": f"TABLE_{probe_index}_{hit_index}",
+                        "column": f"FIELD_{probe_index}_{hit_index}",
+                    },
+                    matched_by=("vector", "lexical"),
+                )
+                for hit_index in range(limit)
+            ]
+            for probe_index, _query in enumerate(queries)
+        ]
+
+
+class _CatalogWithEmptyProbe(_ManyHitCatalog):
+    def search_many(self, queries: list[str], *, limit: int):
+        batches = super().search_many(queries, limit=limit)
+        batches[1] = []
+        return batches
+
+
 def _context(catalog) -> ToolContext:
     return ToolContext(
         study=StudyBundle(
@@ -81,7 +113,55 @@ def test_catalog_tool_persists_hybrid_retrieval_provenance() -> None:
     assert observation["retrieval_mode"] == "hybrid_vector_lexical"
     assert observation["retrieval_summary"]["vector_hits"] == 2
     assert observation["retrieval_summary"]["lexical_hits"] == 1
-    assert observation["hits"][0]["matched_by"] == ["vector", "lexical"]
+    assert observation["probes"][0]["hits"][0]["matched_by"] == [
+        "vector",
+        "lexical",
+    ]
+
+
+def test_catalog_tool_preserves_ten_hits_for_each_of_five_probes() -> None:
+    context = _context(_ManyHitCatalog())
+    queries = [f"probe-{index}" for index in range(5)]
+
+    result = build_db_rag_tool_registry().invoke(
+        "dbrag-search_catalog",
+        {"queries": queries, "limit": 10},
+        context=context,
+    )
+
+    observation = context.artifact_store.require(result.artifacts[0]).content
+    assert "hits" not in observation
+    assert [probe["query"] for probe in observation["probes"]] == queries
+    assert [probe["returned_count"] for probe in observation["probes"]] == [
+        10
+    ] * 5
+    assert sum(len(probe["hits"]) for probe in observation["probes"]) == 50
+    assert observation["probes"][-1]["hits"][-1]["column"] == "FIELD_4_9"
+
+    model_message = json.loads(result.message)
+    assert [probe["query"] for probe in model_message["probes"]] == queries
+    assert sum(len(probe["hits"]) for probe in model_message["probes"]) == 50
+
+
+def test_catalog_tool_preserves_zero_hit_probe_in_original_position() -> None:
+    context = _context(_CatalogWithEmptyProbe())
+
+    result = build_db_rag_tool_registry().invoke(
+        "dbrag-search_catalog",
+        {"queries": ["first", "empty", "third"], "limit": 2},
+        context=context,
+    )
+
+    observation = context.artifact_store.require(result.artifacts[0]).content
+    assert observation["probes"][1] == {
+        "query": "empty",
+        "returned_count": 0,
+        "table_hits": 0,
+        "column_hits": 0,
+        "unique_table_count": 0,
+        "unique_column_count": 0,
+        "hits": [],
+    }
 
 
 def test_catalog_tool_translates_semantic_unavailability() -> None:
