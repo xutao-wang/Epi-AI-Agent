@@ -6,6 +6,9 @@ from typing import Any, Callable
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from db_rag.local_knowledge import (
+    SemanticPublicationKnowledgeUnavailableError,
+)
 from epi_agent.protocol import (
     ArtifactStore,
     ToolContext,
@@ -139,10 +142,17 @@ def _search(
             recoverable=True,
         )
     limit = min(int(arguments["limit"]), _MAX_SEARCH_HITS)
-    hits = [
-        _evidence_hit(hit)
-        for hit in search(arguments["query"], limit=limit)
-    ][:limit]
+    try:
+        hits = [
+            _evidence_hit(hit)
+            for hit in search(arguments["query"], limit=limit)
+        ][:limit]
+    except SemanticPublicationKnowledgeUnavailableError as error:
+        raise ToolExecutionError(
+            "SEMANTIC_STUDY_KNOWLEDGE_UNAVAILABLE",
+            str(error),
+            recoverable=True,
+        ) from error
     reference = _save_observation(
         context,
         kind="study_evidence",

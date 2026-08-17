@@ -12,6 +12,11 @@ from db_rag.catalog import (
     load_full_schema_catalog,
 )
 from db_rag.config import DbRagRuntimePaths
+from db_rag.local_knowledge import (
+    LocalPublicationKnowledge,
+    SemanticPublicationKnowledge,
+    UnavailableSemanticPublicationKnowledge,
+)
 from db_rag.readiness import DbRagReadiness, resolve_db_rag_readiness
 from db_rag.vectorstore import OpenAIEmbeddingFunction
 from epi_agent.studies import StudyBundle, StudyRegistry
@@ -43,6 +48,11 @@ def _unavailable_study(
         catalog=UnavailableSemanticSchemaCatalog(
             catalog_data,
             default_source_id=study.source_id,
+        ),
+        knowledge=(
+            UnavailableSemanticPublicationKnowledge(study.knowledge)
+            if isinstance(study.knowledge, LocalPublicationKnowledge)
+            else study.knowledge
         ),
     )
 
@@ -98,6 +108,22 @@ def bind_session_studies(
                 "column_chunks",
                 embedding_function=embedder,
             )
+            bound_knowledge = study.knowledge
+            if isinstance(bound_knowledge, LocalPublicationKnowledge):
+                try:
+                    knowledge_collection = client.get_collection(
+                        "study_knowledge",
+                        embedding_function=embedder,
+                    )
+                    bound_knowledge = SemanticPublicationKnowledge(
+                        bound_knowledge,
+                        collection=knowledge_collection,
+                        embedding_function=embedder,
+                    )
+                except Exception:
+                    bound_knowledge = UnavailableSemanticPublicationKnowledge(
+                        bound_knowledge
+                    )
             bound = replace(
                 study,
                 catalog=SemanticSchemaCatalog(
@@ -107,6 +133,7 @@ def bind_session_studies(
                     embedding_function=embedder,
                     default_source_id=study.source_id,
                 ),
+                knowledge=bound_knowledge,
             )
         except Exception:
             readiness = _unavailable(

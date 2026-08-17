@@ -11,6 +11,10 @@ from db_rag.catalog import (
     SemanticSchemaCatalog,
 )
 from db_rag.config import DbRagRuntimePaths, EMBEDDING_MODEL
+from db_rag.local_knowledge import (
+    LocalPublicationKnowledge,
+    SemanticPublicationKnowledge,
+)
 from db_rag.readiness import DbRagReadiness
 from epi_agent.artifacts import StateArtifactStore
 from epi_agent.db_rag.tools import build_db_rag_tool_registry
@@ -18,7 +22,13 @@ from epi_agent.protocol import ToolContext
 from epi_agent.studies import StudyBundle, StudyRegistry
 
 
-def _bundle(tmp_path: Path, study_id: str, table: str) -> StudyBundle:
+def _bundle(
+    tmp_path: Path,
+    study_id: str,
+    table: str,
+    *,
+    knowledge=None,
+) -> StudyBundle:
     database = tmp_path / study_id / "database"
     chroma = database / "index"
     chroma.mkdir(parents=True)
@@ -44,7 +54,7 @@ def _bundle(tmp_path: Path, study_id: str, table: str) -> StudyBundle:
     return StudyBundle(
         study_id=study_id,
         label=study_id,
-        knowledge=None,
+        knowledge=knowledge,
         catalog=None,
         data_sources={study_id: object()},
         source_id=study_id,
@@ -162,6 +172,51 @@ def test_bind_session_studies_opens_isolated_collections_for_every_study(
         (EMBEDDING_MODEL, "session-key")
     ]
     assert "session-key" not in repr(bound)
+
+
+def test_bind_session_studies_binds_publications_only_for_owning_study(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = _bundle(
+        tmp_path,
+        "report-india-synthetic",
+        "REPORT_TABLE",
+        knowledge=LocalPublicationKnowledge((), {}),
+    )
+    nhanes = _bundle(tmp_path, "nhanes-2017-2018", "GHB_J")
+    monkeypatch.setattr(session_studies, "resolve_db_rag_readiness", _available)
+    monkeypatch.setattr(
+        session_studies.chromadb,
+        "PersistentClient",
+        _FakeClient,
+    )
+    monkeypatch.setattr(
+        session_studies,
+        "OpenAIEmbeddingFunction",
+        _FakeEmbeddingFunction,
+    )
+
+    bound = session_studies.bind_session_studies(
+        StudyRegistry([report, nhanes]),
+        api_key="session-key",
+        expected_embedding_model=EMBEDDING_MODEL,
+    )
+
+    report_paths = report.db_rag_paths
+    nhanes_paths = nhanes.db_rag_paths
+    assert _FakeClient.requested_collections == [
+        (report_paths.chroma_path, "table_summaries"),
+        (report_paths.chroma_path, "column_chunks"),
+        (report_paths.chroma_path, "study_knowledge"),
+        (nhanes_paths.chroma_path, "table_summaries"),
+        (nhanes_paths.chroma_path, "column_chunks"),
+    ]
+    assert isinstance(
+        bound.studies.require("report-india-synthetic").knowledge,
+        SemanticPublicationKnowledge,
+    )
+    assert bound.studies.require("nhanes-2017-2018").knowledge is None
 
 
 def test_one_failed_binding_does_not_enable_lexical_fallback(

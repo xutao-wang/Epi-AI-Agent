@@ -7,6 +7,7 @@ import json
 import math
 from pathlib import Path
 import re
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -22,6 +23,11 @@ from db_rag.publication_index import (
 
 
 _TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
+_RRF_K = 60
+
+
+class SemanticPublicationKnowledgeUnavailableError(RuntimeError):
+    """The selected study cannot perform mandatory publication retrieval."""
 
 
 def _tokens(value: str) -> list[str]:
@@ -129,7 +135,7 @@ class LocalPublicationKnowledge:
             )
         return cls(chunks, dict(document_frequency))
 
-    def search(
+    def search_lexical(
         self,
         query: str,
         *,
@@ -209,4 +215,151 @@ class LocalPublicationKnowledge:
         return [_hit(chunk) for chunk in chunks[:limit]]
 
 
-__all__ = ["LocalPublicationKnowledge"]
+def _vector_hit(chunk_id: str, metadata: dict[str, Any]) -> PublicationEvidenceHit:
+    chunk = StudyEvidenceChunk(
+        id=chunk_id,
+        source_id=str(metadata["source_id"]),
+        title=str(metadata["title"]),
+        section=str(metadata["section"]),
+        text=str(metadata["body_text"]),
+        path=str(metadata["path"]),
+        source_kind=str(metadata.get("source_kind") or "publication"),
+        knowledge_type=str(metadata.get("knowledge_type") or ""),
+        knowledge_role=str(metadata.get("knowledge_role") or ""),
+        source_locator=str(metadata.get("source_locator") or ""),
+        indexed_path=str(metadata.get("indexed_path") or ""),
+        evidence_ids=str(metadata.get("evidence_ids") or ""),
+    )
+    return _hit(chunk)
+
+
+def _fuse_hits(
+    vector_hits: list[PublicationEvidenceHit],
+    lexical_hits: list[PublicationEvidenceHit],
+    *,
+    limit: int,
+) -> list[PublicationEvidenceHit]:
+    scores: dict[str, float] = {}
+    hits_by_id: dict[str, PublicationEvidenceHit] = {}
+    matched_by: dict[str, list[str]] = {}
+    for weight, mode, hits in (
+        (1.0, "vector", vector_hits),
+        (1.5, "lexical", lexical_hits),
+    ):
+        for rank, hit in enumerate(hits, start=1):
+            hits_by_id.setdefault(hit.id, hit)
+            scores[hit.id] = scores.get(hit.id, 0.0) + weight / (_RRF_K + rank)
+            matched_by.setdefault(hit.id, []).append(mode)
+    ordered_ids = sorted(
+        scores,
+        key=lambda chunk_id: (-scores[chunk_id], chunk_id),
+    )[:limit]
+    results: list[PublicationEvidenceHit] = []
+    for chunk_id in ordered_ids:
+        hit = hits_by_id[chunk_id]
+        results.append(
+            hit.model_copy(
+                update={
+                    "provenance": {
+                        **hit.provenance,
+                        "matched_by": ",".join(matched_by[chunk_id]),
+                    }
+                }
+            )
+        )
+    return results
+
+
+@dataclass(frozen=True)
+class SemanticPublicationKnowledge:
+    _local: LocalPublicationKnowledge
+    _collection: Any
+    _embedding_function: Any
+
+    def __init__(
+        self,
+        local: LocalPublicationKnowledge,
+        *,
+        collection: Any,
+        embedding_function: Any,
+    ) -> None:
+        object.__setattr__(self, "_local", local)
+        object.__setattr__(self, "_collection", collection)
+        object.__setattr__(self, "_embedding_function", embedding_function)
+
+    def search(
+        self,
+        query: str,
+        *,
+        limit: int = 5,
+    ) -> list[PublicationEvidenceHit]:
+        if limit < 1 or not query.strip():
+            return []
+        candidate_limit = limit * 2
+        try:
+            embeddings = self._embedding_function.embed_query([query])
+            if len(embeddings) != 1:
+                raise ValueError("Query embedding count does not match query count.")
+            result = self._collection.query(
+                query_embeddings=embeddings,
+                n_results=candidate_limit,
+                where={"source_kind": "publication"},
+                include=["metadatas"],
+            )
+            ids = list(result["ids"][0])
+            metadatas = list(result["metadatas"][0])
+            if len(ids) != len(metadatas):
+                raise ValueError("Publication vector result is malformed.")
+            vector_hits = [
+                _vector_hit(str(chunk_id), dict(metadata))
+                for chunk_id, metadata in zip(ids, metadatas)
+            ]
+        except Exception as error:
+            raise SemanticPublicationKnowledgeUnavailableError(
+                "Semantic publication retrieval is unavailable for the selected study."
+            ) from error
+        lexical_hits = self._local.search_lexical(
+            query,
+            limit=candidate_limit,
+        )
+        return _fuse_hits(vector_hits, lexical_hits, limit=limit)
+
+    def open_source(
+        self,
+        source_id: str,
+        *,
+        limit: int = 10,
+    ) -> list[PublicationEvidenceHit]:
+        return self._local.open_source(source_id, limit=limit)
+
+
+@dataclass(frozen=True)
+class UnavailableSemanticPublicationKnowledge:
+    _local: LocalPublicationKnowledge
+
+    def search(
+        self,
+        query: str,
+        *,
+        limit: int = 5,
+    ) -> list[PublicationEvidenceHit]:
+        del query, limit
+        raise SemanticPublicationKnowledgeUnavailableError(
+            "Semantic publication retrieval is unavailable for the selected study."
+        )
+
+    def open_source(
+        self,
+        source_id: str,
+        *,
+        limit: int = 10,
+    ) -> list[PublicationEvidenceHit]:
+        return self._local.open_source(source_id, limit=limit)
+
+
+__all__ = [
+    "LocalPublicationKnowledge",
+    "SemanticPublicationKnowledge",
+    "SemanticPublicationKnowledgeUnavailableError",
+    "UnavailableSemanticPublicationKnowledge",
+]
