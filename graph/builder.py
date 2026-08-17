@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,7 @@ def build_graph(
     studies: StudyRegistry,
     default_study_id: str | None,
     db_rag_readiness: DbRagReadiness | None = None,
+    db_rag_readiness_by_study: Mapping[str, DbRagReadiness] | None = None,
     db_rag_embedding_model: str | None = None,
     max_iterations: int = DEFAULT_EPI_AGENT_MAX_ITERATIONS,
     python_runtime: LocalPythonRuntime | None = None,
@@ -62,21 +64,28 @@ def build_graph(
     attachment_reader_service = _build_attachment_reader_service(llm, root)
     selected_study = studies.get(default_study_id) if default_study_id else None
     paths = getattr(selected_study, "db_rag_paths", None)
-    readiness = db_rag_readiness or (
-        resolve_db_rag_readiness(
-            paths=paths,
-            expected_embedding_model=db_rag_embedding_model,
+    if db_rag_readiness_by_study is not None:
+        include_db_rag = any(
+            readiness.available
+            for readiness in db_rag_readiness_by_study.values()
         )
-        if paths is not None
-        else DbRagReadiness(
-            status="not_configured",
-            message=(
-                "Multiple study packages are installed. Select an active study."
-                if studies.values
-                else "No study package is installed."
-            ),
+    else:
+        readiness = db_rag_readiness or (
+            resolve_db_rag_readiness(
+                paths=paths,
+                expected_embedding_model=db_rag_embedding_model,
+            )
+            if paths is not None
+            else DbRagReadiness(
+                status="not_configured",
+                message=(
+                    "Multiple study packages are installed. Select an active study."
+                    if studies.values
+                    else "No study package is installed."
+                ),
+            )
         )
-    )
+        include_db_rag = readiness.available
 
     checkpoint_path = Path(db_path).expanduser().resolve()
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
@@ -94,7 +103,7 @@ def build_graph(
         python_runtime=python_runtime
         or LocalPythonRuntime(runtime_root=execution_root),
         runtime_root=root,
-        include_db_rag=readiness.available,
+        include_db_rag=include_db_rag,
         checkpointer=SqliteSaver(connection),
         max_iterations=max_iterations,
         activity_sink=activity_sink,

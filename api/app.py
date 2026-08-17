@@ -36,6 +36,7 @@ from db_rag.config import (
     resolve_db_rag_reranker_model,
 )
 from db_rag.readiness import DbRagReadiness, resolve_db_rag_readiness
+from db_rag.session_studies import bind_session_studies
 from epi_agent.activity import NULL_ACTIVITY_SINK
 from epi_agent.studies import StudyRegistry
 from epi_agent.runtimes.python import LocalPythonRuntime
@@ -176,6 +177,11 @@ def build_application(*, environ: Mapping[str, str] | None = None) -> FastAPI:
         settings: RuntimeSettings,
         context: GraphBuildContext,
     ):
+        bound_studies = bind_session_studies(
+            studies,
+            api_key=context.provider_api_key,
+            expected_embedding_model=db_rag_embedding_model,
+        )
         profile = model_runtime_profile(settings.model_name)
         llm = build_openai_llm(
             model_name=settings.model_name,
@@ -189,9 +195,9 @@ def build_application(*, environ: Mapping[str, str] | None = None) -> FastAPI:
             db_path=db_path,
             runtime_root=runtime_root_path,
             storage=context.storage,
-            studies=studies,
+            studies=bound_studies.studies,
             default_study_id=default_study_id,
-            db_rag_readiness=db_rag_readiness,
+            db_rag_readiness_by_study=bound_studies.readiness,
             db_rag_embedding_model=db_rag_embedding_model,
             max_iterations=max_iterations,
             python_runtime=LocalPythonRuntime(
