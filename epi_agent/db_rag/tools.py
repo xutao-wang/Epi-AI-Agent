@@ -20,6 +20,7 @@ from db_rag.filter_references import (
     FilterReferenceResolutionError,
     resolve_filter_references,
 )
+from db_rag.catalog import SemanticCatalogUnavailableError
 from db_rag.service.dataset_naming import deterministic_dataset_name
 from db_rag.service.models import (
     PreparedSqlCandidate,
@@ -303,6 +304,16 @@ def _schema_evidence_hit(value: Any) -> dict[str, Any]:
         _bounded_text(_provider_field(value, "source"), limit=300)
         or _bounded_text(provenance.get("source_id"), limit=300)
     )
+    raw_matched_by = _provider_field(value, "matched_by")
+    matched_by = [
+        mode
+        for mode in (
+            list(raw_matched_by)
+            if isinstance(raw_matched_by, (list, tuple))
+            else []
+        )[:2]
+        if mode in {"vector", "lexical"}
+    ]
     return {
         **({"source": source} if source else {}),
         "table": table,
@@ -313,6 +324,7 @@ def _schema_evidence_hit(value: Any) -> dict[str, Any]:
             or "schema"
         ),
         "provenance": provenance,
+        **({"matched_by": matched_by} if matched_by else {}),
     }
 
 
@@ -395,6 +407,11 @@ def _safe_field(value: Any) -> dict[str, Any]:
     provenance = _safe_schema_provenance(value.get("provenance"))
     if provenance:
         field["provenance"] = provenance
+    matched_by = _safe_string_list(value.get("matched_by"), limit=2)
+    if matched_by:
+        field["matched_by"] = [
+            mode for mode in matched_by if mode in {"vector", "lexical"}
+        ]
     return field
 
 
@@ -569,6 +586,10 @@ def _render_catalog(content: dict[str, Any]) -> dict[str, Any]:
                 _collection(content, "source_ids"),
                 limit=50,
             ),
+            "retrieval_mode": _bounded_text(
+                content.get("retrieval_mode"),
+                limit=100,
+            ),
             "table": _bounded_text(content.get("table")),
             "offset": content.get("offset"),
             "next_offset": content.get("next_offset"),
@@ -612,6 +633,18 @@ def _render_catalog(content: dict[str, Any]) -> dict[str, Any]:
                 summary.get("unique_column_count")
                 if isinstance(summary.get("unique_column_count"), int)
                 and not isinstance(summary.get("unique_column_count"), bool)
+                else 0
+            ),
+            "vector_hits": (
+                summary.get("vector_hits")
+                if isinstance(summary.get("vector_hits"), int)
+                and not isinstance(summary.get("vector_hits"), bool)
+                else 0
+            ),
+            "lexical_hits": (
+                summary.get("lexical_hits")
+                if isinstance(summary.get("lexical_hits"), int)
+                and not isinstance(summary.get("lexical_hits"), bool)
                 else 0
             ),
             "probes": probes[:_MAX_CATALOG_QUERIES],
@@ -986,7 +1019,14 @@ def _search_catalog(arguments: dict[str, Any], context: ToolContext) -> ToolResu
     all_tables: set[tuple[str, str]] = set()
     all_columns: set[tuple[str, str, str]] = set()
     probe_summaries: list[dict[str, Any]] = []
-    provider_batches = search_many(queries, limit=limit)
+    try:
+        provider_batches = search_many(queries, limit=limit)
+    except SemanticCatalogUnavailableError as error:
+        raise ToolExecutionError(
+            "SEMANTIC_CATALOG_UNAVAILABLE",
+            str(error),
+            recoverable=True,
+        ) from error
     if len(provider_batches) != len(queries):
         raise ToolExecutionError(
             "CATALOG_RESPONSE_INVALID",
@@ -1047,10 +1087,17 @@ def _search_catalog(arguments: dict[str, Any], context: ToolContext) -> ToolResu
     content = {
         "queries": queries,
         "source_ids": source_ids,
+        "retrieval_mode": "hybrid_vector_lexical",
         "retrieval_summary": {
             "probe_count": len(queries),
             "unique_table_count": len(all_tables),
             "unique_column_count": len(all_columns),
+            "vector_hits": sum(
+                "vector" in hit.get("matched_by", []) for hit in hits
+            ),
+            "lexical_hits": sum(
+                "lexical" in hit.get("matched_by", []) for hit in hits
+            ),
             "probes": probe_summaries,
         },
         "hits": hits[:_MAX_CATALOG_HITS],

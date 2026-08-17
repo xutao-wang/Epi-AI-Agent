@@ -1,0 +1,126 @@
+from __future__ import annotations
+
+import json
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
+
+import chromadb
+
+from db_rag.catalog import (
+    SemanticSchemaCatalog,
+    UnavailableSemanticSchemaCatalog,
+    load_full_schema_catalog,
+)
+from db_rag.config import DbRagRuntimePaths
+from db_rag.readiness import DbRagReadiness, resolve_db_rag_readiness
+from db_rag.vectorstore import OpenAIEmbeddingFunction
+from epi_agent.studies import StudyBundle, StudyRegistry
+
+
+@dataclass(frozen=True)
+class BoundStudyRegistry:
+    studies: StudyRegistry
+    readiness: Mapping[str, DbRagReadiness]
+
+
+def _unavailable(message: str) -> DbRagReadiness:
+    return DbRagReadiness(status="not_configured", message=message)
+
+
+def _catalog_data(paths: DbRagRuntimePaths) -> dict[str, object]:
+    try:
+        return load_full_schema_catalog(paths.catalog_path)
+    except (OSError, json.JSONDecodeError):
+        return {"tables": [], "columns": []}
+
+
+def _unavailable_study(
+    study: StudyBundle,
+    catalog_data: dict[str, object],
+) -> StudyBundle:
+    return replace(
+        study,
+        catalog=UnavailableSemanticSchemaCatalog(
+            catalog_data,
+            default_source_id=study.source_id,
+        ),
+    )
+
+
+def bind_session_studies(
+    studies: StudyRegistry,
+    *,
+    api_key: str,
+    expected_embedding_model: str,
+) -> BoundStudyRegistry:
+    """Attach isolated semantic catalogs using only this session's key."""
+
+    bound_studies: list[StudyBundle] = []
+    readiness_by_study: dict[str, DbRagReadiness] = {}
+    embedders: dict[str, OpenAIEmbeddingFunction] = {}
+
+    for study in studies.values:
+        paths = study.db_rag_paths
+        if not isinstance(paths, DbRagRuntimePaths):
+            readiness = _unavailable(
+                "Semantic catalog assets are unavailable for this study."
+            )
+            bound_studies.append(
+                _unavailable_study(study, {"tables": [], "columns": []})
+            )
+            readiness_by_study[study.study_id] = readiness
+            continue
+
+        catalog_data = _catalog_data(paths)
+        readiness = resolve_db_rag_readiness(
+            paths=paths,
+            expected_embedding_model=expected_embedding_model,
+        )
+        if not readiness.available:
+            bound_studies.append(_unavailable_study(study, catalog_data))
+            readiness_by_study[study.study_id] = readiness
+            continue
+
+        try:
+            embedder = embedders.get(paths.embedding_model)
+            if embedder is None:
+                embedder = OpenAIEmbeddingFunction(
+                    paths.embedding_model,
+                    api_key=api_key,
+                )
+                embedders[paths.embedding_model] = embedder
+            client = chromadb.PersistentClient(path=str(paths.chroma_path))
+            table_collection = client.get_collection(
+                "table_summaries",
+                embedding_function=embedder,
+            )
+            column_collection = client.get_collection(
+                "column_chunks",
+                embedding_function=embedder,
+            )
+            bound = replace(
+                study,
+                catalog=SemanticSchemaCatalog(
+                    catalog_data,
+                    table_collection=table_collection,
+                    column_collection=column_collection,
+                    embedding_function=embedder,
+                    default_source_id=study.source_id,
+                ),
+            )
+        except Exception:
+            readiness = _unavailable(
+                "Semantic catalog binding is unavailable for this study."
+            )
+            bound = _unavailable_study(study, catalog_data)
+
+        bound_studies.append(bound)
+        readiness_by_study[study.study_id] = readiness
+
+    return BoundStudyRegistry(
+        studies=StudyRegistry(bound_studies),
+        readiness=readiness_by_study,
+    )
+
+
+__all__ = ["BoundStudyRegistry", "bind_session_studies"]

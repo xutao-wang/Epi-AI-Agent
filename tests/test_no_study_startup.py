@@ -137,6 +137,116 @@ def test_application_routes_hosted_python_through_the_fixed_launcher(
     )
 
 
+def test_graph_factory_binds_all_studies_with_the_session_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import api.app as app_module
+    from api.runtime import GraphBuildContext
+    from db_rag.config import EMBEDDING_MODEL
+    from db_rag.readiness import DbRagReadiness
+    from utils.user_storage import UserStorageLayout
+
+    discovered_studies = StudyRegistry(
+        [
+            StudyBundle(
+                study_id="report-india-synthetic",
+                label="RePORT",
+                knowledge=None,
+                catalog=None,
+                data_sources={},
+            ),
+            StudyBundle(
+                study_id="nhanes-2017-2018",
+                label="NHANES",
+                knowledge=None,
+                catalog=None,
+                data_sources={},
+            ),
+        ]
+    )
+    bound_studies = StudyRegistry(discovered_studies.values)
+    readiness_by_study = {
+        study.study_id: DbRagReadiness(
+            status="available",
+            message="DB-RAG dataset is available.",
+        )
+        for study in discovered_studies.values
+    }
+    bind_calls: list[dict[str, object]] = []
+    graph_kwargs: dict[str, object] = {}
+
+    def bind_session_studies(studies, *, api_key, expected_embedding_model):
+        bind_calls.append(
+            {
+                "studies": studies,
+                "api_key": api_key,
+                "expected_embedding_model": expected_embedding_model,
+            }
+        )
+        return SimpleNamespace(
+            studies=bound_studies,
+            readiness=readiness_by_study,
+        )
+
+    monkeypatch.setattr(
+        app_module,
+        "discover_studies",
+        lambda _root: discovered_studies,
+    )
+    monkeypatch.setattr(
+        app_module,
+        "bind_session_studies",
+        bind_session_studies,
+        raising=False,
+    )
+    monkeypatch.setattr(app_module, "build_openai_llm", lambda **_kwargs: "llm")
+    monkeypatch.setattr(
+        app_module,
+        "build_graph",
+        lambda _llm, **kwargs: graph_kwargs.update(kwargs) or "graph",
+    )
+    application = app_module.build_application(
+        environ={
+            "REPORT_AGENT_AUTH_MODE": "cognito",
+            "REPORT_AGENT_AWS_REGION": "us-east-1",
+            "REPORT_AGENT_COGNITO_USER_POOL_ID": "us-east-1_example",
+            "REPORT_AGENT_COGNITO_APP_CLIENT_ID": "client-123",
+            "REPORT_AGENT_COGNITO_LOGOUT_ENDPOINT": "https://auth.example.test/logout",
+            "REPORT_AGENT_AUTH_REDIRECT_URI": "https://example.test/callback",
+            "REPORT_AGENT_AUTH_POST_LOGOUT_REDIRECT_URI": "https://example.test/",
+            "REPORT_AGENT_RUNTIME_ROOT": str(tmp_path / "runtime"),
+            "REPORT_AGENT_STUDY_ROOT": str(tmp_path / "studies"),
+            "REPORT_AGENT_ALLOWED_MODELS": "gpt-5.4",
+            "OPENAI_MODEL": "gpt-5.4",
+            "REPORT_AGENT_TITLE_MODEL": "gpt-5.4",
+        }
+    )
+    storage = UserStorageLayout(tmp_path / "runtime").thread("user-a", "thread-a")
+
+    application.state.report_agent_runtime.graph_factory(
+        SimpleNamespace(model_name="gpt-5.4", temperature=None, top_p=None),
+        GraphBuildContext(
+            owner_user_id="user-a",
+            session_id="11111111-1111-4111-8111-111111111111",
+            thread_id="thread-a",
+            provider_api_key="session-key",
+            storage=storage,
+        ),
+    )
+
+    assert bind_calls == [
+        {
+            "studies": discovered_studies,
+            "api_key": "session-key",
+            "expected_embedding_model": EMBEDDING_MODEL,
+        }
+    ]
+    assert graph_kwargs["studies"] is bound_studies
+    assert graph_kwargs["db_rag_readiness_by_study"] == readiness_by_study
+    assert "session-key" not in repr(graph_kwargs)
+
+
 def test_startup_claims_legacy_history_only_in_local_mode(tmp_path: Path) -> None:
     from api.app import _history_store_for_auth_mode
 

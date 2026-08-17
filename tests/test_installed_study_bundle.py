@@ -46,8 +46,12 @@ def test_database_only_package_builds_minimal_study_bundle(tmp_path) -> None:
     assert bundle.db_rag_paths.duckdb_path == (
         installed.package_root / "database" / "study.duckdb"
     )
+    assert (
+        bundle.db_rag_paths.embedding_model
+        == "OpenAI/text-embedding-3-large"
+    )
     assert set(bundle.data_sources) == {"nondefault-source"}
-    assert bundle.catalog.search("participant")[0].source == "nondefault-source"
+    assert bundle.catalog.inspect_table("nondefault-source", "participants")
 
 
 def test_knowledge_only_package_builds_knowledge_capability(tmp_path) -> None:
