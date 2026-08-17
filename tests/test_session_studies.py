@@ -454,14 +454,22 @@ def test_selected_study_catalogs_cannot_cross_chroma_roots(
         )
         observations[study_id] = store.require(result.artifacts[0]).content
 
+    hits_by_study = {
+        study_id: [
+            hit
+            for probe in observation["probes"]
+            for hit in probe["hits"]
+        ]
+        for study_id, observation in observations.items()
+    }
     report_hits = {
         (hit["source"], hit["table"], hit["column"])
-        for hit in observations["report-india-synthetic"]["hits"]
+        for hit in hits_by_study["report-india-synthetic"]
         if hit.get("column") == "CIGPAST"
     }
     nhanes_hits = {
         (hit["source"], hit["table"], hit["column"])
-        for hit in observations["nhanes-2017-2018"]["hits"]
+        for hit in hits_by_study["nhanes-2017-2018"]
         if hit.get("column") == "LBXGH"
     }
     assert report_hits == {
@@ -476,11 +484,11 @@ def test_selected_study_catalogs_cannot_cross_chroma_roots(
     }
     assert all(
         hit.get("source") == "report-india-synthetic"
-        for hit in observations["report-india-synthetic"]["hits"]
+        for hit in hits_by_study["report-india-synthetic"]
     )
     assert all(
         hit.get("source") == "nhanes-2017-2018"
-        for hit in observations["nhanes-2017-2018"]["hits"]
+        for hit in hits_by_study["nhanes-2017-2018"]
     )
     assert all(client.query_count == 2 for client in _IsolatedClient.clients.values())
     assert _IsolatedEmbeddingFunction.instances[0].calls == [
