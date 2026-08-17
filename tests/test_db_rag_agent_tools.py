@@ -10,7 +10,11 @@ from db_rag.catalog import (
 )
 from epi_agent.artifacts import StateArtifactStore
 from epi_agent.db_rag.tools import build_db_rag_tool_registry
-from epi_agent.protocol import ToolContext, ToolExecutionError
+from epi_agent.protocol import (
+    ToolContext,
+    ToolExecutionError,
+    serialize_tool_result,
+)
 from epi_agent.studies import StudyBundle
 
 
@@ -249,3 +253,42 @@ def test_inspect_table_final_page_includes_null_next_offset() -> None:
     assert [field["column"] for field in message["fields"]] == [
         f"FIELD_{index:02d}" for index in range(25, 30)
     ]
+
+
+def test_maximum_catalog_message_survives_protocol_serialization() -> None:
+    context = _context(_ManyHitCatalog())
+    result = build_db_rag_tool_registry().invoke(
+        "dbrag-search_catalog",
+        {"queries": [f"probe-{index}" for index in range(5)], "limit": 10},
+        context=context,
+    )
+
+    outer = json.loads(serialize_tool_result(result))
+    message = json.loads(outer["message"])
+
+    assert "code" not in message
+    assert len(message["probes"]) == 5
+    assert sum(len(probe["hits"]) for probe in message["probes"]) == 50
+
+
+def test_maximum_inspection_message_survives_protocol_serialization() -> None:
+    context = _context(_InspectableCatalog())
+    result = build_db_rag_tool_registry().invoke(
+        "dbrag-inspect_table",
+        {
+            "source": "nhanes-2017-2018",
+            "table": "DEMO_J",
+            "offset": 0,
+            "limit": 25,
+        },
+        context=context,
+    )
+
+    outer = json.loads(serialize_tool_result(result))
+    message = json.loads(outer["message"])
+
+    assert "code" not in message
+    assert message["returned_count"] == 25
+    assert message["has_more"] is True
+    assert message["next_offset"] == 25
+    assert len(message["fields"]) == 25

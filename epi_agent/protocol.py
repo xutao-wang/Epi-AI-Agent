@@ -105,6 +105,31 @@ def _serialize_model_tool_payload(
     )
 
 
+def _is_json_message(message: str) -> bool:
+    try:
+        json.loads(message)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _structured_message_overflow_notice(
+    message: str,
+    *,
+    artifact_available: bool,
+) -> str:
+    return json.dumps(
+        {
+            "artifact_available": artifact_available,
+            "code": "MODEL_TOOL_MESSAGE_TOO_LARGE",
+            "original_char_count": len(message),
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
 def serialize_tool_result(result: ToolResult) -> str:
     """Render a bounded model observation without opening artifact contents."""
 
@@ -119,6 +144,33 @@ def serialize_tool_result(result: ToolResult) -> str:
         )
         if len(serialized) <= _MAX_MODEL_TOOL_MESSAGE_CHARS:
             artifacts.append(candidate)
+
+    if _is_json_message(result.message):
+        complete_artifacts = list(artifacts)
+        while True:
+            serialized = _serialize_model_tool_payload(
+                artifacts=complete_artifacts,
+                message=result.message,
+            )
+            if len(serialized) <= _MAX_MODEL_TOOL_MESSAGE_CHARS:
+                return serialized
+            if not complete_artifacts:
+                break
+            complete_artifacts.pop()
+
+        notice_artifacts = list(artifacts)
+        while True:
+            notice = _structured_message_overflow_notice(
+                result.message,
+                artifact_available=bool(notice_artifacts),
+            )
+            serialized = _serialize_model_tool_payload(
+                artifacts=notice_artifacts,
+                message=notice,
+            )
+            if len(serialized) <= _MAX_MODEL_TOOL_MESSAGE_CHARS:
+                return serialized
+            notice_artifacts.pop()
 
     message_limit = min(
         len(result.message),
