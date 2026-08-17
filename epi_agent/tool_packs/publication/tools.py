@@ -92,6 +92,7 @@ def _field(value: Any, name: str) -> Any:
 
 
 def _evidence_hit(value: Any) -> dict[str, str]:
+    provenance = _field(value, "provenance")
     row = {
         "source_id": _bounded(_field(value, "source_id")),
         "title": _bounded(_field(value, "title")),
@@ -102,6 +103,7 @@ def _evidence_hit(value: Any) -> dict[str, str]:
         "source_locator": _bounded(_field(value, "source_locator")),
         "indexed_path": _bounded(_field(value, "indexed_path")),
         "evidence_ids": _bounded(_field(value, "evidence_ids")),
+        "matched_by": _bounded(_field(provenance, "matched_by")),
     }
     return {key: item for key, item in row.items() if item}
 
@@ -153,15 +155,20 @@ def _search(
             str(error),
             recoverable=True,
         ) from error
+    content = {
+        "query": arguments["query"],
+        "retrieval_mode": "hybrid_vector_lexical",
+        "hits": hits,
+    }
     reference = _save_observation(
         context,
         kind="study_evidence",
-        content={"query": arguments["query"], "hits": hits},
+        content=content,
         producer="publication-search_study_evidence",
         summary=f"{len(hits)} publication evidence hits",
     )
     return ToolResult(
-        message=json.dumps({"hits": hits}, sort_keys=True),
+        message=json.dumps(content, sort_keys=True),
         artifacts=(reference,),
     )
 

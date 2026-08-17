@@ -112,6 +112,25 @@ def test_semantic_publication_search_never_falls_back_after_vector_failure() -> 
         knowledge.search("cohort eligibility", limit=2)
 
 
+def test_semantic_publication_search_rejects_unverified_vector_ids() -> None:
+    local = _local()
+    unverified = _chunk(
+        "publication.not-locally-verified",
+        title="Cohort eligibility",
+        text="Unverified vector-only evidence.",
+        source_id="doi:10.1000/unverified",
+    )
+    knowledge = local_knowledge.SemanticPublicationKnowledge(
+        local,
+        collection=_Collection((unverified,)),
+        embedding_function=_EmbeddingFunction(),
+    )
+
+    hits = knowledge.search("cohort eligibility", limit=5)
+
+    assert "publication.not-locally-verified" not in {hit.id for hit in hits}
+
+
 def test_unavailable_semantic_publication_preserves_exact_source_opening() -> None:
     knowledge = local_knowledge.UnavailableSemanticPublicationKnowledge(_local())
 

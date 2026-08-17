@@ -215,24 +215,6 @@ class LocalPublicationKnowledge:
         return [_hit(chunk) for chunk in chunks[:limit]]
 
 
-def _vector_hit(chunk_id: str, metadata: dict[str, Any]) -> PublicationEvidenceHit:
-    chunk = StudyEvidenceChunk(
-        id=chunk_id,
-        source_id=str(metadata["source_id"]),
-        title=str(metadata["title"]),
-        section=str(metadata["section"]),
-        text=str(metadata["body_text"]),
-        path=str(metadata["path"]),
-        source_kind=str(metadata.get("source_kind") or "publication"),
-        knowledge_type=str(metadata.get("knowledge_type") or ""),
-        knowledge_role=str(metadata.get("knowledge_role") or ""),
-        source_locator=str(metadata.get("source_locator") or ""),
-        indexed_path=str(metadata.get("indexed_path") or ""),
-        evidence_ids=str(metadata.get("evidence_ids") or ""),
-    )
-    return _hit(chunk)
-
-
 def _fuse_hits(
     vector_hits: list[PublicationEvidenceHit],
     lexical_hits: list[PublicationEvidenceHit],
@@ -310,9 +292,14 @@ class SemanticPublicationKnowledge:
             metadatas = list(result["metadatas"][0])
             if len(ids) != len(metadatas):
                 raise ValueError("Publication vector result is malformed.")
+            verified_hits = {
+                chunk.id: _hit(chunk)
+                for chunk in self._local._chunks
+            }
             vector_hits = [
-                _vector_hit(str(chunk_id), dict(metadata))
-                for chunk_id, metadata in zip(ids, metadatas)
+                verified_hits[str(chunk_id)]
+                for chunk_id in ids
+                if str(chunk_id) in verified_hits
             ]
         except Exception as error:
             raise SemanticPublicationKnowledgeUnavailableError(

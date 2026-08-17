@@ -66,9 +66,10 @@ def test_knowledge_only_package_builds_knowledge_capability(tmp_path) -> None:
 
     assert bundle.knowledge is not None
     assert bundle.study_design is None
-    assert bundle.knowledge.search("package-relative knowledge marker")[0].title == (
-        "Package-relative knowledge marker"
-    )
+    assert not callable(getattr(bundle.knowledge, "search", None))
+    assert bundle.knowledge.search_lexical(
+        "package-relative knowledge marker"
+    )[0].title == "Package-relative knowledge marker"
 
 
 def test_design_only_package_builds_study_design_capability(tmp_path) -> None:
@@ -104,9 +105,10 @@ def test_complete_package_builds_all_optional_capabilities(tmp_path) -> None:
 
     assert bundle.knowledge is not None
     assert bundle.study_design is not None
-    assert bundle.knowledge.search("package-relative knowledge marker")[0].title == (
-        "Package-relative knowledge marker"
-    )
+    assert not callable(getattr(bundle.knowledge, "search", None))
+    assert bundle.knowledge.search_lexical(
+        "package-relative knowledge marker"
+    )[0].title == "Package-relative knowledge marker"
     assert bundle.study_design.source_path == (
         installed.package_root / "package-content" / "study-design.json"
     ).resolve()
