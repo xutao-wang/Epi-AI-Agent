@@ -97,6 +97,20 @@ study-design metadata. No raw source data or original papers are included.
 The `data/` folder also includes small synthetic CSV files and a matching
 column dictionary for attachment and analysis demonstrations.
 
+## Multi-study semantic catalog smoke
+
+The internal backend smoke below installs the real RePORT India and NHANES
+2017–2018 packages into a temporary directory, binds each package to its own
+Chroma index, performs semantic schema retrieval, and opens each DuckDB
+read-only. It requires `OPENAI_API_KEY` and does not modify the configured
+study installation.
+
+```bash
+PYTHONPATH=. .venv/bin/python scripts/smoke_multi_study_semantic_catalog.py \
+  --report-archive ../Database/report-india-synthetic/delivery/report-india-synthetic-0.3.0.tar.gz \
+  --nhanes-archive ../Database/nhanes-2017-2018/delivery/nhanes-2017-2018-0.1.0.tar.gz
+```
+
 ## Safety note
 
 Local Python analysis is bounded for accidental or model-generated mistakes. It
