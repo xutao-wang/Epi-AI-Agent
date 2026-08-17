@@ -12,6 +12,9 @@ from db_rag.catalog import (
 )
 from db_rag.config import DbRagRuntimePaths, EMBEDDING_MODEL
 from db_rag.readiness import DbRagReadiness
+from epi_agent.artifacts import StateArtifactStore
+from epi_agent.db_rag.tools import build_db_rag_tool_registry
+from epi_agent.protocol import ToolContext
 from epi_agent.studies import StudyBundle, StudyRegistry
 
 
@@ -43,7 +46,7 @@ def _bundle(tmp_path: Path, study_id: str, table: str) -> StudyBundle:
         label=study_id,
         knowledge=None,
         catalog=None,
-        data_sources={},
+        data_sources={study_id: object()},
         source_id=study_id,
         db_rag_paths=DbRagRuntimePaths(
             duckdb_path=duckdb_path,
@@ -195,3 +198,152 @@ def test_one_failed_binding_does_not_enable_lexical_fallback(
     )
     with pytest.raises(SemanticCatalogUnavailableError):
         failed_catalog.search("FIELD")
+
+
+class _IsolatedEmbeddingFunction:
+    instances: list["_IsolatedEmbeddingFunction"] = []
+
+    def __init__(self, model: str, *, api_key: str) -> None:
+        del model, api_key
+        self.calls: list[list[str]] = []
+        self.instances.append(self)
+
+    def embed_query(self, queries: list[str]) -> list[list[float]]:
+        self.calls.append(list(queries))
+        return [[1.0, 0.0] for _query in queries]
+
+
+class _IsolatedCollection:
+    def __init__(self, client: "_IsolatedClient", name: str) -> None:
+        self.client = client
+        self.name = name
+
+    def query(self, **kwargs):
+        self.client.query_count += 1
+        count = len(kwargs["query_embeddings"])
+        if self.name == "table_summaries":
+            documents = [f"{self.client.table} records"]
+            metadatas = [
+                {
+                    "source": self.client.study_id,
+                    "table": self.client.table,
+                }
+            ]
+        else:
+            documents = [f"{self.client.column} field"]
+            metadatas = [
+                {
+                    "source": self.client.study_id,
+                    "table": self.client.table,
+                    "column": self.client.column,
+                }
+            ]
+        return {
+            "documents": [documents for _ in range(count)],
+            "metadatas": [metadatas for _ in range(count)],
+        }
+
+
+class _IsolatedClient:
+    clients: dict[Path, "_IsolatedClient"] = {}
+
+    def __init__(self, *, path: str) -> None:
+        resolved = Path(path)
+        self.study_id = resolved.parent.parent.name
+        if self.study_id == "report-india-synthetic":
+            self.table = "Baseline Clinical and Demographic Information Cohort A"
+            self.column = "CIGPAST"
+        else:
+            self.table = "GHB_J"
+            self.column = "LBXGH"
+        self.query_count = 0
+        self.clients[resolved] = self
+
+    def get_collection(self, name: str, *, embedding_function):
+        del embedding_function
+        return _IsolatedCollection(self, name)
+
+
+def test_selected_study_catalogs_cannot_cross_chroma_roots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = _bundle(
+        tmp_path,
+        "report-india-synthetic",
+        "Baseline Clinical and Demographic Information Cohort A",
+    )
+    nhanes = _bundle(tmp_path, "nhanes-2017-2018", "GHB_J")
+    _IsolatedClient.clients = {}
+    _IsolatedEmbeddingFunction.instances = []
+    monkeypatch.setattr(session_studies, "resolve_db_rag_readiness", _available)
+    monkeypatch.setattr(
+        session_studies.chromadb,
+        "PersistentClient",
+        _IsolatedClient,
+    )
+    monkeypatch.setattr(
+        session_studies,
+        "OpenAIEmbeddingFunction",
+        _IsolatedEmbeddingFunction,
+    )
+
+    bound = session_studies.bind_session_studies(
+        StudyRegistry([report, nhanes]),
+        api_key="session-key",
+        expected_embedding_model=EMBEDDING_MODEL,
+    )
+
+    assert _IsolatedEmbeddingFunction.instances[0].calls == []
+    registry = build_db_rag_tool_registry()
+    observations = {}
+    for study_id, query in (
+        ("report-india-synthetic", "smoking intensity"),
+        ("nhanes-2017-2018", "glycohemoglobin"),
+    ):
+        store = StateArtifactStore()
+        result = registry.invoke(
+            "dbrag-search_catalog",
+            {"queries": [query], "limit": 5},
+            context=ToolContext(
+                study=bound.studies.require(study_id),
+                artifact_store=store,
+                thread_id=f"thread-{study_id}",
+                policy=object(),
+            ),
+        )
+        observations[study_id] = store.require(result.artifacts[0]).content
+
+    report_hits = {
+        (hit["source"], hit["table"], hit["column"])
+        for hit in observations["report-india-synthetic"]["hits"]
+        if hit.get("column") == "CIGPAST"
+    }
+    nhanes_hits = {
+        (hit["source"], hit["table"], hit["column"])
+        for hit in observations["nhanes-2017-2018"]["hits"]
+        if hit.get("column") == "LBXGH"
+    }
+    assert report_hits == {
+        (
+            "report-india-synthetic",
+            "Baseline Clinical and Demographic Information Cohort A",
+            "CIGPAST",
+        )
+    }
+    assert nhanes_hits == {
+        ("nhanes-2017-2018", "GHB_J", "LBXGH")
+    }
+    assert all(
+        hit.get("source") == "report-india-synthetic"
+        for hit in observations["report-india-synthetic"]["hits"]
+    )
+    assert all(
+        hit.get("source") == "nhanes-2017-2018"
+        for hit in observations["nhanes-2017-2018"]["hits"]
+    )
+    assert all(client.query_count == 2 for client in _IsolatedClient.clients.values())
+    assert _IsolatedEmbeddingFunction.instances[0].calls == [
+        ["smoking intensity"],
+        ["glycohemoglobin"],
+    ]
