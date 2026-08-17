@@ -61,16 +61,24 @@ def retrieve_queries(
     table_k: int = 4,
     column_k: int = 12,
     debug: bool = False,
+    query_embeddings: list[list[float]] | None = None,
 ) -> list[tuple[list[dict[str, str]], list[dict[str, str]]]]:
     if not queries:
         return []
+    if query_embeddings is not None and len(query_embeddings) != len(queries):
+        raise ValueError("Query embedding count does not match query count.")
+    query_arguments = (
+        {"query_embeddings": query_embeddings}
+        if query_embeddings is not None
+        else {"query_texts": queries}
+    )
     with timing_stage(
         "db_rag.retrieval.table_query",
         query_count=len(queries),
         n_results=table_k,
     ):
         table_result = table_collection.query(
-            query_texts=queries,
+            **query_arguments,
             n_results=table_k,
             include=["documents", "metadatas"],
         )
@@ -80,7 +88,7 @@ def retrieve_queries(
         n_results=column_k,
     ):
         column_result = column_collection.query(
-            query_texts=queries,
+            **query_arguments,
             n_results=column_k,
             include=["documents", "metadatas"],
         )
