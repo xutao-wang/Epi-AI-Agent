@@ -25,6 +25,7 @@ _MAX_PROVENANCE_CHARS = 512
 class SearchStudyDesignArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
+    study_id: str = Field(min_length=1, max_length=512)
     query: str = Field(min_length=1, max_length=8_000)
     limit: int = Field(default=5, ge=1, le=_MAX_HITS)
 
@@ -41,8 +42,9 @@ def _bounded(value: Any, limit: int) -> str:
     return str(value or "")[:limit]
 
 
-def _design_hit(value: Any) -> dict[str, str]:
+def _design_hit(value: Any, *, study_id: str) -> dict[str, str]:
     row = {
+        "study_id": study_id,
         "source_kind": _bounded(_field(value, "source_kind"), _MAX_PROVENANCE_CHARS),
         "source_id": _bounded(_field(value, "source_id"), _MAX_PROVENANCE_CHARS),
         "source_path": _bounded(_field(value, "source_path"), _MAX_PROVENANCE_CHARS),
@@ -57,16 +59,16 @@ def _design_hit(value: Any) -> dict[str, str]:
 
 
 def _search(arguments: dict[str, Any], context: ToolContext) -> ToolResult:
-    study = require_context_study(context)
+    study = require_context_study(context, arguments["study_id"])
     provider = study.study_design
     if not isinstance(provider, SearchableStudyDesignProvider):
         raise ToolExecutionError(
             "STUDY_DESIGN_SEARCH_UNAVAILABLE",
-            "The active study does not provide study-design document search.",
+            "The requested study does not provide study-design document search.",
             recoverable=True,
         )
     hits = [
-        _design_hit(hit)
+        _design_hit(hit, study_id=study.study_id)
         for hit in provider.search(
             str(arguments["query"]),
             limit=int(arguments["limit"]),
@@ -81,7 +83,11 @@ def _search(arguments: dict[str, Any], context: ToolContext) -> ToolResult:
         )
     reference = save_artifact(
         kind="study_design_evidence",
-        content={"query": arguments["query"], "hits": hits},
+        content={
+            "study_id": study.study_id,
+            "query": arguments["query"],
+            "hits": hits,
+        },
         provenance={
             "thread_id": context.thread_id,
             "producer": "study-design-search",
@@ -90,7 +96,10 @@ def _search(arguments: dict[str, Any], context: ToolContext) -> ToolResult:
         summary=f"{len(hits)} study-design hits",
     )
     return ToolResult(
-        message=json.dumps({"hits": hits}, sort_keys=True),
+        message=json.dumps(
+            {"study_id": study.study_id, "hits": hits},
+            sort_keys=True,
+        ),
         artifacts=(reference,),
     )
 
@@ -115,7 +124,7 @@ def build_study_design_tool_registry() -> ToolRegistry:
                 spec=ToolSpec(
                     name="study-design-search",
                     description=(
-                        "Search the active package's Markdown study-design "
+                        "Search one exact installed study's Markdown design "
                         "documents and store bounded provenance-rich hits."
                     ),
                     args_model=SearchStudyDesignArguments,

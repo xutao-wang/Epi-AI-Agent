@@ -7,6 +7,7 @@ from epi_agent.tool_packs.publication.tools import (
     OpenStudySourceArguments,
     SearchPubMedArguments,
     SearchStudyEvidenceArguments,
+    StudySourceRef,
     build_publication_tool_registry,
 )
 
@@ -17,5 +18,6 @@ __all__ = [
     "build_publication_system_prompt",
     "SearchStudyEvidenceArguments",
     "SearchPubMedArguments",
+    "StudySourceRef",
     "build_publication_tool_registry",
 ]

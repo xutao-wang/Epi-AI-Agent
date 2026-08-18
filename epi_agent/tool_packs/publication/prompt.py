@@ -3,10 +3,10 @@ from epi_agent.tool_packs.publication.pubmed import is_pubmed_configured
 
 _PUBLICATION_CORE_PROMPT = """\
 Publication knowledge rules:
-Use publication-search_study_evidence for design, eligibility, operational
+Use publication-search_study_evidence with one exact study_id for design, eligibility, operational
 definition, variable-domain, and historical analysis-pattern questions.
-Use publication-open_study_source with an exact source_id when more bounded
-sections are needed. Publication evidence is independent from participant
+Use publication-open_study_source with the exact source_ref returned by search
+when more bounded sections are needed. Publication evidence is independent from participant
 database availability and never proves that a field exists in the current
 database. Cite supported publication claims using the exact bracket form
 [source_id] from tool observations. Do not claim evidence absent from those

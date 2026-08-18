@@ -75,7 +75,11 @@ def test_publication_tool_persists_hybrid_retrieval_provenance() -> None:
 
     result = build_publication_tool_registry(include_pubmed=False).invoke(
         "publication-search_study_evidence",
-        {"query": "cohort eligibility", "limit": 5},
+        {
+            "study_id": "report-india-synthetic",
+            "query": "cohort eligibility",
+            "limit": 5,
+        },
         context=context,
     )
 
@@ -90,7 +94,11 @@ def test_publication_tool_translates_semantic_unavailability() -> None:
     with pytest.raises(ToolExecutionError) as raised:
         build_publication_tool_registry(include_pubmed=False).invoke(
             "publication-search_study_evidence",
-            {"query": "cohort eligibility", "limit": 5},
+            {
+                "study_id": "report-india-synthetic",
+                "query": "cohort eligibility",
+                "limit": 5,
+            },
             context=context,
         )
 
@@ -104,10 +112,18 @@ def test_publication_tool_opens_exact_source_when_semantic_search_is_unavailable
 
     result = build_publication_tool_registry(include_pubmed=False).invoke(
         "publication-open_study_source",
-        {"source_id": "doi:10.1000/example"},
+        {
+            "source_ref": {
+                "study_id": "report-india-synthetic",
+                "source_id": "doi:10.1000/example",
+            }
+        },
         context=context,
     )
 
     observation = context.artifact_store.require(result.artifacts[0]).content
-    assert observation["source_id"] == "doi:10.1000/example"
+    assert observation["source_ref"] == {
+        "study_id": "report-india-synthetic",
+        "source_id": "doi:10.1000/example",
+    }
     assert observation["sections"][0]["title"] == "Example publication"

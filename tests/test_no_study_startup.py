@@ -541,9 +541,17 @@ def test_generic_agent_completes_without_an_installed_study(tmp_path: Path) -> N
     [
         (
             "publication-search_study_evidence",
-            {"query": "tuberculosis", "limit": 5},
+            {"study_id": "missing", "query": "tuberculosis", "limit": 5},
         ),
-        ("publication-open_study_source", {"source_id": "source-1"}),
+        (
+            "publication-open_study_source",
+            {
+                "source_ref": {
+                    "study_id": "missing",
+                    "source_id": "source-1",
+                }
+            },
+        ),
     ],
 )
 def test_study_evidence_tools_report_recoverable_no_study_error(

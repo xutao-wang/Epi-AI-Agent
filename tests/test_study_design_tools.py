@@ -84,12 +84,13 @@ def test_design_search_tool_returns_bounded_provenance_artifact() -> None:
 
     result = registry.invoke(
         "study-design-search",
-        {"query": "When are visits?", "limit": 3},
+        {"study_id": "study-1", "query": "When are visits?", "limit": 3},
         context=context,
     )
 
     payload = json.loads(result.message)
     assert payload["hits"][0] == {
+        "study_id": "study-1",
         "source_kind": "study_design",
         "source_id": "study-design-source.fixture",
         "source_path": "reference/visits.md",
@@ -104,9 +105,9 @@ def test_design_search_tool_returns_bounded_provenance_artifact() -> None:
 @pytest.mark.parametrize(
     "arguments",
     [
-        {"query": "", "limit": 3},
-        {"query": "x" * 8_001, "limit": 3},
-        {"query": "When are visits?", "limit": 11},
+        {"study_id": "study-1", "query": "", "limit": 3},
+        {"study_id": "study-1", "query": "x" * 8_001, "limit": 3},
+        {"study_id": "study-1", "query": "When are visits?", "limit": 11},
     ],
 )
 def test_design_search_tool_bounds_arguments(arguments: dict[str, object]) -> None:
@@ -127,7 +128,7 @@ def test_design_search_tool_reports_unavailable_for_legacy_provider() -> None:
     with pytest.raises(ToolExecutionError) as raised:
         build_study_design_tool_registry().invoke(
             "study-design-search",
-            {"query": "When are visits?", "limit": 3},
+            {"study_id": "study-1", "query": "When are visits?", "limit": 3},
             context=ToolContext(
                 studies=StudyRegistry([_study(_LegacyDesign())]),
                 artifact_store=_ArtifactStore(),
