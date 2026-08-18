@@ -40,6 +40,12 @@ def _parser() -> argparse.ArgumentParser:
         description="Run real RePORT India per-call study-scoping smoke once."
     )
     parser.add_argument("--archive", type=Path, required=True)
+    parser.add_argument(
+        "--env-project-root",
+        type=Path,
+        default=REPO_ROOT,
+        help="Project root whose config/app.env and .env should be loaded.",
+    )
     return parser
 
 
@@ -49,11 +55,12 @@ def _json_message(result) -> dict[str, object]:
 
 def main(argv: list[str] | None = None) -> int:
     started = perf_counter()
-    archive = _parser().parse_args(argv).archive.expanduser().resolve()
+    args = _parser().parse_args(argv)
+    archive = args.archive.expanduser().resolve()
     if not archive.is_file():
         raise FileNotFoundError(f"RePORT India archive not found: {archive}")
 
-    load_app_environment(REPO_ROOT)
+    load_app_environment(args.env_project_root.expanduser().resolve())
     api_key = str(os.environ.get("OPENAI_API_KEY", "") or "").strip()
     if not api_key:
         raise ValueError("OPENAI_API_KEY is required for the real semantic smoke.")
