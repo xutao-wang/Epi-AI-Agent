@@ -1041,42 +1041,6 @@ def _relationship_inventory_for_study(study: Any, source_id: str) -> Any:
         ) from error
 
 
-def _require_source(context: ToolContext, source_name: str) -> Any:
-    try:
-        return require_context_study(context).data_sources[source_name]
-    except KeyError as error:
-        raise ToolExecutionError(
-            "SOURCE_UNAVAILABLE",
-            f"Runtime source is unavailable: {source_name}",
-            recoverable=True,
-        ) from error
-
-
-def _relationship_inventory(context: ToolContext, source_name: str) -> Any:
-    source = _require_source(context, source_name)
-    factory = getattr(source, "relationship_inventory", None)
-    if not callable(factory):
-        raise ToolExecutionError(
-            "RELATIONSHIP_PROVIDER_UNAVAILABLE",
-            f"Source does not provide relationship inspection: {source_name}",
-            recoverable=True,
-        )
-    try:
-        return factory()
-    except StudySourceUnavailableError as error:
-        raise ToolExecutionError(
-            "RELATIONSHIP_PROVIDER_UNAVAILABLE",
-            f"Relationship provider is unavailable for source {source_name}.",
-            recoverable=True,
-        ) from error
-    except (KeyError, ValueError) as error:
-        raise ToolExecutionError(
-            "RELATIONSHIP_UNAVAILABLE",
-            f"Relationship inventory is unavailable for source {source_name}.",
-            recoverable=True,
-        ) from error
-
-
 def _open_artifact(arguments: dict[str, Any], context: ToolContext) -> ToolResult:
     artifact_id = arguments["artifact_id"]
     artifact = _require_artifact(
@@ -2402,7 +2366,16 @@ def _approved_plan(
             ),
             recoverable=True,
         )
-    return stored, DatasetPlan.model_validate(stored.content)
+    try:
+        plan = dataset_plan_from_artifact(stored)
+    except ValueError as error:
+        raise ToolExecutionError(
+            "PLAN_STUDY_LINEAGE_INVALID",
+            str(error),
+            recoverable=True,
+        ) from error
+    _require_plan_study(context, plan)
+    return stored, plan
 
 
 def _plan_columns(plan: DatasetPlan) -> list[dict[str, Any]]:
@@ -2466,7 +2439,8 @@ def _plan_runtime_path(context: ToolContext, plan: DatasetPlan) -> Any:
             "Agent SQL execution currently requires one approved runtime source.",
             recoverable=True,
         )
-    source = _require_source(context, next(iter(sources)))
+    study = _require_plan_study(context, plan)
+    source = _require_source_for_study(study, next(iter(sources)))
     path = getattr(source, "path", None)
     if path is None:
         raise ToolExecutionError(
@@ -2562,6 +2536,12 @@ def _validated_sql_artifact(
         None,
     )
     if existing is not None:
+        if existing.provenance.get("study_id") != plan.study_id:
+            raise ToolExecutionError(
+                "STUDY_REFERENCE_MISMATCH",
+                "Validated SQL and its dataset plan identify different studies.",
+                recoverable=False,
+            )
         return existing
 
     row_filters = _plan_row_filters(plan)
@@ -2589,7 +2569,7 @@ def _validated_sql_artifact(
             "applied_filters": [],
         },
         provenance={
-            "study_id": require_context_study(context).study_id,
+            "study_id": plan.study_id,
             "thread_id": context.thread_id,
             "producer": "dbrag-validate_and_extract",
             "plan": {"id": plan_id, "version": plan_version},
@@ -2884,6 +2864,7 @@ def _projected_aliases_are_covered(
 def _dataset_persistence_lineage(
     context: ToolContext,
     *,
+    study_id: str,
     plan_id: str,
     plan_version: int,
     plan_content: dict[str, Any],
@@ -2896,6 +2877,7 @@ def _dataset_persistence_lineage(
     predecessor: tuple[str, int] | None,
 ) -> dict[str, Any]:
     return {
+        "study_id": str(study_id).strip(),
         "thread_id": context.thread_id,
         "plan_id": plan_id,
         "plan_version": plan_version,
@@ -3110,6 +3092,7 @@ def _validate_canonical_dataset_lineage(
 ) -> None:
     provenance = dict(artifact.get("provenance") or {})
     expected = {
+        "study_id": lineage.get("study_id"),
         "thread_id": lineage.get("thread_id"),
         "plan_id": lineage.get("plan_id"),
         "plan_version": lineage.get("plan_version"),
@@ -3734,6 +3717,12 @@ def _persist_extraction_result(
     plan_version = int(arguments["plan_version"])
     predecessor_identity = _predecessor_identity(arguments)
     sql_content = dict(sql_artifact.content)
+    if sql_artifact.provenance.get("study_id") != plan.study_id:
+        raise ToolExecutionError(
+            "STUDY_REFERENCE_MISMATCH",
+            "Validated SQL and its dataset plan identify different studies.",
+            recoverable=False,
+        )
     dataset_id = _deterministic_agent_dataset_id(
         thread_id=context.thread_id,
         plan_id=plan_id,
@@ -3764,6 +3753,7 @@ def _persist_extraction_result(
     methods = _persistence_store_methods(context)
     lineage = _dataset_persistence_lineage(
         context,
+        study_id=plan.study_id,
         plan_id=plan_id,
         plan_version=plan_version,
         plan_content=dict(stored_plan.content),
@@ -3975,6 +3965,7 @@ def _persist_extraction_result(
                 candidate,
                 approved_selection,
                 execution,
+                study_id=plan.study_id,
                 selection_artifact_id=plan_id,
                 sql_candidate_artifact_id=sql_artifact.id,
                 plan_id=plan_id,

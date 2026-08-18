@@ -5,7 +5,7 @@ from typing import Any, Literal
 import pandas as pd
 from pydantic import BaseModel
 
-from epi_agent.artifacts import DatasetPlan
+from epi_agent.artifacts import DatasetPlan, dataset_plan_from_artifact
 from epi_agent.protocol import ArtifactRef, ArtifactStore
 from utils.dataset_artifacts import load_dataset_artifact
 
@@ -275,14 +275,16 @@ def inspect_dataset(
             version=plan_ref.version,
         )
     )
-    plan = DatasetPlan.model_validate(plan_artifact.content)
+    plan = dataset_plan_from_artifact(plan_artifact)
     provenance = dict(dataset.content.get("provenance") or {})
     if (
         str(provenance.get("plan_id") or "") != plan_artifact.id
         or provenance.get("plan_version") != plan_artifact.version
+        or provenance.get("study_id") != plan.study_id
     ):
         raise ValueError(
-            "Dataset lineage does not match the requested dataset plan version"
+            "STUDY_REFERENCE_MISMATCH: dataset lineage does not match the "
+            "requested dataset plan version and study"
         )
     dataframe, _schema = load_dataset_artifact(dataset.content)
     row_count = int(len(dataframe))
@@ -391,6 +393,7 @@ def inspect_dataset(
         content=report.model_dump(mode="json"),
         provenance={
             "producer": "dbrag-inspect_dataset",
+            "study_id": plan.study_id,
             "dataset": {"id": dataset.id, "version": dataset.version},
             "plan": {"id": plan_artifact.id, "version": plan_artifact.version},
             **(

@@ -13,7 +13,11 @@ from db_rag.review_contracts import (
 )
 from db_rag.relationships import reverse_relationship_warning_code
 from db_rag.service.dataset_naming import deterministic_dataset_name
-from epi_agent.artifacts import DatasetPlan, StateArtifactStore
+from epi_agent.artifacts import (
+    DatasetPlan,
+    StateArtifactStore,
+    dataset_plan_from_artifact,
+)
 from epi_agent.db_rag.quality import DatasetQualityReport
 from epi_agent.protocol import (
     ArtifactRef,
@@ -22,7 +26,6 @@ from epi_agent.protocol import (
     ToolResult,
     ToolSpec,
     ToolTerminalControl,
-    require_context_study,
 )
 
 
@@ -708,7 +711,7 @@ class RequestDatasetPlanReviewTool:
             {"plan_id": plan_id, "plan_version": version},
             context,
         )
-        plan = DatasetPlan.model_validate(stored.content)
+        plan = dataset_plan_from_artifact(stored)
         payload = {
             "type": "dataset_plan_review",
             "artifact": {
@@ -790,7 +793,7 @@ class RequestDatasetPlanReviewTool:
                     prior_id=plan_id,
                     prior_version=version,
                     provenance={
-                        "study_id": require_context_study(context).study_id,
+                        "study_id": candidate.study_id,
                         "thread_id": context.thread_id,
                         "producer": "dbrag-request_dataset_plan_review",
                         "review_action": "approve_selected_plan",
@@ -824,7 +827,7 @@ class RequestDatasetPlanReviewTool:
             prior_id=plan_id,
             prior_version=version,
             provenance={
-                "study_id": require_context_study(context).study_id,
+                "study_id": candidate.study_id,
                 "thread_id": context.thread_id,
                 "producer": "dbrag-request_dataset_plan_review",
                 "review_action": "revise",
@@ -1016,7 +1019,17 @@ class RequestDatasetReviewTool:
                 "Dataset review requires the exact approved dataset plan.",
                 recoverable=True,
             )
-        plan = DatasetPlan.model_validate(plan_artifact.content)
+        plan = dataset_plan_from_artifact(plan_artifact)
+        if (
+            provenance.get("study_id") != plan.study_id
+            or quality.provenance.get("study_id") != plan.study_id
+        ):
+            raise ToolExecutionError(
+                "STUDY_REFERENCE_MISMATCH",
+                "Dataset, quality report, and approved plan must identify "
+                "the same study.",
+                recoverable=True,
+            )
         payload = {
             "type": "dataset_review",
             "artifact": {
@@ -1116,6 +1129,7 @@ class RequestDatasetReviewTool:
                 },
                 provenance={
                     "producer": "dbrag-request_dataset_review",
+                    "study_id": plan.study_id,
                     "thread_id": context.thread_id,
                     "dataset": {
                         "id": dataset.id,

@@ -20,6 +20,7 @@ _PERSISTENCE_JOURNAL_DIRECTORY = ".persistence_attempts"
 _PERSISTENCE_STATES = {"begun", "staged", "promoted", "committed"}
 _PERSISTENCE_PATH_KEYS = {"path", "schema_path", "metadata_path"}
 _PERSISTENCE_LINEAGE_KEYS = {
+    "study_id",
     "approved_selected_columns",
     "approved_selected_tables",
     "expected_output_aliases",
@@ -80,6 +81,7 @@ _DATASET_PROVENANCE_KEYS = {
     "source_message_event_id",
     "source_question",
     "source_tables",
+    "study_id",
     "sql",
     "sql_candidate_artifact_id",
     "sql_id",
@@ -271,6 +273,7 @@ def _validate_dataset_persistence_journal(
         or record.get("dataset_id") != dataset_id
         or state not in _PERSISTENCE_STATES
         or set(lineage) != _PERSISTENCE_LINEAGE_KEYS
+        or not str(lineage.get("study_id") or "").strip()
         or lineage.get("thread_id") != thread_id
         or not re.fullmatch(
             r"[0-9a-f]{64}",

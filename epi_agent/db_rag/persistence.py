@@ -330,6 +330,7 @@ def persist_sql_subset_artifact(
     approved_selection: dict[str, Any],
     execution_result: Any,
     *,
+    study_id: str,
     selection_artifact_id: str | None,
     sql_candidate_artifact_id: str | None,
     plan_id: str | None = None,
@@ -354,6 +355,9 @@ def persist_sql_subset_artifact(
     dict[str, Any],
     StagedDatasetArtifact | None,
 ]:
+    normalized_study_id = str(study_id or "").strip()
+    if not normalized_study_id:
+        raise ValueError("DB-RAG SQL subset persistence requires a study_id.")
     thread_id = str(
         dict(state.get("meta") or {}).get(MetaKeys.THREAD_ID) or ""
     ).strip()
@@ -425,6 +429,7 @@ def persist_sql_subset_artifact(
         deduplicated_warnings.append(dict(warning))
     provenance: dict[str, Any] = {
         "source": "db_rag_sql",
+        "study_id": normalized_study_id,
         "thread_id": thread_id,
         "source_question": source_question,
         "goal_text": goal_text,

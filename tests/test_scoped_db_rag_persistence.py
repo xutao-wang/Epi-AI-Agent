@@ -42,6 +42,7 @@ def test_sql_subset_persistence_uses_authorized_thread_dataset_root(tmp_path) ->
         candidate,
         {"tables": ["cohort"], "columns": candidate.columns},
         execution,
+        study_id="cohort-study",
         selection_artifact_id="plan-1",
         sql_candidate_artifact_id="sql-1",
         dataset_id="subset-1",
@@ -103,6 +104,7 @@ def test_extraction_wrapper_forwards_authorized_scope_to_sql_persistence(
         id="sql-1",
         version=1,
         content={"tables": ["cohort"], "origin": "test"},
+        provenance={"study_id": "cohort-study"},
     )
     sql = 'SELECT "age" FROM cohort'
     execution = SqlExecutionResult(
@@ -137,3 +139,4 @@ def test_extraction_wrapper_forwards_authorized_scope_to_sql_persistence(
     assert captured["runtime_root"] is scope
     dataset = artifact_store.require(result.artifacts[0])
     assert dataset.content["path"].startswith(str(scope.datasets))
+    assert dataset.provenance["study_id"] == "cohort-study"

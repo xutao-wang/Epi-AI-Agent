@@ -399,6 +399,7 @@ class StateArtifactStore:
         plan = self.require(plan_ref)
         if plan.kind != "dataset_plan" or plan.status != "approved":
             raise ValueError("Replacement requires the exact approved dataset plan")
+        plan_model = dataset_plan_from_artifact(plan)
 
         predecessor = self.require(predecessor_ref)
         if predecessor.status != "pending_review":
@@ -411,9 +412,12 @@ class StateArtifactStore:
         if (
             predecessor_provenance.get("plan_id") != plan.id
             or predecessor_provenance.get("plan_version") != plan.version
+            or predecessor_provenance.get("study_id")
+            != plan_model.study_id
         ):
             raise ValueError(
-                "Replacement predecessor does not match the exact plan lineage"
+                "STUDY_REFERENCE_MISMATCH: replacement predecessor does not "
+                "match the exact plan lineage"
             )
 
         feedback = self.require(feedback_ref)
@@ -444,9 +448,12 @@ class StateArtifactStore:
             or str(record.get("status") or "") != "pending_review"
             or replacement_provenance.get("plan_id") != plan.id
             or replacement_provenance.get("plan_version") != plan.version
+            or replacement_provenance.get("study_id")
+            != plan_model.study_id
         ):
             raise ValueError(
-                "Replacement dataset must be pending review with exact plan lineage"
+                "STUDY_REFERENCE_MISMATCH: replacement dataset must be "
+                "pending review with exact plan lineage"
             )
         if replacement_id in dict(self._artifacts.get("datasets") or {}):
             raise ValueError(f"Replacement dataset already exists: {replacement_id}")
@@ -488,6 +495,7 @@ class StateArtifactStore:
         staging_paths = dict(record.get("expected_staging_paths") or {})
         replacement = record.get("replacement")
         required_lineage = {
+            "study_id",
             "approved_selected_columns",
             "approved_selected_tables",
             "expected_output_aliases",
@@ -523,6 +531,7 @@ class StateArtifactStore:
             or record.get("state") != "begun"
             or not set(record).issubset(allowed_keys)
             or set(lineage) != required_lineage
+            or not str(lineage.get("study_id") or "").strip()
             or not re.fullmatch(
                 r"[0-9a-f]{64}",
                 str(lineage.get("plan_content_sha256") or ""),
@@ -709,12 +718,15 @@ class StateArtifactStore:
         }:
             raise ValueError("Replacement persistence control collision")
         plan = self.require(plan_ref)
+        plan_model = dataset_plan_from_artifact(plan)
         record_provenance = dict(record.get("provenance") or {})
         if (
             plan.kind != "dataset_plan"
             or plan.status != "approved"
             or record_provenance.get("plan_id") != plan.id
             or record_provenance.get("plan_version") != plan.version
+            or record_provenance.get("study_id") != plan_model.study_id
+            or lineage.get("study_id") != plan_model.study_id
         ):
             raise ValueError(
                 "Dataset persistence commit requires exact approved plan lineage"
