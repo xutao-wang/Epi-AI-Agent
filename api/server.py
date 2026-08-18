@@ -670,7 +670,6 @@ def create_app(
                 request.text,
                 request.attachment_ids,
                 request.model_name,
-                request.active_study_id,
                 provider_api_key=provider_key,
             )
         except KeyError as exc:

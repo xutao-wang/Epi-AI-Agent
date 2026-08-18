@@ -195,7 +195,6 @@ class _FakeRuntime:
         text: str,
         attachment_ids: list[str],
         model_name: str | None = None,
-        active_study_id: str | None = None,
         *,
         provider_api_key: str,
     ) -> None:
@@ -205,7 +204,6 @@ class _FakeRuntime:
             raise ThreadAwaitingReviewError(thread_id)
         self.submitted_messages.append((thread_id, text, attachment_ids))
         self.submitted_models.append(model_name)
-        self.submitted_studies.append(active_study_id)
         self.submitted_provider_keys.append(provider_api_key)
 
     def resume_interrupt(
@@ -767,15 +765,15 @@ def test_submit_message_forwards_a_changed_model_before_the_first_message() -> N
     assert runtime.submitted_models == ["gpt-5.6-luna"]
 
 
-def test_submit_message_forwards_explicit_active_study() -> None:
+def test_submit_message_rejects_removed_active_study_field() -> None:
     runtime = _FakeRuntime()
     response = _client(runtime).post(
         "/api/threads/thread-created/messages",
         json={"text": "Use study two", "active_study_id": "study-two"},
     )
 
-    assert response.status_code == 200
-    assert runtime.submitted_studies == ["study-two"]
+    assert response.status_code == 422
+    assert runtime.submitted_messages == []
 
 
 def test_resume_interrupt_forwards_exact_payload() -> None:

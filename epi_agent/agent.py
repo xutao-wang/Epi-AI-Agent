@@ -448,7 +448,6 @@ def build_general_epi_agent_graph(
     model_profile: ModelRuntimeProfile,
     service: AttachmentReaderService,
     studies: StudyRegistry,
-    default_study_id: str | None = None,
     runtime_root: str | Path | None,
     python_runtime: Any | None = None,
     include_db_rag: bool = True,

@@ -43,7 +43,6 @@ def build_graph(
     runtime_root: str | Path,
     storage: ThreadStorageScope | None = None,
     studies: StudyRegistry,
-    default_study_id: str | None,
     db_rag_readiness: DbRagReadiness | None = None,
     db_rag_readiness_by_study: Mapping[str, DbRagReadiness] | None = None,
     db_rag_embedding_model: str | None = None,
@@ -62,30 +61,26 @@ def build_graph(
         if storage.root != expected_storage.root:
             raise ValueError("storage does not belong to runtime_root")
     attachment_reader_service = _build_attachment_reader_service(llm, root)
-    selected_study = studies.get(default_study_id) if default_study_id else None
-    paths = getattr(selected_study, "db_rag_paths", None)
     if db_rag_readiness_by_study is not None:
         include_db_rag = any(
             readiness.available
             for readiness in db_rag_readiness_by_study.values()
         )
     else:
-        readiness = db_rag_readiness or (
-            resolve_db_rag_readiness(
-                paths=paths,
-                expected_embedding_model=db_rag_embedding_model,
+        if db_rag_readiness is not None:
+            include_db_rag = db_rag_readiness.available
+        else:
+            readiness_values = [
+                resolve_db_rag_readiness(
+                    paths=paths,
+                    expected_embedding_model=db_rag_embedding_model,
+                )
+                for study in studies.values
+                if (paths := getattr(study, "db_rag_paths", None)) is not None
+            ]
+            include_db_rag = any(
+                readiness.available for readiness in readiness_values
             )
-            if paths is not None
-            else DbRagReadiness(
-                status="not_configured",
-                message=(
-                    "Multiple study packages are installed. Select an active study."
-                    if studies.values
-                    else "No study package is installed."
-                ),
-            )
-        )
-        include_db_rag = readiness.available
 
     checkpoint_path = Path(db_path).expanduser().resolve()
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
@@ -99,7 +94,6 @@ def build_graph(
         model_profile=model_profile,
         service=attachment_reader_service,
         studies=studies,
-        default_study_id=default_study_id,
         python_runtime=python_runtime
         or LocalPythonRuntime(runtime_root=execution_root),
         runtime_root=root,

@@ -64,7 +64,6 @@ _DATASET_ARTIFACT_KINDS = {
 
 
 class GenericEpiAgentState(LangChainAgentState):
-    active_study_id: str
     artifact_ids: list[str]
     artifacts: dict[str, Any]
     final_response: str | None

@@ -522,7 +522,6 @@ def test_generic_agent_completes_without_an_installed_study(tmp_path: Path) -> N
         model_profile=model_runtime_profile("gpt-5.4"),
         service=_service(tmp_path),
         studies=StudyRegistry(),
-        default_study_id=None,
         runtime_root=tmp_path,
         include_db_rag=False,
         checkpointer=InMemorySaver(),
@@ -584,7 +583,6 @@ def test_sole_study_is_listed_without_injecting_its_overview(tmp_path: Path) -> 
         model_profile=model_runtime_profile("gpt-5.4"),
         service=_service(tmp_path),
         studies=studies,
-        default_study_id=studies.sole_study_id(),
         runtime_root=tmp_path,
         include_db_rag=False,
         checkpointer=InMemorySaver(),
@@ -618,7 +616,6 @@ def test_legacy_active_study_state_does_not_hide_other_packages(
         model_profile=model_runtime_profile("gpt-5.4"),
         service=_service(tmp_path),
         studies=studies,
-        default_study_id=studies.sole_study_id(),
         runtime_root=tmp_path,
         include_db_rag=False,
         checkpointer=InMemorySaver(),
@@ -656,7 +653,6 @@ def test_multiple_studies_can_be_inspected_without_prior_selection(
         model_profile=model_runtime_profile("gpt-5.4"),
         service=_service(tmp_path),
         studies=studies,
-        default_study_id=None,
         runtime_root=tmp_path,
         include_db_rag=False,
         checkpointer=InMemorySaver(),
@@ -679,7 +675,7 @@ def test_multiple_studies_can_be_inspected_without_prior_selection(
     ]
 
 
-def test_multiple_installed_studies_report_selection_required_capabilities(
+def test_capabilities_are_aggregated_across_all_installed_studies(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -687,6 +683,7 @@ def test_multiple_installed_studies_report_selection_required_capabilities(
         [
             _bundle("study-one", "first-study-marker"),
             _bundle("study-two", "second-study-marker"),
+            _bundle("study-three", "third-study-marker"),
         ]
     )
     monkeypatch.setenv("REPORT_AGENT_RUNTIME_ROOT", str(tmp_path / "runtime"))
@@ -701,10 +698,24 @@ def test_multiple_installed_studies_report_selection_required_capabilities(
     module = importlib.import_module("api.app")
 
     capabilities = module.runtime.capabilities.model_dump()
-    assert {
-        capability["message"]
-        for capability in capabilities.values()
-    } == {"Multiple study packages are installed. Select an active study."}
+    assert capabilities == {
+        "publication_knowledge": {
+            "status": "available",
+            "message": (
+                "Publication knowledge is available for 3 installed studies."
+            ),
+        },
+        "study_design": {
+            "status": "available",
+            "message": "Study design is available for 3 installed studies.",
+        },
+        "db_rag_dataset": {
+            "status": "not_configured",
+            "message": (
+                "No installed study package has an available DB-RAG dataset."
+            ),
+        },
+    }
 
 
 def test_optional_tool_context_has_no_unguarded_study_dereferences() -> None:

@@ -1430,7 +1430,7 @@ def test_runtime_initial_submit_bootstraps_root_epi_agent_state() -> None:
     assert "agents" not in payload
 
 
-def test_runtime_initial_submit_carries_explicit_active_study_into_graph_state() -> None:
+def test_runtime_initial_submit_has_no_sticky_study_in_graph_state() -> None:
     graph = _RuntimeFakeGraph(SimpleNamespace(values={}))
     runner = _RecordingRunner()
     runtime = _runtime(graph, runner=runner)
@@ -1439,12 +1439,11 @@ def test_runtime_initial_submit_carries_explicit_active_study_into_graph_state()
         _LOCAL_IDENTITY,
         "thread-1",
         "Use the second installed study.",
-        active_study_id="study-two",
         provider_api_key="test-key",
     )
 
     payload = runner.background_calls[0]["initial_payload"]
-    assert payload["active_study_id"] == "study-two"
+    assert "active_study_id" not in payload
 
 
 def test_runtime_later_submit_sends_message_and_event_log_delta() -> None:

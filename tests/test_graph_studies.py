@@ -68,7 +68,6 @@ def test_build_graph_uses_readiness_across_all_installed_studies(
         db_path=tmp_path / "checkpoint.sqlite",
         runtime_root=tmp_path,
         studies=studies,
-        default_study_id=None,
         db_rag_readiness_by_study={
             study_id: DbRagReadiness(
                 status=status,
@@ -126,7 +125,6 @@ def test_build_graph_preserves_generic_registry_when_db_rag_is_not_configured(
         db_path=tmp_path / "checkpoint.sqlite",
         runtime_root=tmp_path,
         studies=studies,
-        default_study_id="cohort-alpha",
         db_rag_readiness=DbRagReadiness(
             status="not_configured",
             message="DB-RAG dataset is not configured.",
@@ -135,7 +133,7 @@ def test_build_graph_preserves_generic_registry_when_db_rag_is_not_configured(
 
     assert result == "compiled-graph"
     assert agent_calls[0]["studies"] is studies
-    assert agent_calls[0]["default_study_id"] == "cohort-alpha"
+    assert "default_study_id" not in agent_calls[0]
     assert agent_calls[0]["include_db_rag"] is False
     assert agent_calls[0]["model_profile"] is profile
 
@@ -177,7 +175,6 @@ def test_build_graph_scopes_python_temporary_files_to_owner_thread_execution(
         runtime_root=tmp_path,
         storage=storage,
         studies=StudyRegistry([bundle]),
-        default_study_id="cohort-alpha",
         db_rag_readiness=DbRagReadiness(
             status="not_configured",
             message="DB-RAG dataset is not configured.",

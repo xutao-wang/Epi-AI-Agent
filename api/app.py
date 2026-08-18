@@ -57,9 +57,6 @@ from utils.runtime_defaults import (
 
 
 _NO_STUDY_MESSAGE = "No study package is installed."
-_STUDY_SELECTION_REQUIRED_MESSAGE = (
-    "Multiple study packages are installed. Select an active study."
-)
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -75,51 +72,65 @@ def _history_store_for_auth_mode(
     return store
 
 
-def _unselected_study_message(studies: StudyRegistry) -> str:
-    if studies.values:
-        return _STUDY_SELECTION_REQUIRED_MESSAGE
-    return _NO_STUDY_MESSAGE
-
-
 def _db_rag_readiness(
     studies: StudyRegistry,
-    default_study_id: str | None,
     *,
     embedding_model: str,
 ) -> DbRagReadiness:
-    study = studies.get(default_study_id) if default_study_id else None
-    paths = getattr(study, "db_rag_paths", None)
-    if paths is None:
+    if not studies.values:
         return DbRagReadiness(
             status="not_configured",
-            message=_unselected_study_message(studies),
+            message=_NO_STUDY_MESSAGE,
         )
-    return resolve_db_rag_readiness(
-        paths=paths,
-        expected_embedding_model=embedding_model,
+    readiness = [
+        resolve_db_rag_readiness(
+            paths=paths,
+            expected_embedding_model=embedding_model,
+        )
+        for study in studies.values
+        if (paths := getattr(study, "db_rag_paths", None)) is not None
+    ]
+    available_count = sum(item.available for item in readiness)
+    if available_count:
+        return DbRagReadiness(
+            status="available",
+            message=(
+                "DB-RAG dataset retrieval is available for "
+                f"{available_count} installed "
+                f"stud{'y' if available_count == 1 else 'ies'}."
+            ),
+        )
+    return DbRagReadiness(
+        status="not_configured",
+        message="No installed study package has an available DB-RAG dataset.",
     )
 
 
 def _capability(
-    study: object | None,
+    studies: StudyRegistry,
     attribute: str,
     label: str,
-    *,
-    unavailable_message: str = _NO_STUDY_MESSAGE,
 ) -> RuntimeCapability:
-    if study is None:
+    if not studies.values:
         return RuntimeCapability(
             status="not_configured",
-            message=unavailable_message,
+            message=_NO_STUDY_MESSAGE,
         )
-    if getattr(study, attribute, None) is None:
+    available_count = sum(
+        getattr(study, attribute, None) is not None
+        for study in studies.values
+    )
+    if not available_count:
         return RuntimeCapability(
             status="not_configured",
-            message=f"The selected study package has no {label}.",
+            message=f"No installed study package has {label}.",
         )
     return RuntimeCapability(
         status="available",
-        message=f"{label.capitalize()} is available.",
+        message=(
+            f"{label.capitalize()} is available for {available_count} installed "
+            f"stud{'y' if available_count == 1 else 'ies'}."
+        ),
     )
 
 
@@ -163,13 +174,9 @@ def build_application(*, environ: Mapping[str, str] | None = None) -> FastAPI:
     )
 
     studies = discover_studies(selected_study_root / "studies")
-    default_study_id = studies.sole_study_id()
-    default_study = studies.get(default_study_id) if default_study_id else None
-    unselected_study_message = _unselected_study_message(studies)
     db_rag_embedding_model = resolve_db_rag_embedding_model()
     db_rag_readiness = _db_rag_readiness(
         studies,
-        default_study_id,
         embedding_model=db_rag_embedding_model,
     )
 
@@ -196,7 +203,6 @@ def build_application(*, environ: Mapping[str, str] | None = None) -> FastAPI:
             runtime_root=runtime_root_path,
             storage=context.storage,
             studies=bound_studies.studies,
-            default_study_id=default_study_id,
             db_rag_readiness_by_study=bound_studies.readiness,
             db_rag_embedding_model=db_rag_embedding_model,
             max_iterations=max_iterations,
@@ -237,16 +243,14 @@ def build_application(*, environ: Mapping[str, str] | None = None) -> FastAPI:
         ),
         capabilities=RuntimeCapabilities(
             publication_knowledge=_capability(
-                default_study,
+                studies,
                 "knowledge",
                 "publication knowledge",
-                unavailable_message=unselected_study_message,
             ),
             study_design=_capability(
-                default_study,
+                studies,
                 "study_design",
                 "study design",
-                unavailable_message=unselected_study_message,
             ),
             db_rag_dataset=RuntimeCapability(
                 status=db_rag_readiness.status,

@@ -1095,8 +1095,6 @@ class ApiGraphRunner:
 def _initial_graph_state(
     thread_id: str,
     message: HumanMessage | None,
-    *,
-    active_study_id: str | None = None,
 ) -> dict[str, Any]:
     state = {
         "messages": [message] if message is not None else [],
@@ -1118,8 +1116,6 @@ def _initial_graph_state(
             MetaKeys.THREAD_ID: thread_id,
         },
     }
-    if active_study_id is not None:
-        state["active_study_id"] = active_study_id
     return ensure_conversation_state(state)
 
 
@@ -1610,7 +1606,6 @@ class ReportAgentApiRuntime:
         snapshot: Any,
         message: HumanMessage,
         manifests: list[dict[str, Any]],
-        active_study_id: str | None = None,
     ) -> dict[str, Any]:
         values = dict(getattr(snapshot, "values", None) or {})
         available_manifests: list[dict[str, Any]] = []
@@ -1663,7 +1658,6 @@ class ReportAgentApiRuntime:
                 event_state = _initial_graph_state(
                     thread_id,
                     message,
-                    active_study_id=active_study_id,
                 )
 
             artifacts = dict(event_state.get("artifacts") or {})
@@ -1752,8 +1746,6 @@ class ReportAgentApiRuntime:
                     "terminal_error": None,
                     "terminal_control": None,
                 }
-                if active_study_id is not None:
-                    payload["active_study_id"] = active_study_id
                 return payload
             return {
                 **event_state,
@@ -1929,7 +1921,6 @@ class ReportAgentApiRuntime:
         text: str | None = None,
         attachment_ids: list[str] | None = None,
         model_name: str | None = None,
-        active_study_id: str | None = None,
         *,
         provider_api_key: str | None = None,
     ) -> None:
@@ -1966,7 +1957,6 @@ class ReportAgentApiRuntime:
                 _initial_graph_state(
                     thread_id,
                     None,
-                    active_study_id=active_study_id,
                 ),
                 as_node=START,
             )
@@ -2074,7 +2064,6 @@ class ReportAgentApiRuntime:
                 snapshot=snapshot,
                 message=message,
                 manifests=manifests,
-                active_study_id=active_study_id,
             ),
             "max_steps": thread.settings.max_steps or 1,
             "timeout_seconds": thread.settings.timeout_seconds or 1,

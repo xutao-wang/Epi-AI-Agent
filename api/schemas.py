@@ -500,7 +500,6 @@ class SubmitMessageRequest(BaseModel):
     text: str = ""
     attachment_ids: list[str] = Field(default_factory=list)
     model_name: str | None = None
-    active_study_id: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def require_content(self) -> "SubmitMessageRequest":
