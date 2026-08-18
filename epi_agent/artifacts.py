@@ -156,6 +156,7 @@ class PlanOperation(BaseModel):
 
 
 class DatasetPlan(BaseModel):
+    study_id: str = Field(min_length=1)
     goal: str
     row_definition: str = ""
     concepts: list[DatasetPlanConcept] = Field(
@@ -189,6 +190,37 @@ class DatasetPlan(BaseModel):
     )
     reductions: list[PlanReduction] = Field(default_factory=list)
     unresolved: list[dict[str, str]] = Field(default_factory=list)
+
+    @field_validator("study_id")
+    @classmethod
+    def normalize_study_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("study_id must not be blank")
+        return normalized
+
+
+def dataset_plan_from_artifact(stored: StoredArtifact) -> DatasetPlan:
+    if stored.kind != "dataset_plan":
+        raise ValueError("ARTIFACT_KIND_MISMATCH: artifact is not a dataset plan")
+    content = deepcopy(dict(stored.content))
+    content_study_id = str(content.get("study_id") or "").strip()
+    provenance_study_id = str(
+        stored.provenance.get("study_id") or ""
+    ).strip()
+    if not provenance_study_id:
+        raise ValueError(
+            "ARTIFACT_STUDY_PROVENANCE_MISSING: dataset plan provenance "
+            "does not identify one study"
+        )
+    if content_study_id and content_study_id != provenance_study_id:
+        raise ValueError(
+            "STUDY_REFERENCE_MISMATCH: dataset plan content and provenance "
+            "identify different studies"
+        )
+    if not content_study_id:
+        content["study_id"] = provenance_study_id
+    return DatasetPlan.model_validate(content)
 
 class StateArtifactStore:
     """Versioned artifact adapter backed by the parent state's artifact envelope."""
@@ -251,11 +283,30 @@ class StateArtifactStore:
             raise ValueError("prior_id and prior_version must be provided together")
 
         version = 1
-        artifact_provenance = {"producer": "db_rag", **dict(provenance or {})}
+        supplied_provenance = dict(provenance or {})
+        supplied_study_id = str(
+            supplied_provenance.get("study_id") or plan.study_id
+        ).strip()
+        if supplied_study_id != plan.study_id:
+            raise ValueError(
+                "STUDY_REFERENCE_MISMATCH: dataset plan content and provenance "
+                "identify different studies"
+            )
+        artifact_provenance = {
+            "producer": "db_rag",
+            **supplied_provenance,
+            "study_id": plan.study_id,
+        }
         if prior_id is not None and prior_version is not None:
             prior = self.require(
                 ArtifactRef(id=prior_id, kind="dataset_plan", version=prior_version)
             )
+            prior_plan = dataset_plan_from_artifact(prior)
+            if prior_plan.study_id != plan.study_id:
+                raise ValueError(
+                    "STUDY_REFERENCE_MISMATCH: a dataset plan revision cannot "
+                    "switch studies"
+                )
             version = prior.version + 1
             artifact_provenance["supersedes"] = prior.id
             self._replace_stored_artifact(prior.model_copy(update={"status": "superseded"}))

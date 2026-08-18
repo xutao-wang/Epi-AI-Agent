@@ -32,7 +32,11 @@ from db_rag.service.sql_service import (
     execute_validated_extraction_sql,
     validate_extraction_sql,
 )
-from epi_agent.artifacts import DatasetPlan, PlanField
+from epi_agent.artifacts import (
+    DatasetPlan,
+    PlanField,
+    dataset_plan_from_artifact,
+)
 from epi_agent.db_rag import persistence as db_rag_persistence
 from epi_agent.db_rag.references import FieldRef, TableRef
 from epi_agent.db_rag.sql_compiler import compile_dataset_plan_sql
@@ -1120,21 +1124,6 @@ def _raise_missing_result(code: str, message: str) -> None:
     )
 
 
-def _catalog_field_exists(context: ToolContext, table: str, column: str) -> bool:
-    field_exists = getattr(
-        require_context_study(context).catalog,
-        "field_exists",
-        None,
-    )
-    if not callable(field_exists):
-        raise ToolExecutionError(
-            "CATALOG_UNAVAILABLE",
-            "The active study does not provide runtime field validation.",
-            recoverable=True,
-        )
-    return bool(field_exists(table, column))
-
-
 def _search_catalog(arguments: dict[str, Any], context: ToolContext) -> ToolResult:
     limit = min(int(arguments["limit"]), _MAX_SEARCH_HITS)
     queries = list(arguments["queries"])
@@ -1502,10 +1491,58 @@ def _profile_relationship(
     )
 
 
+def _require_plan_study(context: ToolContext, plan: DatasetPlan) -> Any:
+    try:
+        return require_context_study(context, plan.study_id)
+    except ToolExecutionError as error:
+        if error.code not in {
+            "STUDY_NOT_AVAILABLE",
+            "NO_STUDY_PACKAGE_INSTALLED",
+        }:
+            raise
+        raise ToolExecutionError(
+            "PLAN_STUDY_UNAVAILABLE",
+            f"Dataset plan study is unavailable: {plan.study_id}",
+            recoverable=True,
+            details={"study_id": plan.study_id},
+        ) from error
+
+
 def _save_dataset_plan(
     arguments: dict[str, Any],
     context: ToolContext,
 ) -> ToolResult:
+    plan = DatasetPlan.model_validate(arguments["plan"])
+    study = _require_plan_study(context, plan)
+    source_ids = set(study.data_sources)
+    for source, table, column in _plan_reference_keys(plan):
+        if source not in source_ids:
+            raise ToolExecutionError(
+                "STUDY_REFERENCE_MISMATCH",
+                (
+                    f"Plan field {source}.{table}.{column} does not belong "
+                    f"to study {plan.study_id}."
+                ),
+                recoverable=True,
+                details={
+                    "study_id": plan.study_id,
+                    "source_id": source,
+                    "table": table,
+                    "column": column,
+                },
+            )
+        if not _catalog_field_exists_for_study(study, table, column):
+            raise ToolExecutionError(
+                "PLAN_FIELD_UNAVAILABLE",
+                f"Plan field is unavailable: {source}.{table}.{column}",
+                recoverable=True,
+                details={
+                    "study_id": plan.study_id,
+                    "source": source,
+                    "table": table,
+                    "column": column,
+                },
+            )
     prior_id = arguments.get("prior_id")
     prior_version = arguments.get("prior_version")
     if (prior_id is None) != (prior_version is None):
@@ -1542,11 +1579,11 @@ def _save_dataset_plan(
             )
     try:
         reference = _store(context).save_dataset_plan(
-            DatasetPlan.model_validate(arguments["plan"]),
+            plan,
             prior_id=prior_id,
             prior_version=prior_version,
             provenance={
-                "study_id": require_context_study(context).study_id,
+                "study_id": study.study_id,
                 "thread_id": context.thread_id,
                 "producer": "dbrag-save_dataset_plan",
             },
@@ -2017,8 +2054,8 @@ def _filter_value_exists(
         )
 
 
-def _source_database_path(context: ToolContext, source_name: str) -> Path:
-    source = _require_source(context, source_name)
+def _source_database_path(study: Any, source_name: str) -> Path:
+    source = _require_source_for_study(study, source_name)
     path = getattr(source, "path", None)
     if path is None:
         raise ToolExecutionError(
@@ -2056,10 +2093,10 @@ def _required_plan_tables(
 
 def _join_profile_edges(
     plan: DatasetPlan,
-    context: ToolContext,
+    study: Any,
     source_name: str,
 ) -> list[dict[str, Any]]:
-    inventory = _relationship_inventory(context, source_name)
+    inventory = _relationship_inventory_for_study(study, source_name)
     profiles: list[Any] = []
     for operation in plan.operations:
         if operation.name.strip().casefold() != "join":
@@ -2118,9 +2155,9 @@ def _join_profile_edges(
 
 def _verified_join_paths(
     plan: DatasetPlan,
-    context: ToolContext,
+    study: Any,
 ) -> list[dict[str, Any]]:
-    source_ids = set(require_context_study(context).data_sources)
+    source_ids = set(study.data_sources)
     constraints, _constraint_issues = _normalized_value_constraints(plan, source_ids)
     required_tables = _required_plan_tables(plan, constraints, source_ids)
     if len(required_tables) != 1:
@@ -2128,7 +2165,7 @@ def _verified_join_paths(
     source_name, tables = next(iter(required_tables.items()))
     if len(tables) < 2:
         return []
-    edges = _join_profile_edges(plan, context, source_name)
+    edges = _join_profile_edges(plan, study, source_name)
     adjacency: dict[str, list[tuple[str, dict[str, Any]]]] = {
         table: [] for table in tables
     }
@@ -2209,8 +2246,17 @@ def _validate_dataset_plan(
         version=reference.version,
         kind=reference.kind,
     )
-    plan = DatasetPlan.model_validate(stored.content)
-    source_ids = set(require_context_study(context).data_sources)
+    try:
+        plan = dataset_plan_from_artifact(stored)
+    except ValueError as error:
+        code = str(error).split(":", 1)[0]
+        raise ToolExecutionError(
+            code,
+            str(error),
+            recoverable=True,
+        ) from error
+    study = _require_plan_study(context, plan)
+    source_ids = set(study.data_sources)
     constraints, issues = _normalized_value_constraints(plan, source_ids)
 
     if not any(concept.fields for concept in plan.concepts):
@@ -2236,7 +2282,11 @@ def _validate_dataset_plan(
             )
             issues.append(_plan_issue(error, path=path))
             continue
-        if not table or not column or not _catalog_field_exists(context, table, column):
+        if not table or not column or not _catalog_field_exists_for_study(
+            study,
+            table,
+            column,
+        ):
             error = ToolExecutionError(
                 "PLAN_FIELD_UNAVAILABLE",
                 f"Runtime field is unavailable: {table}.{column}.",
@@ -2252,7 +2302,7 @@ def _validate_dataset_plan(
         operator = str(constraint.get("operator") or "").strip().casefold()
         path = str(constraint.get("path") or "filters")
         try:
-            database_path = _source_database_path(context, source)
+            database_path = _source_database_path(study, source)
             for value_index, value in enumerate(_filter_constraint_values(constraint)):
                 if not _filter_value_exists(
                     database_path=database_path,
@@ -2305,7 +2355,7 @@ def _validate_dataset_plan(
             source_name, tables = next(iter(required_tables.items()))
             if len(tables) > 1:
                 try:
-                    paths = _verified_join_paths(plan, context)
+                    paths = _verified_join_paths(plan, study)
                 except ToolExecutionError as error:
                     paths = []
                     issues.append(_plan_issue(error, path="operations"))
