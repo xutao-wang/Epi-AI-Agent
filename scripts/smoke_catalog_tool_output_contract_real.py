@@ -102,9 +102,8 @@ def main(argv: list[str] | None = None) -> int:
             raise AssertionError(
                 f"NHANES semantic binding failed: {readiness.message}"
             )
-        study = bound.studies.require("nhanes-2017-2018")
         context = ToolContext(
-            study=study,
+            studies=bound.studies,
             artifact_store=StateArtifactStore(),
             thread_id="catalog-output-contract-smoke",
             policy=object(),

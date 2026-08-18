@@ -113,7 +113,7 @@ def _runtime_config(
         registry=registry,
         studies=studies,
         context_factory=lambda _state, config, artifact_store: ToolContext(
-            study=None,
+            studies=studies,
             artifact_store=artifact_store,
             thread_id=str(config["configurable"]["thread_id"]),
             policy=None,

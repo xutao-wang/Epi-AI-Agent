@@ -102,7 +102,7 @@ def _runtime(
             registry=registry or ToolRegistry(),
             studies=studies,
             context_factory=lambda state, _config, artifact_store: ToolContext(
-                study=studies.require(state["active_study_id"]),
+                studies=studies,
                 artifact_store=artifact_store,
                 thread_id="thread-1",
                 policy=None,

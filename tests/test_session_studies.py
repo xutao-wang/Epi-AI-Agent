@@ -446,7 +446,7 @@ def test_selected_study_catalogs_cannot_cross_chroma_roots(
             "dbrag-search_catalog",
             {"queries": [query], "limit": 5},
             context=ToolContext(
-                study=bound.studies.require(study_id),
+                studies=bound.studies,
                 artifact_store=store,
                 thread_id=f"thread-{study_id}",
                 policy=object(),

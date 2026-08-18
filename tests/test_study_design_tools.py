@@ -76,7 +76,7 @@ def test_design_search_tool_returns_bounded_provenance_artifact() -> None:
     registry = build_study_design_tool_registry()
     store = _ArtifactStore()
     context = ToolContext(
-        study=_study(_SearchableDesign(text="x" * 5_000)),
+        studies=StudyRegistry([_study(_SearchableDesign(text="x" * 5_000))]),
         artifact_store=store,
         thread_id="thread-1",
         policy=None,
@@ -115,7 +115,7 @@ def test_design_search_tool_bounds_arguments(arguments: dict[str, object]) -> No
             "study-design-search",
             arguments,
             context=ToolContext(
-                study=_study(_SearchableDesign()),
+                studies=StudyRegistry([_study(_SearchableDesign())]),
                 artifact_store=_ArtifactStore(),
                 thread_id="thread-1",
                 policy=None,
@@ -129,7 +129,7 @@ def test_design_search_tool_reports_unavailable_for_legacy_provider() -> None:
             "study-design-search",
             {"query": "When are visits?", "limit": 3},
             context=ToolContext(
-                study=_study(_LegacyDesign()),
+                studies=StudyRegistry([_study(_LegacyDesign())]),
                 artifact_store=_ArtifactStore(),
                 thread_id="thread-1",
                 policy=None,

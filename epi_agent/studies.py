@@ -64,6 +64,10 @@ class StudyRegistry:
     def values(self) -> tuple[StudyBundle, ...]:
         return tuple(self._studies.values())
 
+    @property
+    def ids(self) -> tuple[str, ...]:
+        return tuple(sorted(self._studies))
+
     def sole_study_id(self) -> str | None:
         if len(self._studies) != 1:
             return None

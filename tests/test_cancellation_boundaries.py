@@ -91,7 +91,7 @@ def _runtime_config(registry: ToolRegistry) -> EpiAgentRuntimeConfig:
         registry=registry,
         studies=studies,
         context_factory=lambda _state, _config, artifact_store: ToolContext(
-            study=studies.require("study-1"),
+            studies=studies,
             artifact_store=artifact_store,
             thread_id="cancel-tool",
             policy=None,

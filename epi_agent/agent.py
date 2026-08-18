@@ -470,11 +470,8 @@ def build_general_epi_agent_graph(
             or configurable.get("thread_id")
             or ""
         ).strip()
-        active_study_id = str(
-            state.get("active_study_id") or default_study_id or ""
-        ).strip()
         return ToolContext(
-            study=studies.get(active_study_id),
+            studies=studies,
             artifact_store=artifact_store,
             thread_id=conversation_thread_id,
             policy=None,
@@ -485,9 +482,6 @@ def build_general_epi_agent_graph(
                 )
                 if runtime_root is not None and owner_user_id and conversation_thread_id
                 else None
-            ),
-            available_study_ids=tuple(
-                study.study_id for study in studies.values
             ),
             attachment_store=service.store,
             authorized_attachment_ids=tuple(

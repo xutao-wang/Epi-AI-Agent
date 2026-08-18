@@ -15,7 +15,7 @@ from epi_agent.protocol import (
     ToolExecutionError,
     serialize_tool_result,
 )
-from epi_agent.studies import StudyBundle
+from epi_agent.studies import StudyBundle, StudyRegistry
 
 
 class _HybridCatalog:
@@ -117,13 +117,17 @@ class _InspectableCatalog(_HybridCatalog):
 
 def _context(catalog) -> ToolContext:
     return ToolContext(
-        study=StudyBundle(
-            study_id="nhanes-2017-2018",
-            label="NHANES 2017-2018",
-            knowledge=None,
-            catalog=catalog,
-            data_sources={"nhanes-2017-2018": object()},
-            source_id="nhanes-2017-2018",
+        studies=StudyRegistry(
+            [
+                StudyBundle(
+                    study_id="nhanes-2017-2018",
+                    label="NHANES 2017-2018",
+                    knowledge=None,
+                    catalog=catalog,
+                    data_sources={"nhanes-2017-2018": object()},
+                    source_id="nhanes-2017-2018",
+                )
+            ]
         ),
         artifact_store=StateArtifactStore(),
         thread_id="thread-1",

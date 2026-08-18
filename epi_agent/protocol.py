@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from utils.user_storage import ThreadStorageScope
 
 if TYPE_CHECKING:
-    from epi_agent.studies import StudyBundle
+    from epi_agent.studies import StudyBundle, StudyRegistry
 
 
 _TOOL_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
@@ -336,7 +336,7 @@ class ArtifactStore(Protocol):
 
 @dataclass(frozen=True)
 class ToolContext:
-    study: StudyBundle | None
+    studies: StudyRegistry
     artifact_store: ArtifactStore
     thread_id: str
     policy: Any
@@ -345,24 +345,28 @@ class ToolContext:
     authorized_attachment_ids: tuple[str, ...] = ()
     current_attachment_ids: tuple[str, ...] = ()
     analysis_review_feedback_history: tuple[dict[str, Any], ...] = ()
-    available_study_ids: tuple[str, ...] = ()
 
 
-def require_context_study(context: ToolContext) -> StudyBundle:
-    if context.study is not None:
-        return context.study
-    if context.available_study_ids:
+def require_context_study(context: ToolContext, study_id: str) -> StudyBundle:
+    normalized = str(study_id or "").strip()
+    if not context.studies.values:
         raise ToolExecutionError(
-            "ACTIVE_STUDY_SELECTION_REQUIRED",
-            "Select an active study package before using this tool.",
+            "NO_STUDY_PACKAGE_INSTALLED",
+            "No study package is installed.",
             recoverable=True,
-            details={"available_study_ids": list(context.available_study_ids)},
         )
-    raise ToolExecutionError(
-        "NO_STUDY_PACKAGE_INSTALLED",
-        "No study package is installed.",
-        recoverable=True,
-    )
+    study = context.studies.get(normalized)
+    if study is None:
+        raise ToolExecutionError(
+            "STUDY_NOT_AVAILABLE",
+            f"The requested study package is unavailable: {normalized}",
+            recoverable=True,
+            details={
+                "requested_study_id": normalized,
+                "available_study_ids": list(context.studies.ids),
+            },
+        )
+    return study
 
 
 class AgentTool(Protocol):

@@ -551,7 +551,7 @@ def test_study_evidence_tools_report_recoverable_no_study_error(
     arguments: dict[str, Any],
 ) -> None:
     context = ToolContext(
-        study=None,
+        studies=StudyRegistry(),
         artifact_store=StateArtifactStore(),
         thread_id="thread-1",
         policy=None,

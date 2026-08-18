@@ -650,7 +650,7 @@ def _validate_plan(
     temporary_store = StateArtifactStore(context.artifact_store.snapshot())
     temporary_ref = temporary_store.save_dataset_plan(plan)
     temporary_context = ToolContext(
-        study=context.study,
+        studies=context.studies,
         artifact_store=temporary_store,
         thread_id=context.thread_id,
         policy=context.policy,

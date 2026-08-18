@@ -6,7 +6,7 @@ from db_rag.knowledge import PublicationEvidenceHit
 from db_rag.local_knowledge import SemanticPublicationKnowledgeUnavailableError
 from epi_agent.artifacts import StateArtifactStore
 from epi_agent.protocol import ToolContext, ToolExecutionError
-from epi_agent.studies import StudyBundle
+from epi_agent.studies import StudyBundle, StudyRegistry
 from epi_agent.tool_packs.publication import build_publication_tool_registry
 
 
@@ -53,12 +53,16 @@ class _HybridKnowledge:
 
 def _context(knowledge) -> ToolContext:
     return ToolContext(
-        study=StudyBundle(
-            study_id="report-india-synthetic",
-            label="RePORT India Synthetic",
-            knowledge=knowledge,
-            catalog=None,
-            data_sources={},
+        studies=StudyRegistry(
+            [
+                StudyBundle(
+                    study_id="report-india-synthetic",
+                    label="RePORT India Synthetic",
+                    knowledge=knowledge,
+                    catalog=None,
+                    data_sources={},
+                )
+            ]
         ),
         artifact_store=StateArtifactStore(),
         thread_id="thread-1",

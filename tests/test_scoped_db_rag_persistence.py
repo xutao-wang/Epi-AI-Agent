@@ -9,6 +9,7 @@ from epi_agent.artifacts import DatasetPlan, PlanField, StateArtifactStore
 from epi_agent.db_rag.persistence import persist_sql_subset_artifact
 from epi_agent.db_rag import tools as db_rag_tools
 from epi_agent.protocol import ToolContext
+from epi_agent.studies import StudyRegistry
 from graph.state import MetaKeys
 from utils.dataset_artifacts import load_dataset_artifact
 from utils.user_storage import UserStorageLayout
@@ -59,7 +60,7 @@ def test_extraction_wrapper_forwards_authorized_scope_to_sql_persistence(
     scope = UserStorageLayout(tmp_path).thread("cognito-user-a", "thread-1")
     artifact_store = StateArtifactStore.from_state({"artifacts": {}})
     context = ToolContext(
-        study=None,
+        studies=StudyRegistry(),
         artifact_store=artifact_store,
         thread_id=scope.thread_id,
         thread_storage=scope,
