@@ -140,7 +140,11 @@ def test_catalog_tool_persists_hybrid_retrieval_provenance() -> None:
 
     result = build_db_rag_tool_registry().invoke(
         "dbrag-search_catalog",
-        {"queries": ["glycemic control"], "limit": 5},
+        {
+            "study_id": "nhanes-2017-2018",
+            "queries": ["glycemic control"],
+            "limit": 5,
+        },
         context=context,
     )
 
@@ -160,7 +164,7 @@ def test_catalog_tool_preserves_ten_hits_for_each_of_five_probes() -> None:
 
     result = build_db_rag_tool_registry().invoke(
         "dbrag-search_catalog",
-        {"queries": queries, "limit": 10},
+        {"study_id": "nhanes-2017-2018", "queries": queries, "limit": 10},
         context=context,
     )
 
@@ -183,7 +187,11 @@ def test_catalog_tool_preserves_zero_hit_probe_in_original_position() -> None:
 
     result = build_db_rag_tool_registry().invoke(
         "dbrag-search_catalog",
-        {"queries": ["first", "empty", "third"], "limit": 2},
+        {
+            "study_id": "nhanes-2017-2018",
+            "queries": ["first", "empty", "third"],
+            "limit": 2,
+        },
         context=context,
     )
 
@@ -205,7 +213,11 @@ def test_catalog_tool_translates_semantic_unavailability() -> None:
     with pytest.raises(ToolExecutionError) as raised:
         build_db_rag_tool_registry().invoke(
             "dbrag-search_catalog",
-            {"queries": ["glycemic control"], "limit": 5},
+            {
+                "study_id": "nhanes-2017-2018",
+                "queries": ["glycemic control"],
+                "limit": 5,
+            },
             context=context,
         )
 
@@ -219,8 +231,11 @@ def test_inspect_table_returns_explicit_next_page_metadata() -> None:
     result = build_db_rag_tool_registry().invoke(
         "dbrag-inspect_table",
         {
-            "source": "nhanes-2017-2018",
-            "table": "DEMO_J",
+            "table_ref": {
+                "study_id": "nhanes-2017-2018",
+                "source_id": "nhanes-2017-2018",
+                "table": "DEMO_J",
+            },
             "offset": 0,
             "limit": 25,
         },
@@ -232,7 +247,12 @@ def test_inspect_table_returns_explicit_next_page_metadata() -> None:
     assert message["has_more"] is True
     assert message["next_offset"] == 25
     assert len(message["fields"]) == 25
-    assert set(message["fields"][0]) == {"column", "text", "source_kind"}
+    assert set(message["fields"][0]) == {
+        "column",
+        "text",
+        "source_kind",
+        "field_ref",
+    }
 
 
 def test_inspect_table_final_page_includes_null_next_offset() -> None:
@@ -241,8 +261,11 @@ def test_inspect_table_final_page_includes_null_next_offset() -> None:
     result = build_db_rag_tool_registry().invoke(
         "dbrag-inspect_table",
         {
-            "source": "nhanes-2017-2018",
-            "table": "DEMO_J",
+            "table_ref": {
+                "study_id": "nhanes-2017-2018",
+                "source_id": "nhanes-2017-2018",
+                "table": "DEMO_J",
+            },
             "offset": 25,
             "limit": 25,
         },
@@ -263,7 +286,11 @@ def test_maximum_catalog_message_survives_protocol_serialization() -> None:
     context = _context(_ManyHitCatalog())
     result = build_db_rag_tool_registry().invoke(
         "dbrag-search_catalog",
-        {"queries": [f"probe-{index}" for index in range(5)], "limit": 10},
+        {
+            "study_id": "nhanes-2017-2018",
+            "queries": [f"probe-{index}" for index in range(5)],
+            "limit": 10,
+        },
         context=context,
     )
 
@@ -280,8 +307,11 @@ def test_maximum_inspection_message_survives_protocol_serialization() -> None:
     result = build_db_rag_tool_registry().invoke(
         "dbrag-inspect_table",
         {
-            "source": "nhanes-2017-2018",
-            "table": "DEMO_J",
+            "table_ref": {
+                "study_id": "nhanes-2017-2018",
+                "source_id": "nhanes-2017-2018",
+                "table": "DEMO_J",
+            },
             "offset": 0,
             "limit": 25,
         },

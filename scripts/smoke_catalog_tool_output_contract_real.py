@@ -113,7 +113,11 @@ def main(argv: list[str] | None = None) -> int:
         started = perf_counter()
         search_result = registry.invoke(
             "dbrag-search_catalog",
-            {"queries": QUERIES, "limit": 10},
+            {
+                "study_id": "nhanes-2017-2018",
+                "queries": QUERIES,
+                "limit": 10,
+            },
             context=context,
         )
         search_message = _nested_message(search_result)
@@ -133,8 +137,11 @@ def main(argv: list[str] | None = None) -> int:
         inspect_result = registry.invoke(
             "dbrag-inspect_table",
             {
-                "source": "nhanes-2017-2018",
-                "table": "DEMO_J",
+                "table_ref": {
+                    "study_id": "nhanes-2017-2018",
+                    "source_id": "nhanes-2017-2018",
+                    "table": "DEMO_J",
+                },
                 "offset": 0,
                 "limit": 25,
             },

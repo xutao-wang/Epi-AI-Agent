@@ -444,7 +444,7 @@ def test_selected_study_catalogs_cannot_cross_chroma_roots(
         store = StateArtifactStore()
         result = registry.invoke(
             "dbrag-search_catalog",
-            {"queries": [query], "limit": 5},
+            {"study_id": study_id, "queries": [query], "limit": 5},
             context=ToolContext(
                 studies=bound.studies,
                 artifact_store=store,

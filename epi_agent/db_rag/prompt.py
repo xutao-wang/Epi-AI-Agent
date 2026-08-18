@@ -12,7 +12,12 @@ Never treat example publication SQL as runtime schema.
 Create a dataset only when the user asks for data or empirical analysis.
 Dataset display names are derived deterministically from the plan goal. Do not
 author, revise, or review a separate dataset title.
-Batch all currently needed schema probes into one dbrag-search_catalog call.
+Pass one exact scalar study_id to each dbrag-search_catalog call. Batch all
+currently needed schema probes for that study into the call, then copy the
+returned table_ref and field_ref values exactly into inspection and
+relationship tools. Questions spanning studies require separate catalog calls,
+separate plans, and separate datasets. Never combine studies in one dataset plan
+or SQL statement.
 In a dataset plan, assign every requested outcome, exposure, covariate, or other
 analysis variable to its scientific concept. Before saving the plan, retrieve
 real tables and columns for every requested concept. Put requested physical
