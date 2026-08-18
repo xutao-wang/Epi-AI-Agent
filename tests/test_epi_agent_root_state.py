@@ -11,7 +11,7 @@ from epi_agent.agent import (
     GENERAL_CORE_INSTRUCTIONS,
     EpiAgentState,
     build_epi_agent_context_prompt,
-    render_authoritative_study_design_context,
+    render_installed_study_directory,
 )
 from epi_agent.protocol import ToolContext, ToolResult, ToolSpec
 from epi_agent.registry import ToolRegistry
@@ -40,30 +40,6 @@ def _studies() -> StudyRegistry:
                 data_sources={},
             )
         ]
-    )
-
-
-@dataclass(frozen=True)
-class _RenderedDesign:
-    context: str
-
-    def render_context(self) -> str:
-        return self.context
-
-
-def _study_with_design(
-    context: str,
-    *,
-    package_version: str,
-) -> StudyBundle:
-    return StudyBundle(
-        study_id="study-1",
-        label="Study",
-        knowledge=None,
-        catalog=None,
-        data_sources={},
-        study_design=_RenderedDesign(context),
-        package_version=package_version,
     )
 
 
@@ -458,46 +434,31 @@ def test_epi_context_prompt_omits_missing_card_timestamps() -> None:
     assert "created_at" not in dataset_card
 
 
-def test_epi_context_prompt_includes_authoritative_study_design() -> None:
+def test_epi_context_prompt_includes_installed_study_directory() -> None:
+    directory = "Installed studies:\n- study_id: study-1; label: Study"
     prompt = build_epi_agent_context_prompt(
         {"messages": []},
-        study_design_context=(
-            "Authoritative study design: Cohort A means index cases; "
-            "Cohort B means household contacts."
-        ),
+        installed_study_directory=directory,
     )
 
-    assert "Authoritative study design:" in prompt
-    assert "Cohort A means index cases" in prompt
-    assert "Cohort B means household contacts" in prompt
+    assert directory in prompt
 
 
-def test_epi_context_prompt_preserves_study_design_markdown() -> None:
-    context = (
-        "Authoritative study design for example-study@3.0.0 (Example Study):\n"
-        "# Overview\n\n- Cohort A\n- Cohort B"
-    )
-
-    prompt = build_epi_agent_context_prompt(
-        {"messages": []},
-        study_design_context=context,
-    )
-
-    assert context in prompt
-
-
-def test_study_design_context_is_labeled_with_package_identity() -> None:
-    context = render_authoritative_study_design_context(
-        _study_with_design(
-            "# Overview\n\nAuthoritative Markdown.",
-            package_version="3.0.0",
+def test_study_directory_is_sorted_and_excludes_overview_content() -> None:
+    directory = render_installed_study_directory(
+        StudyRegistry(
+            [
+                StudyBundle("z", "Zulu", None, None, {}),
+                StudyBundle("a", "Alpha", None, None, {}),
+            ]
         )
     )
 
-    assert context.startswith(
-        "Authoritative study design for study-1@3.0.0 (Study):\n"
+    assert directory == (
+        "Installed studies:\n"
+        "- study_id: a; label: Alpha\n"
+        "- study_id: z; label: Zulu"
     )
-    assert context.endswith("# Overview\n\nAuthoritative Markdown.")
 
 
 def test_general_prompt_uses_runtime_owned_dataset_binding() -> None:

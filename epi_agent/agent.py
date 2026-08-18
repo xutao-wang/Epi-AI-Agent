@@ -23,7 +23,7 @@ from epi_agent.runtime import (
     build_epi_agent_graph,
 )
 from epi_agent.runtimes.python import LocalPythonRuntime
-from epi_agent.studies import SearchableStudyDesignProvider, StudyBundle, StudyRegistry
+from epi_agent.studies import SearchableStudyDesignProvider, StudyRegistry
 from epi_agent.tool_packs.analysis import (
     build_analysis_review_tool_registry,
 )
@@ -40,6 +40,7 @@ from epi_agent.tool_packs.study_design import (
     STUDY_DESIGN_SYSTEM_PROMPT,
     build_study_design_tool_registry,
 )
+from epi_agent.tool_packs.studies import build_study_discovery_tool_registry
 from utils.attachment_readers import AttachmentReaderService
 from utils.dataset_artifacts import is_selectable_dataset_artifact
 from utils.model_runtime_profiles import ModelRuntimeProfile
@@ -50,6 +51,16 @@ from utils.user_storage import UserStorageLayout
 _MAX_CARD_COLUMNS = 100
 _MAX_CARD_VALUE_CHARS = 500
 _MAX_CARD_LIST_ITEMS = 20
+
+
+STUDY_SELECTION_INSTRUCTIONS = """Study selection rules:
+- Choose the study independently for each request. Never assume that a previous study remains selected.
+- When the user or current context clearly identifies an installed study, use its exact study_id directly in the study-dependent search tool.
+- When the appropriate study is unclear, call search_studies to read bounded authoritative overviews. The tool does not rank or select a study.
+- If one study clearly fits after reading the available evidence, proceed automatically with that exact study_id.
+- If multiple studies remain genuinely plausible, call general-request_clarification alone before study-dependent retrieval.
+- Never invent a study ID or silently fall back to the sole, default, or previous study.
+- Multiple studies require separate retrieval calls and separate dataset plans. Never construct cross-study SQL."""
 
 
 GENERAL_CORE_INSTRUCTIONS = """You are the single reasoning owner for
@@ -139,6 +150,7 @@ def build_general_system_prompt(
 ) -> str:
     sections = [
         GENERAL_CORE_INSTRUCTIONS,
+        STUDY_SELECTION_INSTRUCTIONS,
         build_publication_system_prompt(
             include_pubmed=is_pubmed_configured(),
         ),
@@ -166,7 +178,7 @@ def epi_agent_completion_issues(state: dict[str, Any]) -> list[str]:
 def build_epi_agent_context_prompt(
     state: dict[str, Any],
     *,
-    study_design_context: str = "",
+    installed_study_directory: str = "",
 ) -> str:
     artifacts = dict(state.get("artifacts") or {})
     authorized_attachment_ids = set(
@@ -338,9 +350,9 @@ def build_epi_agent_context_prompt(
                 sort_keys=True,
             )
         )
-    design_context = str(study_design_context or "").strip()
-    if design_context:
-        contexts.append(design_context)
+    study_directory = str(installed_study_directory or "").strip()
+    if study_directory:
+        contexts.append(study_directory)
     return "\n\n".join(contexts)
 
 
@@ -500,14 +512,9 @@ def build_general_epi_agent_graph(
         )
 
     def context_prompt_factory(state: dict[str, Any]) -> str:
-        active_study_id = str(
-            state.get("active_study_id") or default_study_id or ""
-        ).strip()
-        study = studies.get(active_study_id)
-        study_design_context = render_authoritative_study_design_context(study)
         return build_epi_agent_context_prompt(
             state,
-            study_design_context=study_design_context,
+            installed_study_directory=render_installed_study_directory(studies),
         )
 
     return build_epi_agent_graph(
@@ -546,6 +553,7 @@ def build_general_epi_agent_registry(
     return ToolRegistry(
         [
             *build_general_tool_registry().tools(),
+            *build_study_discovery_tool_registry().tools(),
             *build_attachment_tool_registry(service).tools(),
             *build_publication_tool_registry().tools(),
             *(
@@ -574,24 +582,13 @@ def build_general_epi_agent_registry(
     )
 
 
-def render_authoritative_study_design_context(
-    study: StudyBundle | None,
-) -> str:
-    if study is None or study.study_design is None:
-        return ""
-    render_context = getattr(study.study_design, "render_context", None)
-    if not callable(render_context):
-        return ""
-    context = str(render_context() or "").strip()
-    if not context:
-        return ""
-    identity = study.study_id
-    if study.package_version:
-        identity += f"@{study.package_version}"
-    return (
-        f"Authoritative study design for {identity} ({study.label}):\n"
-        f"{context}"
+def render_installed_study_directory(studies: StudyRegistry) -> str:
+    lines = ["Installed studies:"]
+    lines.extend(
+        f"- study_id: {study.study_id}; label: {study.label}"
+        for study in sorted(studies.values, key=lambda item: item.study_id)
     )
+    return "\n".join(lines)
 
 
 __all__ = [
@@ -603,5 +600,5 @@ __all__ = [
     "build_epi_agent_context_prompt",
     "build_general_epi_agent_graph",
     "build_general_epi_agent_registry",
-    "render_authoritative_study_design_context",
+    "render_installed_study_directory",
 ]

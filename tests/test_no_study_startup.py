@@ -433,14 +433,14 @@ class _StudyEvidenceModel:
                 content="",
                 tool_calls=[
                     {
-                        "name": "publication-search_study_evidence",
-                        "args": {"query": "tuberculosis", "limit": 5},
+                        "name": "search_studies",
+                        "args": {"offset": 0, "limit": 5},
                         "id": "call-1",
                         "type": "tool_call",
                     }
                 ],
             )
-        return AIMessage(content="Select a study first.")
+        return AIMessage(content="I inspected the available study overviews.")
 
 
 def _service(tmp_path: Path) -> AttachmentReaderService:
@@ -576,7 +576,7 @@ def test_study_evidence_tools_report_recoverable_no_study_error(
     assert error.value.recoverable is True
 
 
-def test_sole_study_is_used_as_the_default(tmp_path: Path) -> None:
+def test_sole_study_is_listed_without_injecting_its_overview(tmp_path: Path) -> None:
     model = _FinalModel()
     studies = StudyRegistry([_bundle("study-one", "sole-study-marker")])
     graph = build_general_epi_agent_graph(
@@ -596,13 +596,14 @@ def test_sole_study_is_used_as_the_default(tmp_path: Path) -> None:
     )
 
     assert result["final_response"] == "A generic epidemiology answer."
-    assert any(
-        "sole-study-marker" in str(getattr(message, "content", ""))
-        for message in model.messages
+    rendered = "\n".join(
+        str(getattr(message, "content", "")) for message in model.messages
     )
+    assert "study_id: study-one; label: study-one" in rendered
+    assert "sole-study-marker" not in rendered
 
 
-def test_explicit_active_study_selects_one_of_multiple_packages(
+def test_legacy_active_study_state_does_not_hide_other_packages(
     tmp_path: Path,
 ) -> None:
     model = _FinalModel()
@@ -633,11 +634,14 @@ def test_explicit_active_study_selects_one_of_multiple_packages(
         str(getattr(message, "content", ""))
         for message in model.messages
     ]
-    assert any("selected-study-marker" in message for message in rendered_messages)
-    assert all("first-study-marker" not in message for message in rendered_messages)
+    rendered = "\n".join(rendered_messages)
+    assert "study_id: study-one; label: study-one" in rendered
+    assert "study_id: study-two; label: study-two" in rendered
+    assert "selected-study-marker" not in rendered
+    assert "first-study-marker" not in rendered
 
 
-def test_multiple_studies_without_selection_report_selection_required(
+def test_multiple_studies_can_be_inspected_without_prior_selection(
     tmp_path: Path,
 ) -> None:
     model = _StudyEvidenceModel()
@@ -663,17 +667,16 @@ def test_multiple_studies_without_selection_report_selection_required(
         {"configurable": {"thread_id": "thread-1"}},
     )
 
-    assert result["final_response"] == "Select a study first."
+    assert result["final_response"] == "I inspected the available study overviews."
     tool_message = next(
         message for message in model.messages if isinstance(message, ToolMessage)
     )
-    error = json.loads(str(tool_message.content))["error"]
-    assert error["code"] == "ACTIVE_STUDY_SELECTION_REQUIRED"
-    assert error["recoverable"] is True
-    assert error["details"] == {
-        "available_study_ids": ["study-one", "study-two"]
-    }
-    assert "No study package is installed" not in error["message"]
+    model_observation = json.loads(str(tool_message.content))
+    directory = json.loads(model_observation["message"])
+    assert [study["study_id"] for study in directory["studies"]] == [
+        "study-one",
+        "study-two",
+    ]
 
 
 def test_multiple_installed_studies_report_selection_required_capabilities(
