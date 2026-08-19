@@ -35,3 +35,12 @@ def test_feature_smoke_is_executable_and_uses_real_production_boundaries() -> No
     )
     assert "Fake" not in source
     assert "monkeypatch" not in source
+
+
+def test_feature_smoke_prespecifies_ambiguous_analysis_definitions() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+
+    assert "HbA1c >= 6.5%" in source
+    assert "incomplete, bacteriologic failure, death, clinical failure" in source
+    assert '"follow-up. Use missed doses' in source
+    assert "last treatment follow-up record" in source

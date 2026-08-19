@@ -44,6 +44,9 @@ COMPILED_FRONTEND = REPO_ROOT / "frontend/dist"
 PLAN_QUERY = (
     "Using study_id report-india-synthetic, create one row per index case "
     "with smoking status, HbA1c, missed treatment doses, and final TB outcome. "
+    "Define high HbA1c as HbA1c >= 6.5%. Define poor outcome as treatment "
+    "incomplete, bacteriologic failure, death, clinical failure, or loss to "
+    "follow-up. Use missed doses from the last treatment follow-up record. "
     "Compare poor outcome rates between current smokers with high HbA1c and "
     "everyone else. Present the dataset plan for review before extraction."
 )
