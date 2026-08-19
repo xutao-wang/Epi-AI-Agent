@@ -107,8 +107,8 @@ study installation.
 
 ```bash
 PYTHONPATH=. .venv/bin/python scripts/smoke_multi_study_semantic_catalog.py \
-  --report-archive ../Database/report-india-synthetic/delivery/report-india-synthetic-0.3.0.tar.gz \
-  --nhanes-archive ../Database/nhanes-2017-2018/delivery/nhanes-2017-2018-0.1.0.tar.gz
+  --report-archive ../Database/report-india-synthetic/delivery/report-india-synthetic-0.3.1.tar.gz \
+  --nhanes-archive ../Database/nhanes-2017-2018/delivery/nhanes-2017-2018-0.2.0.tar.gz
 ```
 
 ## Safety note
