@@ -391,10 +391,10 @@ def _table_entry(chunk: Any) -> dict[str, Any]:
         "text": _as_text(_chunk_value(chunk, "text")),
     }
     metadata = _chunk_metadata(chunk)
-    for key in ("row_count", "subjid_col", "fid_col"):
+    for key in ("row_count", "seqn_col", "subjid_col", "fid_col"):
         if key in metadata:
             entry[key] = metadata[key]
-    for key in ("has_subjid_join", "has_fid_join"):
+    for key in ("has_seqn_join", "has_subjid_join", "has_fid_join"):
         if key in metadata:
             entry[key] = bool(metadata[key])
     return entry

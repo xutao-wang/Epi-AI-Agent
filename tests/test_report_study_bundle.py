@@ -289,8 +289,10 @@ def test_full_catalog_retains_table_profile_metadata() -> None:
                 "metadata": {
                     "table": "screening",
                     "row_count": 12,
+                    "seqn_col": "SEQN",
                     "subjid_col": "SUBJID_PSEUDO",
                     "fid_col": "FID_PSEUDO",
+                    "has_seqn_join": True,
                     "has_subjid_join": True,
                     "has_fid_join": True,
                 },
@@ -304,8 +306,10 @@ def test_full_catalog_retains_table_profile_metadata() -> None:
         "table": "screening",
         "text": "Table: screening",
         "row_count": 12,
+        "seqn_col": "SEQN",
         "subjid_col": "SUBJID_PSEUDO",
         "fid_col": "FID_PSEUDO",
+        "has_seqn_join": True,
         "has_subjid_join": True,
         "has_fid_join": True,
     }
