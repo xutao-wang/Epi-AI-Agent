@@ -69,20 +69,21 @@ def test_duckdb_study_source_caches_relationship_inventory(
     monkeypatch,
 ) -> None:
     inventory = object()
-    builds: list[Path] = []
+    builds: list[tuple[Path, dict[str, dict[str, str]] | None]] = []
 
-    def fake_build(path: Path):
-        builds.append(path)
+    def fake_build(path: Path, *, relationship_keys=None):
+        builds.append((path, relationship_keys))
         return inventory
 
     monkeypatch.setattr("db_rag.study.build_relationship_inventory", fake_build)
     database = tmp_path / "report.duckdb"
     database.touch()
-    source = DuckDbStudyDataSource(database)
+    keys = {"participants": {"report_participant": "SUBJID"}}
+    source = DuckDbStudyDataSource(database, relationship_keys=keys)
 
     assert source.relationship_inventory() is inventory
     assert source.relationship_inventory() is inventory
-    assert builds == [database]
+    assert builds == [(database, keys)]
 
 
 def test_markdown_publications_are_not_parsed(tmp_path: Path) -> None:

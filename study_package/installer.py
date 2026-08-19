@@ -13,6 +13,10 @@ import chromadb
 import duckdb
 
 from db_rag.local_knowledge import LocalPublicationKnowledge
+from db_rag.relationships import (
+    build_relationship_inventory,
+    catalog_relationship_keys,
+)
 from db_rag.study_design import LocalStudyDesign
 
 from .manifest import (
@@ -102,7 +106,7 @@ def _validate_duckdb(path: Path) -> None:
         raise ValueError("database.duckdb contains no tables")
 
 
-def _validate_catalog(path: Path) -> None:
+def _validate_catalog(path: Path) -> dict[str, object]:
     try:
         catalog = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -113,6 +117,7 @@ def _validate_catalog(path: Path) -> None:
         raise ValueError("database.catalog contains no tables")
     if not isinstance(catalog.get("columns"), list) or not catalog["columns"]:
         raise ValueError("database.catalog contains no columns")
+    return catalog
 
 
 def _validate_index(path: Path) -> None:
@@ -299,7 +304,11 @@ def validate_staged_package(
         resolved[field] = path
 
     _validate_duckdb(resolved["database.duckdb"])
-    _validate_catalog(resolved["database.catalog"])
+    catalog = _validate_catalog(resolved["database.catalog"])
+    build_relationship_inventory(
+        resolved["database.duckdb"],
+        relationship_keys=catalog_relationship_keys(catalog),
+    )
     _validate_index(resolved["database.index"])
     if manifest.knowledge is not None:
         _validate_knowledge(resolved["knowledge.root"])

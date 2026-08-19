@@ -19,12 +19,17 @@ from .catalog import SchemaCatalog, load_full_schema_catalog
 from .local_knowledge import LocalPublicationKnowledge
 from .study_design import LocalStudyDesign
 from .study_design_documents import MarkdownStudyDesign
-from .relationships import RelationshipInventory, build_relationship_inventory
+from .relationships import (
+    RelationshipInventory,
+    build_relationship_inventory,
+    catalog_relationship_keys,
+)
 
 
 @dataclass(frozen=True)
 class DuckDbStudyDataSource:
     path: Path
+    relationship_keys: dict[str, dict[str, str]] | None = None
 
     @cached_property
     def _relationship_inventory(self) -> RelationshipInventory:
@@ -33,7 +38,10 @@ class DuckDbStudyDataSource:
                 "The configured DuckDB study source is unavailable."
             )
         try:
-            return build_relationship_inventory(self.path)
+            return build_relationship_inventory(
+                self.path,
+                relationship_keys=self.relationship_keys,
+            )
         except duckdb.Error as error:
             raise StudySourceUnavailableError(
                 "The configured DuckDB study source could not be opened."
@@ -46,6 +54,7 @@ class DuckDbStudyDataSource:
 def build_study_bundle(package: InstalledStudy) -> StudyBundle:
     manifest = package.manifest
     paths = resolve_db_rag_runtime_paths(package.package_root, manifest)
+    catalog_data = load_full_schema_catalog(paths.catalog_path)
     knowledge = (
         LocalPublicationKnowledge.from_root(
             package.package_root / manifest.knowledge.root
@@ -69,11 +78,14 @@ def build_study_bundle(package: InstalledStudy) -> StudyBundle:
         label=manifest.label,
         knowledge=knowledge,
         catalog=SchemaCatalog(
-            load_full_schema_catalog(paths.catalog_path),
+            catalog_data,
             default_source_id=manifest.database.source_id,
         ),
         data_sources={
-            manifest.database.source_id: DuckDbStudyDataSource(paths.duckdb_path)
+            manifest.database.source_id: DuckDbStudyDataSource(
+                paths.duckdb_path,
+                relationship_keys=catalog_relationship_keys(catalog_data),
+            )
         },
         study_design=study_design,
         package_version=manifest.package_version,

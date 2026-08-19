@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict
 
 from .catalog import CATALOG_VERSION, load_full_schema_catalog
 from .config import DbRagRuntimePaths
-from .relationships import build_relationship_inventory
+from .relationships import build_relationship_inventory, catalog_relationship_keys
 
 
 class DbRagReadiness(BaseModel):
@@ -67,7 +67,10 @@ def resolve_db_rag_readiness(
             "DB-RAG dataset is not configured: the schema catalog is incomplete."
         )
     try:
-        inventory = build_relationship_inventory(paths.duckdb_path)
+        inventory = build_relationship_inventory(
+            paths.duckdb_path,
+            relationship_keys=catalog_relationship_keys(catalog),
+        )
     except (OSError, ValueError, duckdb.Error) as error:
         return _not_configured(
             f"DB-RAG dataset is not configured: the DuckDB database is unreadable ({error})."

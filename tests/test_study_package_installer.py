@@ -74,6 +74,32 @@ def test_stage_study_archive_copies_and_validates_real_package(tmp_path) -> None
     assert staged.archive_sha256 == expected_sha256
 
 
+def test_stage_rejects_declared_relationship_column_missing_from_duckdb(
+    tmp_path: Path,
+) -> None:
+    package_root = create_package_root(tmp_path / "source")
+    catalog_path = package_root / "database" / "schema_catalog.json"
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    catalog["tables"][0].update(
+        {"has_subjid_join": True, "subjid_col": "MISSING_SUBJID"}
+    )
+    catalog["columns"].append(
+        {
+            "table": "participants",
+            "column": "MISSING_SUBJID",
+            "text": "Broken declared key.",
+        }
+    )
+    catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+    archive = create_package_archive_from_root(
+        package_root,
+        tmp_path / "study.tar.gz",
+    )
+
+    with pytest.raises(ValueError, match="missing DuckDB column"):
+        stage_study_archive(archive, tmp_path / "runtime" / "studies")
+
+
 def test_installed_study_exposes_task_two_installation_identity() -> None:
     assert tuple(field.name for field in fields(InstalledStudy)) == (
         "study_id",

@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import json
+
 import db_rag.study as study_module
 from db_rag.study import build_study_bundle
 from study_package.installer import install_study_archives
-from tests.study_package_fixtures import create_package_archive, minimal_manifest
+from tests.study_package_fixtures import (
+    create_package_archive,
+    create_package_archive_from_root,
+    create_package_root,
+    minimal_manifest,
+)
 
 
 def _manifest_with_optional_capabilities(
@@ -52,6 +59,31 @@ def test_database_only_package_builds_minimal_study_bundle(tmp_path) -> None:
     )
     assert set(bundle.data_sources) == {"nondefault-source"}
     assert bundle.catalog.inspect_table("nondefault-source", "participants")
+
+
+def test_database_package_binds_catalog_relationship_keys(tmp_path) -> None:
+    package_root = create_package_root(tmp_path / "source")
+    catalog_path = package_root / "database" / "schema_catalog.json"
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    catalog["tables"][0].update(
+        {"has_subjid_join": True, "subjid_col": "SUBJID"}
+    )
+    catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+    archive = create_package_archive_from_root(
+        package_root,
+        tmp_path / "example-study.tar.gz",
+    )
+    installed = install_study_archives(
+        [archive],
+        tmp_path / "runtime" / "studies",
+    )[0]
+
+    bundle = build_study_bundle(installed)
+    source = bundle.data_sources["example-source"]
+
+    assert source.relationship_keys == {
+        "participants": {"report_participant": "SUBJID"}
+    }
 
 
 def test_knowledge_only_package_builds_knowledge_capability(tmp_path) -> None:
