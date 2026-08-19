@@ -5,8 +5,15 @@ import json
 import pytest
 
 from db_rag.catalog import SchemaEvidenceHit
-from epi_agent.artifacts import StateArtifactStore
+from epi_agent.artifacts import (
+    DatasetPlan,
+    DatasetPlanConcept,
+    PlanField,
+    PlanOperation,
+    StateArtifactStore,
+)
 from epi_agent.db_rag.prompt import DB_RAG_SYSTEM_PROMPT
+from epi_agent.db_rag.reviews import _plan_review_view
 from epi_agent.db_rag.tools import build_db_rag_tool_registry
 from epi_agent.protocol import ToolContext, ToolExecutionError
 from epi_agent.studies import StudyBundle, StudyRegistry
@@ -124,6 +131,101 @@ def _context(*studies: StudyBundle) -> ToolContext:
         thread_id="thread-1",
         policy=object(),
     )
+
+
+def _review_plan(study_id: str = "study-first") -> DatasetPlan:
+    return DatasetPlan(
+        study_id=study_id,
+        goal="Extract the requested field.",
+        row_definition="One row per participant.",
+        concepts=[
+            DatasetPlanConcept(
+                concept_id="requested_field",
+                label="Requested field",
+                retrieval_probe="requested field",
+                fields=[
+                    {
+                        "source": "study-first",
+                        "table": "FIRST_TABLE",
+                        "column": "FIRST_FIELD",
+                        "purpose": "analysis",
+                        "roles": ["requested"],
+                    }
+                ],
+            )
+        ],
+        required_fields=[
+            PlanField(
+                source="study-first",
+                table="FIRST_TABLE",
+                column="FIRST_FIELD",
+                purpose="identity",
+                roles={"identifier"},
+            )
+        ],
+        operations=[
+            PlanOperation(name="select", description="Select approved fields.")
+        ],
+    )
+
+
+def test_plan_review_resolves_join_paths_from_plan_study_in_multi_study_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _study(
+        "study-first",
+        _Catalog("study-first", "FIRST_TABLE", "FIRST_FIELD"),
+    )
+    second = _study(
+        "study-second",
+        _Catalog("study-second", "SECOND_TABLE", "SECOND_FIELD"),
+    )
+    observed: list[str] = []
+
+    def verified_join_paths(plan: DatasetPlan, study: StudyBundle):
+        observed.append(study.study_id)
+        assert plan.study_id == "study-first"
+        assert set(study.data_sources) == {"study-first"}
+        return []
+
+    monkeypatch.setattr(
+        "epi_agent.db_rag.tools._verified_join_paths",
+        verified_join_paths,
+    )
+
+    view = _plan_review_view(
+        _review_plan(),
+        context=_context(first, second),
+        plan_id="plan-1",
+        version=1,
+    )
+
+    assert observed == ["study-first"]
+    assert view["joins"] == []
+
+
+def test_plan_review_rejects_unavailable_plan_study() -> None:
+    context = _context(
+        _study(
+            "study-first",
+            _Catalog("study-first", "FIRST_TABLE", "FIRST_FIELD"),
+        ),
+        _study(
+            "study-second",
+            _Catalog("study-second", "SECOND_TABLE", "SECOND_FIELD"),
+        ),
+    )
+
+    with pytest.raises(ToolExecutionError) as raised:
+        _plan_review_view(
+            _review_plan("missing-study"),
+            context=context,
+            plan_id="plan-1",
+            version=1,
+        )
+
+    assert raised.value.code == "STUDY_NOT_AVAILABLE"
+    assert raised.value.recoverable is True
 
 
 def test_catalog_search_scopes_each_call_and_emits_structured_refs() -> None:

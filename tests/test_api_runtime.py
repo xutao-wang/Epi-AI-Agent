@@ -11,9 +11,11 @@ import pandas as pd
 import pytest
 import sqlite3
 from httpx import ReadTimeout, Request, Response
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
-from langgraph.graph import END, START, StateGraph
+from langgraph.graph import END, START, MessagesState, StateGraph
+from langgraph.graph.message import add_messages
 from langgraph.types import Command, interrupt
 from openai import (
     APIConnectionError,
@@ -35,6 +37,7 @@ from api.runtime import (
 )
 from api.auth import AuthenticatedUser, RequestIdentity
 from api.conversation_history import ConversationHistoryStore
+from epi_agent import tool_call_protocol
 from api.schemas import (
     ApiThreadState,
     ResumeInterruptRequest,
@@ -1491,6 +1494,176 @@ def test_runtime_later_submit_sends_message_and_event_log_delta() -> None:
         event["type"]
         for event in payload["artifacts"]["conversation_events"]
     ] == ["user"]
+
+
+def _assistant_tool_calls(*call_ids: str) -> AIMessage:
+    return AIMessage(
+        content="",
+        id="assistant-tools",
+        tool_calls=[
+            {
+                "name": f"tool_{index}",
+                "args": {},
+                "id": call_id,
+                "type": "tool_call",
+            }
+            for index, call_id in enumerate(call_ids, start=1)
+        ],
+    )
+
+
+def test_orphan_repair_inserts_only_missing_result_before_later_human() -> None:
+    existing_result = ToolMessage(
+        content="ok",
+        tool_call_id="call-1",
+        name="tool_1",
+    )
+    messages = [
+        HumanMessage(content="first", id="user-1"),
+        _assistant_tool_calls("call-1", "call-2"),
+        existing_result,
+        HumanMessage(content="already appended", id="user-2"),
+    ]
+
+    repair = tool_call_protocol.repair_orphaned_tool_calls(messages)
+
+    assert repair.repaired_call_ids == ("call-2",)
+    assert [type(message) for message in repair.messages] == [
+        HumanMessage,
+        AIMessage,
+        ToolMessage,
+        ToolMessage,
+        HumanMessage,
+    ]
+    assert repair.messages[2] is existing_result
+    inserted = repair.messages[3]
+    assert isinstance(inserted, ToolMessage)
+    assert inserted.tool_call_id == "call-2"
+    assert json.loads(str(inserted.content))["error"]["code"] == (
+        "INTERNAL_TOOL_ERROR"
+    )
+
+
+def test_orphan_repair_is_idempotent() -> None:
+    first = tool_call_protocol.repair_orphaned_tool_calls(
+        [_assistant_tool_calls("call-1")]
+    )
+    second = tool_call_protocol.repair_orphaned_tool_calls(first.messages)
+
+    assert first.repaired_call_ids == ("call-1",)
+    assert second.repaired_call_ids == ()
+    assert second.messages == first.messages
+
+
+def test_runtime_later_submit_atomically_repairs_orphan_before_follow_up() -> None:
+    legacy = [
+        HumanMessage(content="first", id="user-1"),
+        _assistant_tool_calls("orphan-call"),
+    ]
+    graph = _RuntimeFakeGraph(
+        SimpleNamespace(
+            values={
+                "messages": legacy,
+                "meta": {"last_user_message_hash": "prior-turn"},
+                "terminal_error": {
+                    "code": "RUN_FAILED",
+                    "message": "The prior request failed.",
+                },
+            },
+            next=(),
+            interrupts=[],
+        )
+    )
+    runner = _RecordingRunner()
+    runtime = _runtime(graph, runner=runner)
+
+    runtime.submit_message(
+        _LOCAL_IDENTITY,
+        "thread-1",
+        "Who are you?",
+        provider_api_key="test-key",
+    )
+
+    patch = runner.background_calls[0]["initial_payload"]
+    merged = add_messages(legacy, patch["messages"])
+    assert [type(message) for message in merged] == [
+        HumanMessage,
+        AIMessage,
+        ToolMessage,
+        HumanMessage,
+    ]
+    assert merged[2].tool_call_id == "orphan-call"
+    assert merged[3].content == "Who are you?"
+    assert patch["terminal_error"] is None
+
+
+def test_active_interrupt_is_blocked_before_orphan_repair() -> None:
+    graph = _RuntimeFakeGraph(
+        SimpleNamespace(
+            values={"messages": [_assistant_tool_calls("active-review-call")]},
+            next=("tools",),
+            interrupts=[
+                SimpleNamespace(
+                    id="interrupt-1",
+                    value={"type": "dataset_plan_review"},
+                )
+            ],
+        )
+    )
+    runner = _RecordingRunner()
+    runtime = _runtime(graph, runner=runner)
+
+    with pytest.raises(ThreadAwaitingReviewError):
+        runtime.submit_message(
+            _LOCAL_IDENTITY,
+            "thread-1",
+            "Continue",
+            provider_api_key="test-key",
+        )
+
+    assert runner.background_calls == []
+
+
+def test_repaired_follow_up_sequence_is_durable_and_provider_valid() -> None:
+    legacy = [
+        HumanMessage(content="first", id="user-1"),
+        _assistant_tool_calls("orphan-call"),
+    ]
+    follow_up = HumanMessage(content="Who are you?", id="user-2")
+    merged = add_messages(
+        legacy,
+        tool_call_protocol.follow_up_message_patch(legacy, follow_up),
+    )
+
+    def model_node(state: MessagesState) -> dict[str, list[AIMessage]]:
+        messages = list(state["messages"])
+        assert [type(message) for message in messages] == [
+            HumanMessage,
+            AIMessage,
+            ToolMessage,
+            HumanMessage,
+        ]
+        assert messages[2].tool_call_id == "orphan-call"
+        return {"messages": [AIMessage(content="Follow-up succeeded")]}
+
+    builder = StateGraph(MessagesState)
+    builder.add_node("model", model_node)
+    builder.add_edge(START, "model")
+    builder.add_edge("model", END)
+    graph = builder.compile(checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "repair-thread"}}
+
+    graph.invoke({"messages": merged}, config)
+    durable = list(graph.get_state(config).values["messages"])
+
+    assert [type(message) for message in durable] == [
+        HumanMessage,
+        AIMessage,
+        ToolMessage,
+        HumanMessage,
+        AIMessage,
+    ]
+    assert durable[-1].content == "Follow-up succeeded"
 
 
 def test_runtime_resume_interrupt_sends_command_resume_payload() -> None:

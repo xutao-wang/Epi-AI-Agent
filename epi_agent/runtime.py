@@ -36,6 +36,12 @@ from epi_agent.protocol import (
 )
 from epi_agent.registry import ToolRegistry
 from epi_agent.studies import StudyRegistry
+from epi_agent.tool_call_protocol import (
+    aborted_tool_messages,
+    error_tool_message,
+    internal_tool_error,
+    tool_error_content as _tool_error_content,
+)
 from graph.conversation_events import (
     append_conversation_event,
     build_assistant_event,
@@ -45,7 +51,7 @@ from graph.conversation_events import (
 from graph.state import LangChainAgentState
 from graph.state import MetaKeys
 from utils.model_runtime_profiles import ModelRuntimeProfile
-from utils.run_cancellation import cancellation_point
+from utils.run_cancellation import RunCancelled, cancellation_point
 from utils.runtime_defaults import DEFAULT_EPI_AGENT_MAX_ITERATIONS
 
 
@@ -142,17 +148,6 @@ def _failure_signature(code: str, name: str, arguments: dict[str, Any]) -> str:
         default=str,
         sort_keys=True,
     )
-
-
-def _tool_error_content(error: ToolExecutionError) -> str:
-    error_payload: dict[str, Any] = {
-        "code": error.code,
-        "message": str(error),
-        "recoverable": error.recoverable,
-    }
-    if error.details is not None:
-        error_payload["details"] = error.details
-    return json.dumps({"error": error_payload}, sort_keys=True)
 
 
 def _failure_record(signature: str) -> dict[str, Any]:
@@ -876,7 +871,7 @@ def _execute_tools(
     terminal_error: dict[str, Any] | None = None
     clarification_exchanges: list[dict[str, str]] = []
     tool_state_patch: dict[str, Any] = {}
-    for call in calls:
+    for call_index, call in enumerate(calls):
         cancellation_point()
         name = call["name"]
         arguments = call["args"]
@@ -899,14 +894,8 @@ def _execute_tools(
                     "executed": False,
                 },
             )
-            messages.append(
-                ToolMessage(
-                    content=_tool_error_content(error),
-                    tool_call_id=call["id"],
-                    name=name,
-                    status="error",
-                )
-            )
+            messages.append(error_tool_message(call, error))
+            messages.extend(aborted_tool_messages(calls[call_index + 1 :]))
             terminal_error = _terminal_error(error.code, str(error))
             break
         try:
@@ -928,7 +917,7 @@ def _execute_tools(
                 )
             finally:
                 cancellation_point()
-        except GraphInterrupt:
+        except (GraphInterrupt, RunCancelled):
             raise
         except ToolExecutionError as error:
             if (
@@ -954,16 +943,12 @@ def _execute_tools(
                     recoverable=error.recoverable,
                     details=details,
                 )
-            messages.append(
-                ToolMessage(
-                    content=_tool_error_content(error),
-                    tool_call_id=call["id"],
-                    name=name,
-                    status="error",
-                )
-            )
+            messages.append(error_tool_message(call, error))
             failures.append(_failure_signature(error.code, name, arguments))
             if not error.recoverable:
+                messages.extend(
+                    aborted_tool_messages(calls[call_index + 1 :])
+                )
                 terminal_error = _terminal_error(error.code, str(error))
                 break
             if activity_started:
@@ -974,6 +959,21 @@ def _execute_tools(
                     call["id"],
                 )
             continue
+        except Exception:
+            _LOGGER.exception(
+                "Unexpected registered tool failure",
+                extra={
+                    "tool_name": name,
+                    "tool_call_id": str(call["id"]),
+                    "thread_id": thread_id,
+                },
+            )
+            error = internal_tool_error()
+            messages.append(error_tool_message(call, error))
+            messages.extend(aborted_tool_messages(calls[call_index + 1 :]))
+            failures.append(_failure_signature(error.code, name, arguments))
+            terminal_error = _terminal_error(error.code, str(error))
+            break
 
         notify_activity(
             agent_config.activity_sink,

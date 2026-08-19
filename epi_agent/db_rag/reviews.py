@@ -26,6 +26,7 @@ from epi_agent.protocol import (
     ToolResult,
     ToolSpec,
     ToolTerminalControl,
+    require_context_study,
 )
 
 
@@ -466,6 +467,7 @@ def _data_linkage_payload(
     plan: DatasetPlan,
     context: ToolContext,
 ) -> dict[str, Any]:
+    study = require_context_study(context, plan.study_id)
     relationships: list[dict[str, Any]] = []
     shown_edges: set[tuple[str, str, tuple[tuple[str, str], ...]]] = set()
     for value in plan.operations:
@@ -544,7 +546,7 @@ def _data_linkage_payload(
     try:
         from epi_agent.db_rag.tools import _verified_join_paths
 
-        for edge in _verified_join_paths(plan, context):
+        for edge in _verified_join_paths(plan, study):
             profile = edge.get("profile")
             key_pairs = list(edge.get("key_pairs") or [])
             edge_key = (
@@ -603,7 +605,7 @@ def _data_linkage_payload(
                     }
                 )
             relationships.append(relationship)
-    except (ToolExecutionError, KeyError, ValueError):
+    except (KeyError, ValueError):
         pass
     return {"relationships": relationships}
 
