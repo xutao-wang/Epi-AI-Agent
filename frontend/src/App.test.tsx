@@ -1263,6 +1263,324 @@ describe("App", () => {
     ).toBeInTheDocument();
   });
 
+  it("ignores a late state response from a previously selected conversation", async () => {
+    const stateA = deferred<Response>();
+    const stateB = deferred<Response>();
+    const summaries = [
+      {
+        thread_id: "thread-a",
+        title: "Thread A",
+        title_source: "automatic",
+        model_name: "gpt-5.6-terra",
+        created_at: "2026-08-19T00:00:00+00:00",
+        updated_at: "2026-08-19T00:00:00+00:00",
+        last_opened_at: null,
+        archived_at: null,
+        awaiting_review: false,
+      },
+      {
+        thread_id: "thread-b",
+        title: "Thread B",
+        title_source: "automatic",
+        model_name: "gpt-5.6-terra",
+        created_at: "2026-08-19T00:00:00+00:00",
+        updated_at: "2026-08-19T00:00:00+00:00",
+        last_opened_at: null,
+        archived_at: null,
+        awaiting_review: false,
+      },
+    ];
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "http://api.test/api/runtime/options") {
+        return Promise.resolve(runtimeOptionsResponse());
+      }
+      if (url === "http://api.test/api/conversations") {
+        return Promise.resolve(jsonResponse({ items: summaries }));
+      }
+      if (url === "http://api.test/api/threads/thread-a/state") {
+        return stateA.promise;
+      }
+      if (url === "http://api.test/api/threads/thread-b/state") {
+        return stateB.promise;
+      }
+      if (url === "http://api.test/api/conversations/thread-a/open") {
+        return Promise.resolve(jsonResponse(summaries[0]));
+      }
+      if (url === "http://api.test/api/conversations/thread-b/open") {
+        return Promise.resolve(jsonResponse(summaries[1]));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+
+    render(<App apiBase="http://api.test" fetchImpl={fetchMock} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Thread A" }));
+    fireEvent.click(screen.getByRole("button", { name: "Thread B" }));
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Loading selected conversation",
+    );
+
+    await act(async () => {
+      stateB.resolve(jsonResponse(threadState({
+        thread_id: "thread-b",
+        conversation: [{ id: "b-user", role: "user", text: "Message B" }],
+      })));
+    });
+    expect(await screen.findByText("Message B")).toBeInTheDocument();
+
+    await act(async () => {
+      stateA.resolve(jsonResponse(threadState({
+        thread_id: "thread-a",
+        conversation: [{ id: "a-user", role: "user", text: "Who are you" }],
+      })));
+    });
+
+    expect(screen.queryByText("Who are you")).not.toBeInTheDocument();
+    expect(screen.getByText("Message B")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Thread B" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+  });
+
+  it("ignores a message response after the user switches conversations", async () => {
+    const submitA = deferred<Response>();
+    const summaries = [
+      {
+        thread_id: "thread-a",
+        title: "Submit Thread A",
+        title_source: "automatic",
+        model_name: "gpt-5.6-terra",
+        created_at: "2026-08-19T00:00:00+00:00",
+        updated_at: "2026-08-19T00:00:00+00:00",
+        last_opened_at: null,
+        archived_at: null,
+        awaiting_review: false,
+      },
+      {
+        thread_id: "thread-b",
+        title: "Submit Thread B",
+        title_source: "automatic",
+        model_name: "gpt-5.6-terra",
+        created_at: "2026-08-19T00:00:00+00:00",
+        updated_at: "2026-08-19T00:00:00+00:00",
+        last_opened_at: null,
+        archived_at: null,
+        awaiting_review: false,
+      },
+    ];
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "http://api.test/api/runtime/options") {
+        return Promise.resolve(runtimeOptionsResponse());
+      }
+      if (url === "http://api.test/api/conversations") {
+        return Promise.resolve(jsonResponse({ items: summaries }));
+      }
+      if (url === "http://api.test/api/threads/thread-a/state") {
+        return Promise.resolve(jsonResponse(threadState({
+          thread_id: "thread-a",
+          conversation: [{ id: "a-original", role: "user", text: "Original A" }],
+        })));
+      }
+      if (url === "http://api.test/api/threads/thread-b/state") {
+        return Promise.resolve(jsonResponse(threadState({
+          thread_id: "thread-b",
+          conversation: [{ id: "b-original", role: "user", text: "Original B" }],
+        })));
+      }
+      if (
+        url === "http://api.test/api/threads/thread-a/messages" &&
+        init?.method === "POST"
+      ) {
+        return submitA.promise;
+      }
+      if (url.endsWith("/open")) {
+        return Promise.resolve(jsonResponse(
+          url.includes("thread-a") ? summaries[0] : summaries[1],
+        ));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+
+    render(<App apiBase="http://api.test" fetchImpl={fetchMock} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Submit Thread A" }));
+    expect(await screen.findByText("Original A")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Ask a question about your dataset!"), {
+      target: { value: "Continue A" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    fireEvent.click(screen.getByRole("button", { name: "Submit Thread B" }));
+    expect(await screen.findByText("Original B")).toBeInTheDocument();
+
+    await act(async () => {
+      submitA.resolve(jsonResponse(threadState({
+        thread_id: "thread-a",
+        conversation: [{ id: "a-late", role: "user", text: "Late A" }],
+      })));
+    });
+
+    expect(screen.queryByText("Late A")).not.toBeInTheDocument();
+    expect(screen.getByText("Original B")).toBeInTheDocument();
+  });
+
+  it("keeps a resumed review response attached to its owning conversation", async () => {
+    const resumeA = deferred<Response>();
+    const summaries = [
+      {
+        thread_id: "thread-a",
+        title: "Review Thread A",
+        title_source: "automatic",
+        model_name: "gpt-5.6-terra",
+        created_at: "2026-08-19T00:00:00+00:00",
+        updated_at: "2026-08-19T00:00:00+00:00",
+        last_opened_at: null,
+        archived_at: null,
+        awaiting_review: true,
+      },
+      {
+        thread_id: "thread-b",
+        title: "Review Thread B",
+        title_source: "automatic",
+        model_name: "gpt-5.6-terra",
+        created_at: "2026-08-19T00:00:00+00:00",
+        updated_at: "2026-08-19T00:00:00+00:00",
+        last_opened_at: null,
+        archived_at: null,
+        awaiting_review: false,
+      },
+    ];
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "http://api.test/api/runtime/options") {
+        return Promise.resolve(runtimeOptionsResponse());
+      }
+      if (url === "http://api.test/api/conversations") {
+        return Promise.resolve(jsonResponse({ items: summaries }));
+      }
+      if (url === "http://api.test/api/threads/thread-a/state") {
+        return Promise.resolve(jsonResponse({ ...reviewState(), thread_id: "thread-a" }));
+      }
+      if (url === "http://api.test/api/threads/thread-b/state") {
+        return Promise.resolve(jsonResponse(threadState({
+          thread_id: "thread-b",
+          conversation: [{ id: "b-review", role: "user", text: "Safe Thread B" }],
+        })));
+      }
+      if (
+        url === "http://api.test/api/threads/thread-a/interrupts/interrupt-1/resume" &&
+        init?.method === "POST"
+      ) {
+        return resumeA.promise;
+      }
+      if (url.endsWith("/open")) {
+        return Promise.resolve(jsonResponse(
+          url.includes("thread-a") ? summaries[0] : summaries[1],
+        ));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+
+    render(<App apiBase="http://api.test" fetchImpl={fetchMock} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Review Thread A" }));
+    expect(
+      await screen.findByText(
+        "This conversation was previously paused and is awaiting your review.",
+      ),
+    ).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel review" }));
+    fireEvent.click(screen.getByRole("button", { name: "Review Thread B" }));
+    expect(await screen.findByText("Safe Thread B")).toBeInTheDocument();
+
+    await act(async () => {
+      resumeA.resolve(jsonResponse(threadState({
+        thread_id: "thread-a",
+        conversation: [{ id: "a-resumed", role: "user", text: "Resumed A" }],
+      })));
+    });
+
+    expect(screen.queryByText("Resumed A")).not.toBeInTheDocument();
+    expect(screen.getByText("Safe Thread B")).toBeInTheDocument();
+  });
+
+  it("ignores a cancellation response after switching conversations", async () => {
+    const cancelA = deferred<Response>();
+    const summaries = [
+      {
+        thread_id: "thread-a",
+        title: "Running Thread A",
+        title_source: "automatic",
+        model_name: "gpt-5.6-terra",
+        created_at: "2026-08-19T00:00:00+00:00",
+        updated_at: "2026-08-19T00:00:00+00:00",
+        last_opened_at: null,
+        archived_at: null,
+        awaiting_review: false,
+      },
+      {
+        thread_id: "thread-b",
+        title: "Idle Thread B",
+        title_source: "automatic",
+        model_name: "gpt-5.6-terra",
+        created_at: "2026-08-19T00:00:00+00:00",
+        updated_at: "2026-08-19T00:00:00+00:00",
+        last_opened_at: null,
+        archived_at: null,
+        awaiting_review: false,
+      },
+    ];
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "http://api.test/api/runtime/options") {
+        return Promise.resolve(runtimeOptionsResponse());
+      }
+      if (url === "http://api.test/api/conversations") {
+        return Promise.resolve(jsonResponse({ items: summaries }));
+      }
+      if (url === "http://api.test/api/threads/thread-a/state") {
+        return Promise.resolve(jsonResponse(threadState({
+          thread_id: "thread-a",
+          run: { state: "running", steps: 1, error: null },
+          conversation: [{ id: "a-running", role: "user", text: "Running A" }],
+        })));
+      }
+      if (url === "http://api.test/api/threads/thread-b/state") {
+        return Promise.resolve(jsonResponse(threadState({
+          thread_id: "thread-b",
+          conversation: [{ id: "b-idle", role: "user", text: "Idle B" }],
+        })));
+      }
+      if (
+        url === "http://api.test/api/threads/thread-a/cancel" &&
+        init?.method === "POST"
+      ) {
+        return cancelA.promise;
+      }
+      if (url.endsWith("/open")) {
+        return Promise.resolve(jsonResponse(
+          url.includes("thread-a") ? summaries[0] : summaries[1],
+        ));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+
+    render(<App apiBase="http://api.test" fetchImpl={fetchMock} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Running Thread A" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel run" }));
+    fireEvent.click(screen.getByRole("button", { name: "Idle Thread B" }));
+    expect(await screen.findByText("Idle B")).toBeInTheDocument();
+
+    await act(async () => {
+      cancelA.resolve(jsonResponse(threadState({
+        thread_id: "thread-a",
+        conversation: [{ id: "a-cancelled", role: "user", text: "Cancelled A" }],
+      })));
+    });
+
+    expect(screen.queryByText("Cancelled A")).not.toBeInTheDocument();
+    expect(screen.getByText("Idle B")).toBeInTheDocument();
+  });
+
   it("deletes an open saved conversation and returns to a blank conversation", async () => {
     const savedThreadId = "thread-saved";
     vi.spyOn(window, "confirm").mockReturnValue(true);

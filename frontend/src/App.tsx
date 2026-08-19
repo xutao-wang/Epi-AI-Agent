@@ -155,6 +155,8 @@ export default function App({
   const savedConversationsRequestRef = useRef(0);
   const savedConversationsMutationRef = useRef(0);
   const pollGenerationRef = useRef(0);
+  const selectionGenerationRef = useRef(0);
+  const selectedThreadIdRef = useRef<string | null>(null);
   const [threadId, setThreadId] = useState<string | null>(null);
   const fetchAttachmentBlob = useCallback(
     (attachmentId: string) => {
@@ -194,6 +196,10 @@ export default function App({
   const [isModelLockHintVisible, setIsModelLockHintVisible] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState(false);
+  const [isLoadingConversation, setIsLoadingConversation] = useState(false);
+  const [restoredReviewThreadId, setRestoredReviewThreadId] = useState<
+    string | null
+  >(null);
   const authenticatedEmail =
     typeof authenticatedUser?.profile.email === "string"
       ? authenticatedUser.profile.email
@@ -330,6 +336,30 @@ export default function App({
     setState(nextState);
   }
 
+  function applyOwnedThreadState(
+    ownerThreadId: string,
+    generation: number,
+    nextState: ApiThreadState,
+  ): boolean {
+    if (
+      selectionGenerationRef.current !== generation ||
+      selectedThreadIdRef.current !== ownerThreadId
+    ) {
+      return false;
+    }
+    if (nextState.thread_id !== ownerThreadId) {
+      setState(null);
+      setError(
+        "The selected conversation returned mismatched thread data. Please try again.",
+      );
+      setIsLoadingConversation(false);
+      return false;
+    }
+    applyThreadState(nextState);
+    setIsLoadingConversation(false);
+    return true;
+  }
+
   async function refreshSavedConversations(): Promise<ConversationSummary[] | null> {
     const requestId = savedConversationsRequestRef.current + 1;
     savedConversationsRequestRef.current = requestId;
@@ -356,11 +386,46 @@ export default function App({
   }
 
   async function openConversation(nextThreadId: string) {
+    const generation = selectionGenerationRef.current + 1;
+    selectionGenerationRef.current = generation;
+    pollGenerationRef.current += 1;
+    selectedThreadIdRef.current = nextThreadId;
+    setThreadId(nextThreadId);
+    setState(null);
+    setPendingUserMessage(null);
+    setSubmittedClarifications({});
+    setError(null);
+    setRunFailureMessage(null);
+    setIsSubmitting(false);
+    setIsResuming(false);
+    setIsCancelling(false);
+    setIsUploadingAttachments(false);
+    setIsLoadingConversation(true);
+    setRestoredReviewThreadId(nextThreadId);
     try {
       const nextState = await apiClient.getThreadState(nextThreadId);
-      setThreadId(nextThreadId);
-      applyThreadState(nextState);
+      if (!applyOwnedThreadState(nextThreadId, generation, nextState)) {
+        return;
+      }
+    } catch (openError) {
+      if (
+        selectionGenerationRef.current === generation &&
+        selectedThreadIdRef.current === nextThreadId
+      ) {
+        setState(null);
+        setIsLoadingConversation(false);
+        setError(errorMessage(openError));
+      }
+      return;
+    }
+    try {
       const opened = await apiClient.markConversationOpened(nextThreadId);
+      if (
+        selectionGenerationRef.current !== generation ||
+        selectedThreadIdRef.current !== nextThreadId
+      ) {
+        return;
+      }
       setSavedConversations((current) =>
         current.map((item) =>
           item.thread_id === nextThreadId ? opened : item,
@@ -369,7 +434,12 @@ export default function App({
       void refreshSavedConversations();
       setError(null);
     } catch (openError) {
-      setError(errorMessage(openError));
+      if (
+        selectionGenerationRef.current === generation &&
+        selectedThreadIdRef.current === nextThreadId
+      ) {
+        setError(errorMessage(openError));
+      }
     }
   }
 
@@ -450,6 +520,7 @@ export default function App({
     }
 
     const activeThreadId = threadId;
+    const selectionGeneration = selectionGenerationRef.current;
     let timeoutId: number | undefined;
     let isCancelled = false;
     const generation = pollGenerationRef.current + 1;
@@ -462,14 +533,27 @@ export default function App({
           return;
         }
 
-        applyThreadState(nextState);
+        if (
+          !applyOwnedThreadState(
+            activeThreadId,
+            selectionGeneration,
+            nextState,
+          )
+        ) {
+          return;
+        }
         setError(null);
 
         if (nextState.run.state === "running") {
           timeoutId = window.setTimeout(pollOnce, POLL_INTERVAL_MS);
         }
       } catch (pollError) {
-        if (!isCancelled && pollGenerationRef.current === generation) {
+        if (
+          !isCancelled &&
+          pollGenerationRef.current === generation &&
+          selectionGenerationRef.current === selectionGeneration &&
+          selectedThreadIdRef.current === activeThreadId
+        ) {
           setError(errorMessage(pollError));
           timeoutId = window.setTimeout(pollOnce, POLL_INTERVAL_MS);
         }
@@ -489,18 +573,24 @@ export default function App({
 
   async function handleRequestError(
     requestError: unknown,
-    activeThreadId: string,
+    ownerThreadId: string,
+    generation: number,
   ) {
     if (requestError instanceof ApiError && requestError.status === 409) {
       try {
-        const refreshedState = await apiClient.getThreadState(activeThreadId);
-        applyThreadState(refreshedState);
+        const refreshedState = await apiClient.getThreadState(ownerThreadId);
+        applyOwnedThreadState(ownerThreadId, generation, refreshedState);
       } catch {
         // Keep the original conflict visible if the refresh also fails.
       }
     }
 
-    setError(errorMessage(requestError));
+    if (
+      selectionGenerationRef.current === generation &&
+      selectedThreadIdRef.current === ownerThreadId
+    ) {
+      setError(errorMessage(requestError));
+    }
   }
 
   async function ensureThread() {
@@ -520,6 +610,10 @@ export default function App({
       });
 
     const nextThreadId = await createThreadPromiseRef.current;
+    if (!selectedThreadIdRef.current) {
+      selectionGenerationRef.current += 1;
+      selectedThreadIdRef.current = nextThreadId;
+    }
     setThreadId(nextThreadId);
     return nextThreadId;
   }
@@ -564,6 +658,7 @@ export default function App({
     setPendingUserMessage(optimisticMessage);
     setMessage("");
     let activeThreadId: string | null = null;
+    let generation: number | null = null;
     try {
       activeThreadId = await ensureThread();
       if (!activeThreadId) {
@@ -571,13 +666,16 @@ export default function App({
         setMessage(text);
         return;
       }
+      generation = selectionGenerationRef.current;
 
       const nextState = await apiClient.submitMessage(
         activeThreadId,
         text,
         attachmentIds,
       );
-      applyThreadState(nextState);
+      if (!applyOwnedThreadState(activeThreadId, generation, nextState)) {
+        return;
+      }
       if (loadConversationHistory) {
         setTitlePollingThreadId(activeThreadId);
       }
@@ -585,15 +683,31 @@ export default function App({
       setAttachmentErrors([]);
       setError(null);
     } catch (submitError) {
-      setPendingUserMessage(null);
-      setMessage(text);
-      if (activeThreadId) {
-        await handleRequestError(submitError, activeThreadId);
+      if (
+        activeThreadId &&
+        generation !== null &&
+        selectionGenerationRef.current === generation &&
+        selectedThreadIdRef.current === activeThreadId
+      ) {
+        setPendingUserMessage(null);
+        setMessage(text);
+        await handleRequestError(submitError, activeThreadId, generation);
       } else {
-        setError(errorMessage(submitError));
+        if (!activeThreadId) {
+          setPendingUserMessage(null);
+          setMessage(text);
+          setError(errorMessage(submitError));
+        }
       }
     } finally {
-      setIsSubmitting(false);
+      if (
+        !activeThreadId ||
+        generation === null ||
+        (selectionGenerationRef.current === generation &&
+          selectedThreadIdRef.current === activeThreadId)
+      ) {
+        setIsSubmitting(false);
+      }
     }
   }
 
@@ -603,12 +717,20 @@ export default function App({
     }
     setIsUploadingAttachments(true);
     let activeThreadId: string | null = null;
+    let generation: number | null = null;
     try {
       activeThreadId = await ensureThread();
       if (!activeThreadId) {
         return;
       }
+      generation = selectionGenerationRef.current;
       const result = await apiClient.uploadAttachments(activeThreadId, files);
+      if (
+        selectionGenerationRef.current !== generation ||
+        selectedThreadIdRef.current !== activeThreadId
+      ) {
+        return;
+      }
       setStagedAttachments((current) => {
         const byId = new Map(
           [...current, ...result.attachments].map((item) => [item.id, item]),
@@ -624,13 +746,20 @@ export default function App({
       ]);
       setError(null);
     } catch (uploadError) {
-      if (activeThreadId) {
-        await handleRequestError(uploadError, activeThreadId);
+      if (activeThreadId && generation !== null) {
+        await handleRequestError(uploadError, activeThreadId, generation);
       } else {
         setError(errorMessage(uploadError));
       }
     } finally {
-      setIsUploadingAttachments(false);
+      if (
+        !activeThreadId ||
+        generation === null ||
+        (selectionGenerationRef.current === generation &&
+          selectedThreadIdRef.current === activeThreadId)
+      ) {
+        setIsUploadingAttachments(false);
+      }
     }
   }
 
@@ -638,14 +767,22 @@ export default function App({
     if (!threadId || isBusy) {
       return;
     }
+    const ownerThreadId = threadId;
+    const generation = selectionGenerationRef.current;
     try {
-      await apiClient.discardStagedAttachment(threadId, attachmentId);
+      await apiClient.discardStagedAttachment(ownerThreadId, attachmentId);
+      if (
+        selectionGenerationRef.current !== generation ||
+        selectedThreadIdRef.current !== ownerThreadId
+      ) {
+        return;
+      }
       setStagedAttachments((current) =>
         current.filter((attachment) => attachment.id !== attachmentId),
       );
       setError(null);
     } catch (removeError) {
-      await handleRequestError(removeError, threadId);
+      await handleRequestError(removeError, ownerThreadId, generation);
     }
   }
 
@@ -664,22 +801,28 @@ export default function App({
     event.currentTarget.form?.requestSubmit();
   }
 
-  async function resumeActiveInterrupt(payload: ResumeInterruptPayload) {
-    const interruptId = state?.active_interrupt?.id;
+  async function resumeActiveInterrupt(
+    ownerThreadId: string,
+    ownerInterruptId: string,
+    payload: ResumeInterruptPayload,
+  ) {
     if (
-      !threadId ||
-      !interruptId ||
+      selectedThreadIdRef.current !== ownerThreadId ||
+      state?.thread_id !== ownerThreadId ||
+      state.active_interrupt?.id !== ownerInterruptId ||
       isSubmitting ||
       isResuming ||
       state?.run.state === "running"
     ) {
       return;
     }
+    const generation = selectionGenerationRef.current;
+    const interruptAtSubmission = state.active_interrupt;
 
     const activeClarification =
       payload.action === "answer" &&
-      state.active_interrupt?.type === "agent_clarification"
-        ? state.active_interrupt
+      interruptAtSubmission.type === "agent_clarification"
+        ? interruptAtSubmission
         : null;
     const submittedClarification = activeClarification
       ? {
@@ -703,22 +846,32 @@ export default function App({
     setIsResuming(true);
     try {
       const nextState = await apiClient.resumeInterrupt(
-        threadId,
-        interruptId,
+        ownerThreadId,
+        ownerInterruptId,
         payload,
       );
-      applyThreadState(nextState);
-      setError(null);
+      if (applyOwnedThreadState(ownerThreadId, generation, nextState)) {
+        setError(null);
+      }
     } catch (resumeError) {
-      if (submittedClarification) {
+      if (
+        submittedClarification &&
+        selectionGenerationRef.current === generation &&
+        selectedThreadIdRef.current === ownerThreadId
+      ) {
         setSubmittedClarifications((current) => {
           const { [submittedClarification.interrupt_id]: _removed, ...pending } = current;
           return pending;
         });
       }
-      await handleRequestError(resumeError, threadId);
+      await handleRequestError(resumeError, ownerThreadId, generation);
     } finally {
-      setIsResuming(false);
+      if (
+        selectionGenerationRef.current === generation &&
+        selectedThreadIdRef.current === ownerThreadId
+      ) {
+        setIsResuming(false);
+      }
     }
   }
 
@@ -728,16 +881,23 @@ export default function App({
     }
 
     const activeThreadId = threadId;
+    const generation = selectionGenerationRef.current;
     pollGenerationRef.current += 1;
     setIsCancelling(true);
     try {
       const nextState = await apiClient.cancelRun(activeThreadId);
-      applyThreadState(nextState);
-      setError(null);
+      if (applyOwnedThreadState(activeThreadId, generation, nextState)) {
+        setError(null);
+      }
     } catch (cancelError) {
-      await handleRequestError(cancelError, activeThreadId);
+      await handleRequestError(cancelError, activeThreadId, generation);
     } finally {
-      setIsCancelling(false);
+      if (
+        selectionGenerationRef.current === generation &&
+        selectedThreadIdRef.current === activeThreadId
+      ) {
+        setIsCancelling(false);
+      }
     }
   }
 
@@ -747,7 +907,9 @@ export default function App({
     }
 
     createThreadPromiseRef.current = null;
+    selectionGenerationRef.current += 1;
     pollGenerationRef.current += 1;
+    selectedThreadIdRef.current = null;
     setThreadId(null);
     setState(null);
     setMessage("");
@@ -758,6 +920,8 @@ export default function App({
     setAttachmentErrors([]);
     setIsUploadingAttachments(false);
     setIsCancelling(false);
+    setIsLoadingConversation(false);
+    setRestoredReviewThreadId(null);
     setSubmittedClarifications({});
     setIsModelLockHintVisible(false);
   }
@@ -780,6 +944,7 @@ export default function App({
     isResuming ||
     isCancelling ||
     isUploadingAttachments ||
+    isLoadingConversation ||
     isRunInFlight;
   const isComposerDisabled =
     !runtimeOptions || isBusy || isAwaitingHumanReview;
@@ -862,13 +1027,16 @@ export default function App({
     if (!threadId) {
       return null;
     }
+    const ownerThreadId = threadId;
+    const onResume = (payload: ResumeInterruptPayload) =>
+      resumeActiveInterrupt(ownerThreadId, interrupt.id, payload);
     switch (interrupt.type) {
       case "dataset_plan_review":
         return (
           <DbRagReview
             disabled={isBusy}
             interrupt={interrupt}
-            onDecision={resumeActiveInterrupt}
+            onDecision={onResume}
           />
         );
       case "dataset_review":
@@ -877,7 +1045,7 @@ export default function App({
             apiClient={apiClient}
             disabled={isBusy}
             interrupt={interrupt}
-            onResume={resumeActiveInterrupt}
+            onResume={onResume}
             threadId={threadId}
           />
         );
@@ -887,7 +1055,7 @@ export default function App({
             apiClient={apiClient}
             disabled={isBusy}
             interrupt={interrupt}
-            onResume={resumeActiveInterrupt}
+            onResume={onResume}
             threadId={threadId}
           />
         );
@@ -896,7 +1064,7 @@ export default function App({
           <Clarification
             disabled={isBusy}
             interrupt={interrupt}
-            onResume={resumeActiveInterrupt}
+            onResume={onResume}
           />
         );
       case "model_output_limit":
@@ -904,7 +1072,7 @@ export default function App({
           <ModelOutputLimit
             disabled={isBusy}
             interrupt={interrupt}
-            onResume={resumeActiveInterrupt}
+            onResume={onResume}
           />
         );
       default:
@@ -953,6 +1121,11 @@ export default function App({
       }
       conversation={
         <>
+          {isLoadingConversation ? (
+            <section className="conversation-loading" role="status">
+              Loading selected conversation…
+            </section>
+          ) : null}
           {error ? (
             <div className="error-banner" role="alert">
               {error}
@@ -1043,6 +1216,11 @@ export default function App({
             ) : null}
           </section>
 
+          {activeInterrupt && restoredReviewThreadId === threadId ? (
+            <p className="restored-review-notice">
+              This conversation was previously paused and is awaiting your review.
+            </p>
+          ) : null}
           {activeInterrupt ? renderActiveInterrupt(activeInterrupt) : null}
           {optimisticClarifications.length ? (
             <ClarificationTrace exchanges={optimisticClarifications} />

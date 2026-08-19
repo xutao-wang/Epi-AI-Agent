@@ -275,6 +275,21 @@ select {
   padding: 0.3rem 0.45rem;
 }
 
+.conversation-loading,
+.restored-review-notice {
+  margin: 0 0 1rem;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  background: #f6f8fa;
+  color: #24292f;
+  padding: 0.75rem 1rem;
+}
+
+.restored-review-notice {
+  border-color: #d4a72c;
+  background: #fff8c5;
+}
+
 .conversation-history-tooltip,
 .composer-model-lock-popover {
   position: absolute;
