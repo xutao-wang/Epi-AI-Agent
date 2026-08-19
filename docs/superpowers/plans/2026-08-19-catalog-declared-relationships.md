@@ -464,7 +464,7 @@ git commit -m "fix: restrict relationships to catalog keys"
 - Modify: `study_package/installer.py`
 - Modify: `tests/test_report_study_bundle.py`
 - Modify: `tests/test_installed_study_bundle.py`
-- Modify: `tests/test_db_rag_readiness.py`
+- Modify: `tests/test_db_rag_relationship_readiness.py`
 - Modify: `tests/test_study_package_installer.py`
 
 **Interfaces:**
@@ -606,7 +606,7 @@ Run:
 ```bash
 .venv/bin/python -m pytest \
   tests/test_report_study_bundle.py \
-  tests/test_db_rag_readiness.py \
+  tests/test_db_rag_relationship_readiness.py \
   tests/test_study_package_installer.py -vv
 ```
 
@@ -680,7 +680,7 @@ Run:
 ```bash
 .venv/bin/python -m pytest \
   tests/test_report_study_bundle.py \
-  tests/test_db_rag_readiness.py \
+  tests/test_db_rag_relationship_readiness.py \
   tests/test_study_package_installer.py -vv
 ```
 
@@ -693,7 +693,7 @@ Run:
 ```bash
 .venv/bin/python -m pytest \
   tests/test_multi_study_db_rag_tools.py \
-  tests/test_db_rag_agent_reviews.py \
+  tests/test_db_rag_agent_tools.py \
   tests/test_installed_study_bundle.py -q
 ```
 
@@ -709,7 +709,7 @@ git add \
   db_rag/readiness.py \
   study_package/installer.py \
   tests/test_report_study_bundle.py \
-  tests/test_db_rag_readiness.py \
+  tests/test_db_rag_relationship_readiness.py \
   tests/test_study_package_installer.py \
   tests/test_installed_study_bundle.py
 git commit -m "fix: bind relationships to study catalogs"
@@ -861,11 +861,11 @@ Run:
 .venv/bin/python -m pytest \
   tests/test_db_rag_relationships.py \
   tests/test_report_study_bundle.py \
-  tests/test_db_rag_readiness.py \
+  tests/test_db_rag_relationship_readiness.py \
   tests/test_study_package_installer.py \
   tests/test_installed_study_bundle.py \
   tests/test_multi_study_db_rag_tools.py \
-  tests/test_db_rag_agent_reviews.py -q
+  tests/test_db_rag_agent_tools.py -q
 ```
 
 Expected: all selected tests pass.

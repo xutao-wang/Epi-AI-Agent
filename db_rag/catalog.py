@@ -396,7 +396,10 @@ def _table_entry(chunk: Any) -> dict[str, Any]:
             entry[key] = metadata[key]
     for key in ("has_seqn_join", "has_subjid_join", "has_fid_join"):
         if key in metadata:
-            entry[key] = bool(metadata[key])
+            value = metadata[key]
+            if not isinstance(value, bool):
+                raise ValueError(f"{key} must be a boolean")
+            entry[key] = value
     return entry
 
 

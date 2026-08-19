@@ -4,6 +4,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from db_rag import vectorstore
 from db_rag.catalog import (
     SchemaCatalog,
@@ -313,6 +315,26 @@ def test_full_catalog_retains_table_profile_metadata() -> None:
         "has_subjid_join": True,
         "has_fid_join": True,
     }
+
+
+@pytest.mark.parametrize("value", ["false", 1, None])
+def test_full_catalog_rejects_non_boolean_relationship_flags(value: object) -> None:
+    with pytest.raises(ValueError, match="has_seqn_join must be a boolean"):
+        build_full_schema_catalog(
+            table_chunks=[
+                {
+                    "id": "screening.summary",
+                    "text": "Table: screening",
+                    "metadata": {
+                        "table": "screening",
+                        "seqn_col": "SEQN",
+                        "has_seqn_join": value,
+                    },
+                }
+            ],
+            column_chunks=[],
+            source_fingerprint="schema-fingerprint",
+        )
 
 
 def test_build_chroma_keeps_publication_chunks_in_separate_collection(
