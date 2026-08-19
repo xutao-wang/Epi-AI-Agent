@@ -25,6 +25,7 @@ class ConversationSummary:
     updated_at: str
     last_opened_at: str | None = None
     archived_at: str | None = None
+    awaiting_review: bool = False
 
 
 class ConversationHistoryStore:

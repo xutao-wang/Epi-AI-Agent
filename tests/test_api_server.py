@@ -1314,6 +1314,7 @@ def test_conversation_history_routes_list_and_rename() -> None:
 
     assert listed.status_code == 200
     assert listed.json()["items"][0]["title"] == "TB analysis"
+    assert listed.json()["items"][0]["awaiting_review"] is False
     assert renamed.status_code == 200
     assert renamed.json()["title"] == "TB survival"
     assert opened.status_code == 200

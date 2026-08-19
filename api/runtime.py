@@ -5,7 +5,7 @@ from copy import deepcopy
 import csv
 from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import hashlib
 import io
 import inspect
@@ -2164,9 +2164,39 @@ class ReportAgentApiRuntime:
         self._activity_call("finish", thread_id, "cancelled")
         return self.state(identity, thread_id)
 
+    def _conversation_awaiting_review(
+        self,
+        identity: RequestIdentity,
+        thread_id: str,
+    ) -> bool:
+        try:
+            thread = self._require_owned_thread(identity, thread_id)
+            snapshot = self._snapshot(identity, thread_id, thread)
+            if snapshot is None:
+                return False
+            return _active_interrupt(snapshot, _projection_values(snapshot)) is not None
+        except Exception:
+            _LOGGER.exception(
+                "Conversation review status projection failed",
+                extra={"thread_id": thread_id},
+            )
+            return False
+
     def list_conversations(self, identity: RequestIdentity | None = None):
         owner_user_id = identity.owner_user_id if identity is not None else "local-user"
-        return self.history_store.list(owner_user_id) if self.history_store else []
+        items = self.history_store.list(owner_user_id) if self.history_store else []
+        if identity is None:
+            return items
+        return [
+            replace(
+                item,
+                awaiting_review=self._conversation_awaiting_review(
+                    identity,
+                    item.thread_id,
+                ),
+            )
+            for item in items
+        ]
 
     def rename_conversation(
         self,

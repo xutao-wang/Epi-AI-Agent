@@ -601,6 +601,41 @@ def test_runtime_history_operations_are_scoped_to_request_identity(tmp_path: Pat
     assert history_store.get("user-a", "thread-a").title == "Owned title"
 
 
+def test_list_conversations_marks_only_owning_thread_as_awaiting_review(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = _identity("owner-a")
+    history_store = ConversationHistoryStore(tmp_path / "history.db")
+    history_store.create("owner-a", "thread-a", model_name="gpt-5.4")
+    history_store.create("owner-a", "thread-b", model_name="gpt-5.4")
+    runtime = ReportAgentApiRuntime(
+        graph_factory=_RecordingGraphFactory(),
+        default_runtime_settings=_DEFAULT_RUNTIME_SETTINGS,
+        models=["gpt-5.4"],
+        runtime_root=tmp_path / "runtime",
+        checkpoint_path=tmp_path / "checkpoints.db",
+        history_store=history_store,
+    )
+    snapshots = {
+        "thread-a": _plan_review_snapshot(),
+        "thread-b": SimpleNamespace(values={}, next=(), interrupts=[]),
+    }
+    monkeypatch.setattr(
+        runtime,
+        "_snapshot",
+        lambda _identity, thread_id, _thread: snapshots[thread_id],
+    )
+
+    summaries = {
+        item.thread_id: item
+        for item in runtime.list_conversations(identity)
+    }
+
+    assert summaries["thread-a"].awaiting_review is True
+    assert summaries["thread-b"].awaiting_review is False
+
+
 def test_runtime_keeps_same_thread_id_isolated_by_owner_before_graph_access(
     tmp_path: Path,
 ) -> None:
