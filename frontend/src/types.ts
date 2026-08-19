@@ -118,6 +118,7 @@ export interface ConversationSummary {
   updated_at: string;
   last_opened_at: string | null;
   archived_at: string | null;
+  awaiting_review: boolean;
 }
 
 export interface ConversationAttachment {

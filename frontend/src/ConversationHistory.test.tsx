@@ -14,6 +14,7 @@ const item = {
   updated_at: "2026-07-30T00:00:00+00:00",
   last_opened_at: "2026-07-30T18:24:00+00:00",
   archived_at: null,
+  awaiting_review: false,
 };
 
 
@@ -140,5 +141,39 @@ describe("ConversationHistory", () => {
 
     expect(screen.getByRole("button", { name: `Archive ${item.title}` })).toBeDisabled();
     expect(screen.getByRole("button", { name: `Delete ${item.title}` })).toBeDisabled();
+  });
+
+  it("labels only the conversation that is awaiting review", () => {
+    render(
+      <ConversationHistory
+        activeThreadId={null}
+        items={[
+          {
+            ...item,
+            thread_id: "thread-a",
+            title: "Thread A",
+            awaiting_review: true,
+          },
+          {
+            ...item,
+            thread_id: "thread-b",
+            title: "Thread B",
+          },
+        ]}
+        onOpen={vi.fn()}
+        onRename={vi.fn()}
+        onArchive={vi.fn()}
+        onRestore={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Awaiting review")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Thread A" }).parentElement,
+    ).toHaveTextContent("Awaiting review");
+    expect(
+      screen.getByRole("button", { name: "Thread B" }).parentElement,
+    ).not.toHaveTextContent("Awaiting review");
   });
 });

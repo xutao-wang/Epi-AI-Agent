@@ -122,6 +122,14 @@ export default function ConversationHistory({
                   >
                     {item.title}
                   </button>
+                  {item.awaiting_review ? (
+                    <span
+                      aria-label={`${item.title} is awaiting review`}
+                      className="conversation-history-review-status"
+                    >
+                      Awaiting review
+                    </span>
+                  ) : null}
                   {visitedTooltipThreadId === item.thread_id ? (
                     <span
                       className="conversation-history-tooltip"

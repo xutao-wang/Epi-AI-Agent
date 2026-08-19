@@ -263,6 +263,18 @@ select {
   min-width: 0;
 }
 
+.conversation-history-review-status {
+  display: inline-flex;
+  margin-top: 0.25rem;
+  border-radius: 999px;
+  background: #fff4d6;
+  color: #7a4b00;
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0.3rem 0.45rem;
+}
+
 .conversation-history-tooltip,
 .composer-model-lock-popover {
   position: absolute;
