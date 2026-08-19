@@ -26,6 +26,8 @@ class IdentifierProfile(BaseModel):
 class TableRelationshipInventory(BaseModel):
     table: str
     row_count: int
+    columns: list[str]
+    relationship_keys: dict[str, str]
     identifier_columns: list[str]
     identifiers: dict[str, IdentifierProfile]
 
@@ -100,6 +102,17 @@ def catalog_relationship_keys(
     }
 
 
+def _domains_for_column(
+    table: TableRelationshipInventory,
+    column: str,
+) -> set[str]:
+    return {
+        domain
+        for domain, declared_column in table.relationship_keys.items()
+        if declared_column == column
+    }
+
+
 def _nonnull_condition(alias: str, columns: list[str]) -> str:
     return " AND ".join(
         f"{alias}.{_quote_identifier(column)} IS NOT NULL" for column in columns
@@ -135,12 +148,18 @@ class RelationshipInventory:
         right = self.require_table(right_table)
         left_columns = [pair[0] for pair in key_pairs]
         right_columns = [pair[1] for pair in key_pairs]
-        missing_left = [column for column in left_columns if column not in left.identifiers]
-        missing_right = [column for column in right_columns if column not in right.identifiers]
-        if missing_left or missing_right:
+        undeclared_or_incompatible = [
+            (left_column, right_column)
+            for left_column, right_column in key_pairs
+            if not (
+                _domains_for_column(left, left_column)
+                & _domains_for_column(right, right_column)
+            )
+        ]
+        if undeclared_or_incompatible:
             raise KeyError(
-                "Relationship keys must be profiled identifier columns: "
-                f"left={missing_left}, right={missing_right}"
+                "Relationship keys must be compatible catalog-declared columns: "
+                f"{undeclared_or_incompatible}"
             )
 
         left_table_sql = _quote_identifier(left_table)
@@ -258,14 +277,22 @@ class RelationshipInventory:
             candidates: list[RelationshipProfile] = []
             for left_index, left in enumerate(self.tables):
                 for right in self.tables[left_index + 1 :]:
-                    shared_columns = sorted(
-                        set(left.identifier_columns) & set(right.identifier_columns)
+                    shared_domains = sorted(
+                        set(left.relationship_keys) & set(right.relationship_keys)
                     )
-                    for column in shared_columns:
+                    seen_pairs: set[tuple[str, str]] = set()
+                    for domain in shared_domains:
+                        pair = (
+                            left.relationship_keys[domain],
+                            right.relationship_keys[domain],
+                        )
+                        if pair in seen_pairs:
+                            continue
+                        seen_pairs.add(pair)
                         profile = self.profile_relationship(
                             left.table,
                             right.table,
-                            [(column, column)],
+                            [pair],
                         )
                         if profile.matched_keys:
                             candidates.append(profile)
@@ -344,9 +371,29 @@ def _reverse_profile(profile: RelationshipProfile) -> RelationshipProfile:
     )
 
 
-def build_relationship_inventory(duckdb_path: Path) -> RelationshipInventory:
+def build_relationship_inventory(
+    duckdb_path: Path,
+    *,
+    relationship_keys: Mapping[str, Mapping[str, str]] | None = None,
+) -> RelationshipInventory:
     path = Path(duckdb_path)
     tables: list[TableRelationshipInventory] = []
+    declared_relationship_keys: dict[str, dict[str, str]] = {}
+    for raw_table, raw_keys in (relationship_keys or {}).items():
+        table = _text(raw_table)
+        if not table:
+            raise ValueError("Catalog relationship declaration has a blank table")
+        table_keys: dict[str, str] = {}
+        for raw_domain, raw_column in raw_keys.items():
+            domain = _text(raw_domain)
+            column = _text(raw_column)
+            if not domain or not column:
+                raise ValueError(
+                    f"Catalog relationship declaration is incomplete for {table}"
+                )
+            table_keys[domain] = column
+        if table_keys:
+            declared_relationship_keys[table] = dict(sorted(table_keys.items()))
     with duckdb.connect(str(path), read_only=True) as connection:
         table_names = [
             str(row[0])
@@ -359,6 +406,12 @@ def build_relationship_inventory(duckdb_path: Path) -> RelationshipInventory:
                 """
             ).fetchall()
         ]
+        missing_tables = sorted(set(declared_relationship_keys) - set(table_names))
+        if missing_tables:
+            raise ValueError(
+                "Catalog relationship declaration references missing DuckDB "
+                f"table(s): {missing_tables}"
+            )
         for table_name in table_names:
             columns = [
                 str(row[0])
@@ -372,9 +425,20 @@ def build_relationship_inventory(duckdb_path: Path) -> RelationshipInventory:
                     [table_name],
                 ).fetchall()
             ]
-            identifier_columns = sorted(
-                column for column in columns if _is_identifier_column(column)
+            table_relationship_keys = declared_relationship_keys.get(table_name, {})
+            missing_columns = sorted(
+                {
+                    column
+                    for column in table_relationship_keys.values()
+                    if column not in columns
+                }
             )
+            if missing_columns:
+                raise ValueError(
+                    "Catalog relationship declaration references missing DuckDB "
+                    f"column(s) for {table_name}: {missing_columns}"
+                )
+            identifier_columns = sorted(set(table_relationship_keys.values()))
             table_sql = _quote_identifier(table_name)
             row_count = int(
                 connection.execute(f"SELECT COUNT(*) FROM {table_sql}").fetchone()[0]
@@ -400,6 +464,8 @@ def build_relationship_inventory(duckdb_path: Path) -> RelationshipInventory:
                 TableRelationshipInventory(
                     table=table_name,
                     row_count=row_count,
+                    columns=columns,
+                    relationship_keys=table_relationship_keys,
                     identifier_columns=identifier_columns,
                     identifiers=identifiers,
                 )
@@ -412,8 +478,13 @@ def profile_relationship(
     left_table: str,
     right_table: str,
     key_pairs: list[tuple[str, str]],
+    *,
+    relationship_keys: Mapping[str, Mapping[str, str]] | None = None,
 ) -> RelationshipProfile:
-    return build_relationship_inventory(duckdb_path).profile_relationship(
+    return build_relationship_inventory(
+        duckdb_path,
+        relationship_keys=relationship_keys,
+    ).profile_relationship(
         left_table,
         right_table,
         key_pairs,
@@ -427,8 +498,12 @@ def find_join_paths(
     *,
     max_hops: int = 3,
     max_paths: int = 20,
+    relationship_keys: Mapping[str, Mapping[str, str]] | None = None,
 ) -> list[JoinPath]:
-    return build_relationship_inventory(duckdb_path).find_join_paths(
+    return build_relationship_inventory(
+        duckdb_path,
+        relationship_keys=relationship_keys,
+    ).find_join_paths(
         left_table,
         right_table,
         max_hops=max_hops,
