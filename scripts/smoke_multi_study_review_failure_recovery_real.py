@@ -52,6 +52,9 @@ PLAN_QUERY = (
 )
 FOLLOW_UP = "Who are you? Reply in one short sentence."
 LEGACY_TITLE = "Legacy failed tool turn"
+LEGACY_USER_MESSAGE = (
+    "Create a dataset; preserve this deliberately failed legacy turn."
+)
 
 
 def _json_safe(value: Any) -> Any:
@@ -148,9 +151,7 @@ def _seed_legacy_orphan(environment: dict[str, str]) -> str:
     )
     graph, _runner = runtime._bound_graph(thread)
     user = HumanMessage(
-        content=(
-            "Create a dataset; preserve this deliberately failed legacy turn."
-        ),
+        content=LEGACY_USER_MESSAGE,
         id="legacy-user",
     )
     turn_hash = runtime._message_turn_hash(user)
@@ -533,6 +534,11 @@ def run(args: argparse.Namespace) -> int:
                 _write_page_artifacts(page, artifact_dir, "review")
 
                 page.get_by_text(LEGACY_TITLE, exact=True).click()
+                legacy_message = page.get_by_text(
+                    LEGACY_USER_MESSAGE,
+                    exact=True,
+                )
+                legacy_message.wait_for(timeout=_remaining_ms(deadline))
                 failed_timeline = page.get_by_label(
                     "Agent activity timeline",
                     exact=True,

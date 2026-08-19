@@ -44,3 +44,10 @@ def test_feature_smoke_prespecifies_ambiguous_analysis_definitions() -> None:
     assert "incomplete, bacteriologic failure, death, clinical failure" in source
     assert '"follow-up. Use missed doses' in source
     assert "last treatment follow-up record" in source
+
+
+def test_feature_smoke_waits_for_legacy_conversation_before_reading_timeline() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+
+    assert "LEGACY_USER_MESSAGE" in source
+    assert "legacy_message.wait_for" in source
