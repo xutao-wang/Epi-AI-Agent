@@ -1,7 +1,7 @@
 # Multi-Study Review and Tool-Failure Recovery Design
 
 Date: 2026-08-18
-Status: Approved in conversation; awaiting written-spec review
+Status: Approved
 
 ## Problem
 
