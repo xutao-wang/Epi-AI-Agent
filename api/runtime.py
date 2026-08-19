@@ -64,6 +64,7 @@ from api.schemas import (
 from api.activity_store import SqliteActivityStore
 from api.conversation_history import ConversationHistoryStore, OpenAIConversationTitleGenerator
 from epi_agent.analysis_artifacts import AnalysisRun
+from epi_agent.tool_call_protocol import follow_up_message_patch
 from graph.conversation_events import (
     append_conversation_event,
     build_attachment_event,
@@ -1732,7 +1733,10 @@ class ReportAgentApiRuntime:
             )
             if values:
                 payload = {
-                    "messages": [message],
+                    "messages": follow_up_message_patch(
+                        list(values.get("messages") or []),
+                        message,
+                    ),
                     "artifacts": event_state["artifacts"],
                     "meta": event_state["meta"],
                     "authorized_attachment_ids": authorized_attachment_ids,
