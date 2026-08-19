@@ -1,17 +1,19 @@
 from __future__ import annotations
 
-import re
 from collections import deque
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import duckdb
 from pydantic import BaseModel
 
 
-_IDENTIFIER_COLUMN = re.compile(
-    r"(?:^|_)[A-Z0-9]*ID[0-9]*(?:_PSEUDO)?$"
-)
+_RELATIONSHIP_FIELDS = {
+    "nhanes_respondent": ("has_seqn_join", "seqn_col"),
+    "report_participant": ("has_subjid_join", "subjid_col"),
+    "report_family": ("has_fid_join", "fid_col"),
+}
 
 
 class IdentifierProfile(BaseModel):
@@ -50,8 +52,52 @@ def _quote_identifier(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
 
 
-def _is_identifier_column(column: str) -> bool:
-    return _IDENTIFIER_COLUMN.search(column.upper()) is not None
+def _text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def catalog_relationship_keys(
+    catalog: Mapping[str, Any],
+) -> dict[str, dict[str, str]]:
+    """Return validated join-key declarations from a catalog-v1 payload."""
+
+    catalog_columns = {
+        (_text(row.get("table")), _text(row.get("column")))
+        for row in catalog.get("columns") or []
+        if isinstance(row, Mapping)
+        and _text(row.get("table"))
+        and _text(row.get("column"))
+    }
+    declared: dict[str, dict[str, str]] = {}
+    for raw_table in catalog.get("tables") or []:
+        if not isinstance(raw_table, Mapping):
+            continue
+        for domain, (enabled_field, column_field) in _RELATIONSHIP_FIELDS.items():
+            if raw_table.get(enabled_field) is not True:
+                continue
+            table = _text(raw_table.get("table"))
+            column = _text(raw_table.get(column_field))
+            if not table or not column:
+                raise ValueError(
+                    f"Incomplete catalog relationship declaration: {domain}"
+                )
+            if (table, column) not in catalog_columns:
+                raise ValueError(
+                    "Declared relationship key is not a catalog column: "
+                    f"{table}.{column}"
+                )
+            table_keys = declared.setdefault(table, {})
+            existing = table_keys.get(domain)
+            if existing is not None and existing != column:
+                raise ValueError(
+                    "Conflicting catalog relationship declaration: "
+                    f"{table}.{domain}"
+                )
+            table_keys[domain] = column
+    return {
+        table: dict(sorted(keys.items()))
+        for table, keys in sorted(declared.items())
+    }
 
 
 def _nonnull_condition(alias: str, columns: list[str]) -> str:
