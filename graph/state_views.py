@@ -6,17 +6,6 @@ from .conversation_events import ensure_conversation_state
 from .conversation_schema import JsonObject
 
 
-def _merge_dicts(base: dict | None, patch: dict | None) -> dict:
-    merged = dict(base or {})
-    for key, value in dict(patch or {}).items():
-        existing = merged.get(key)
-        if isinstance(existing, dict) and isinstance(value, dict):
-            merged[key] = _merge_dicts(existing, value)
-        else:
-            merged[key] = value
-    return merged
-
-
 def get_artifacts(state: dict) -> dict:
     validated_state = ensure_conversation_state(state)
     artifacts = dict(validated_state.get("artifacts") or {})
@@ -37,43 +26,3 @@ def get_artifact_files(state: dict) -> dict[str, JsonObject]:
     validated_state = ensure_conversation_state(state)
     artifacts = dict(validated_state.get("artifacts") or {})
     return deepcopy(dict(artifacts.get("files") or {}))
-
-
-def merge_state_patch(state: dict, patch: dict) -> dict:
-    updated = deepcopy(state)
-    for key, value in patch.items():
-        if key in {"artifacts", "node_data", "planner", "meta", "orchestrator"}:
-            updated[key] = _merge_dicts(updated.get(key), value)
-        else:
-            updated[key] = value
-
-    artifacts = dict(updated.get("artifacts") or {})
-    if artifacts:
-        updated = ensure_conversation_state(updated)
-        artifacts = dict(updated.get("artifacts") or {})
-    if artifacts:
-        output = dict(updated.get("output") or {})
-        if "generated_code" in artifacts:
-            output["generated_code"] = artifacts["generated_code"]
-        if "execution_output" in artifacts:
-            output["text"] = artifacts["execution_output"]
-        if "error" in artifacts:
-            output["error"] = artifacts["error"]
-        updated["output"] = output
-
-    node_data = dict(updated.get("node_data") or {})
-    if node_data:
-        agents = dict(updated.get("agents") or {})
-        for name, value in node_data.items():
-            agents[name] = _merge_dicts(agents.get(name), value)
-        updated["agents"] = agents
-
-    planner = dict(updated.get("planner") or {})
-    if planner:
-        updated["orchestrator"] = _merge_dicts(updated.get("orchestrator"), planner)
-        if "decision_trace" in planner:
-            orchestrator = dict(updated.get("orchestrator") or {})
-            orchestrator["thoughts"] = list(planner.get("decision_trace") or [])
-            updated["orchestrator"] = orchestrator
-
-    return updated

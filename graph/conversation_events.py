@@ -21,9 +21,8 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-# These helpers normalize and return a full state dict directly.
-# They intentionally avoid merge_state_patch so conversation event/file
-# containers stay explicit and JSON-only at the boundary.
+# These helpers normalize and return a full state dict directly so conversation
+# event and file containers stay explicit and JSON-only at the boundary.
 def _json_safe_value(value: object, path: str) -> JsonValue:
     if isinstance(value, bool) or value is None or isinstance(value, (str, int)):
         return value

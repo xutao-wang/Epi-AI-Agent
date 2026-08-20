@@ -69,11 +69,6 @@ class StudyRegistry:
     def ids(self) -> tuple[str, ...]:
         return tuple(sorted(self._studies))
 
-    def sole_study_id(self) -> str | None:
-        if len(self._studies) != 1:
-            return None
-        return next(iter(self._studies))
-
     def require(self, study_id: str) -> StudyBundle:
         try:
             return self._studies[study_id]

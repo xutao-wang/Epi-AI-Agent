@@ -2451,41 +2451,6 @@ def _plan_runtime_path(context: ToolContext, plan: DatasetPlan) -> Any:
     return path
 
 
-def _sql_error_code(error: ValueError) -> str:
-    message = str(error).casefold()
-    if (
-        "unapproved operation" in message
-        or "row-shaping" in message
-    ):
-        return "SQL_UNAPPROVED_OPERATION"
-    if (
-        "relation" in message
-        or "external scan" in message
-        or "table function" in message
-    ):
-        return "SQL_UNAPPROVED_RELATION"
-    if (
-        "unapproved output" in message
-        or "unapproved source field" in message
-        or "unapproved column" in message
-        or "unapproved table" in message
-        or "approved source column" in message
-        or "output alias" in message
-        or "projection source" in message
-        or "projection must include" in message
-    ):
-        return "SQL_UNAPPROVED_SCHEMA"
-    if (
-        "row filter" in message
-        or "row predicate" in message
-        or "filter boolean" in message
-    ):
-        return "SQL_UNAPPROVED_FILTER"
-    if "approved plan operation" in message or "approved plan" in message and "join" in message:
-        return "SQL_UNAPPROVED_OPERATION"
-    return "SQL_VALIDATION_FAILED"
-
-
 def _sql_repair_details(
     *,
     plan_id: str,

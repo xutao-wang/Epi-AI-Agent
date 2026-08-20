@@ -23,10 +23,27 @@ def test_retired_semantic_paths_are_absent() -> None:
         REPO_ROOT / "epi_agent" / "db_rag" / "graph.py",
         REPO_ROOT / "epi_agent" / "db_rag" / "state.py",
         REPO_ROOT / "prompts" / "planner_prompt.py",
+        REPO_ROOT / "scripts" / "smoke_report_study_scoping_real.py",
     ]
 
     assert [str(path.relative_to(REPO_ROOT)) for path in retired if path.exists()] == []
     assert list((REPO_ROOT / "graph" / "nodes").rglob("*.py")) == []
+
+
+def test_retired_orchestrator_and_fallback_helpers_are_absent() -> None:
+    forbidden = (
+        "def merge_state_patch(",
+        "def sole_study_id(",
+        "def _sql_error_code(",
+    )
+    offenders: list[str] = []
+    for root_name in ("db_rag", "epi_agent", "graph"):
+        for path in (REPO_ROOT / root_name).rglob("*.py"):
+            source = path.read_text(encoding="utf-8")
+            if any(token in source for token in forbidden):
+                offenders.append(str(path.relative_to(REPO_ROOT)))
+
+    assert offenders == []
 
 
 def test_production_has_no_import_or_runtime_reference_to_retired_agents() -> None:
