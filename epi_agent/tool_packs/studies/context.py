@@ -3,16 +3,15 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from epi_agent.runtime import ContextPromptError
 from epi_agent.studies import StudyBundle, StudyRegistry
 
 
 _MAX_ERROR_CHARS = 300
-_DEFAULT_MAX_CONTEXT_CHARS = 524_288
-_OPEN_TAG = "<installed_study_routing_context>"
-_CLOSE_TAG = "</installed_study_routing_context>"
+_DEFAULT_MAX_CONTEXT_CHARS = 262_144
 
 
-class StudyRoutingContextError(RuntimeError):
+class StudyRoutingContextError(ContextPromptError):
     """Installed study evidence cannot be represented safely."""
 
 
@@ -26,7 +25,7 @@ def _unavailable(study: StudyBundle, error: str) -> dict[str, Any]:
 
 
 def _entry(study: StudyBundle) -> dict[str, Any]:
-    provider = study.study_design
+    provider = study.study_overview
     render_context = getattr(provider, "render_context", None)
     if not callable(render_context):
         return _unavailable(
@@ -63,13 +62,12 @@ def render_installed_study_context(
             )
         ],
     }
-    rendered_payload = json.dumps(
+    rendered = json.dumps(
         payload,
         ensure_ascii=True,
         separators=(",", ":"),
         sort_keys=True,
     )
-    rendered = f"{_OPEN_TAG}\n{rendered_payload}\n{_CLOSE_TAG}"
     if len(rendered) > max_chars:
         raise StudyRoutingContextError(
             "Complete installed-study routing context exceeds the configured "

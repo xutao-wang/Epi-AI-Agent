@@ -66,13 +66,16 @@ def build_study_bundle(package: InstalledStudy) -> StudyBundle:
         study_design = LocalStudyDesign.from_path(
             package.package_root / manifest.study_design.document
         )
+        study_overview = None
     elif manifest.study_design is not None:
         study_design = MarkdownStudyDesign.from_package(
             package.package_root,
             manifest,
         )
+        study_overview = study_design
     else:
         study_design = None
+        study_overview = None
     return StudyBundle(
         study_id=manifest.study_id,
         label=manifest.label,
@@ -92,4 +95,5 @@ def build_study_bundle(package: InstalledStudy) -> StudyBundle:
         description=manifest.description,
         source_id=manifest.database.source_id,
         db_rag_paths=paths,
+        study_overview=study_overview,
     )

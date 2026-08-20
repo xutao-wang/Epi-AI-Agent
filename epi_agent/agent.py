@@ -506,7 +506,10 @@ def build_general_epi_agent_graph(
     def context_prompt_factory(state: dict[str, Any]) -> str:
         return build_epi_agent_context_prompt(
             state,
-            installed_study_context=render_installed_study_context(studies),
+            installed_study_context=render_installed_study_context(
+                studies,
+                max_chars=model_profile.routing_context_char_ceiling,
+            ),
         )
 
     return build_epi_agent_graph(

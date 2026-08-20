@@ -36,6 +36,7 @@ class ModelRuntimeProfile:
     absolute_output_token_ceiling: int
     request_timeout_seconds: int
     workflow_timeout_seconds: int
+    routing_context_char_ceiling: int
     output_usd_per_million: Decimal
 
     @property
@@ -88,6 +89,7 @@ MODEL_RUNTIME_PROFILES = {
         absolute_output_token_ceiling=24_576,
         request_timeout_seconds=120,
         workflow_timeout_seconds=300,
+        routing_context_char_ceiling=262_144,
         output_usd_per_million=Decimal("15"),
     ),
     "gpt-5.6-luna": ModelRuntimeProfile(
@@ -105,6 +107,7 @@ MODEL_RUNTIME_PROFILES = {
         absolute_output_token_ceiling=24_576,
         request_timeout_seconds=120,
         workflow_timeout_seconds=300,
+        routing_context_char_ceiling=262_144,
         output_usd_per_million=Decimal("1.20"),
     ),
     "gpt-5.6-terra": ModelRuntimeProfile(
@@ -120,6 +123,7 @@ MODEL_RUNTIME_PROFILES = {
         absolute_output_token_ceiling=49_152,
         request_timeout_seconds=180,
         workflow_timeout_seconds=420,
+        routing_context_char_ceiling=262_144,
         output_usd_per_million=Decimal("12"),
     ),
     "gpt-5.6-sol": ModelRuntimeProfile(
@@ -135,6 +139,7 @@ MODEL_RUNTIME_PROFILES = {
         absolute_output_token_ceiling=75_000,
         request_timeout_seconds=240,
         workflow_timeout_seconds=600,
+        routing_context_char_ceiling=262_144,
         output_usd_per_million=Decimal("30"),
     ),
 }
@@ -154,6 +159,7 @@ INTERNAL_MODEL_RUNTIME_PROFILES = {
         absolute_output_token_ceiling=24_576,
         request_timeout_seconds=120,
         workflow_timeout_seconds=300,
+        routing_context_char_ceiling=262_144,
         output_usd_per_million=Decimal("1.20"),
     ),
 }

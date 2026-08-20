@@ -443,13 +443,15 @@ def _bundle(study_id: str, marker: str) -> StudyBundle:
         def render_context(self) -> str:
             return marker
 
+    overview = _Design()
     return StudyBundle(
         study_id=study_id,
         label=study_id,
         knowledge=object(),
         catalog=None,
         data_sources={},
-        study_design=_Design(),
+        study_design=overview,
+        study_overview=overview,
     )
 
 
@@ -503,6 +505,43 @@ def test_generic_agent_completes_without_an_installed_study(tmp_path: Path) -> N
         str(getattr(message, "content", "")) for message in model.messages
     )
     assert '"study_count":0' in rendered
+
+
+def test_graph_uses_selected_model_routing_context_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[int] = []
+
+    def render_context(
+        _studies: StudyRegistry,
+        *,
+        max_chars: int,
+    ) -> str:
+        captured.append(max_chars)
+        return '{"study_count":0,"studies":[]}'
+
+    monkeypatch.setattr(
+        "epi_agent.agent.render_installed_study_context",
+        render_context,
+    )
+    profile = model_runtime_profile("gpt-5.4")
+    graph = build_general_epi_agent_graph(
+        llm=_FinalModel(),
+        model_profile=profile,
+        service=_service(tmp_path),
+        studies=StudyRegistry(),
+        runtime_root=tmp_path,
+        include_db_rag=False,
+        checkpointer=InMemorySaver(),
+    )
+
+    graph.invoke(
+        _state(),
+        {"configurable": {"thread_id": "thread-1"}},
+    )
+
+    assert captured == [profile.routing_context_char_ceiling]
 
 
 @pytest.mark.parametrize(

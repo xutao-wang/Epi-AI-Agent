@@ -99,6 +99,10 @@ ToolSuccessStateReducer = Callable[
 ]
 
 
+class ContextPromptError(RuntimeError):
+    """Dynamic model context cannot be constructed safely."""
+
+
 def _no_tool_success_state_patch(
     _state: dict[str, Any],
     _name: str,
@@ -282,7 +286,7 @@ def _model_output_error_patch(
 
 def _insert_context_before_latest_human(
     messages: list[Any],
-    context: SystemMessage,
+    context: HumanMessage,
 ) -> list[Any]:
     for index in range(len(messages) - 1, -1, -1):
         if isinstance(messages[index], HumanMessage):
@@ -319,11 +323,19 @@ def _prepare_model_request(
     output_state = dict(state.get("model_output_state") or {})
     phase = str(output_state.get("phase") or "idle")
     state_messages = list(state.get("messages") or [])
-    context_prompt = agent_config.context_prompt_factory(state).strip()
+    try:
+        context_prompt = agent_config.context_prompt_factory(state).strip()
+    except ContextPromptError as error:
+        return _terminal_model_patch(
+            _terminal_error(
+                "CONTEXT_CONFIGURATION_ERROR",
+                str(error),
+            )
+        )
     if context_prompt:
         state_messages = _insert_context_before_latest_human(
             state_messages,
-            SystemMessage(content=context_prompt),
+            HumanMessage(content=context_prompt),
         )
     continuation_messages: list[SystemMessage] = []
     if phase in {"automatic", "authorized"}:
@@ -1417,6 +1429,7 @@ def invoke_epi_agent(
 
 
 __all__ = [
+    "ContextPromptError",
     "EpiAgentRuntimeConfig",
     "GenericEpiAgentState",
     "analysis_completion_issues",

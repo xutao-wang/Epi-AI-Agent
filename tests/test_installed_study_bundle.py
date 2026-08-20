@@ -116,6 +116,7 @@ def test_design_only_package_builds_study_design_capability(tmp_path) -> None:
 
     assert bundle.knowledge is None
     assert bundle.study_design is not None
+    assert bundle.study_overview is None
     assert bundle.study_design.study_id == "example-study"
     assert bundle.study_design.source_path == (
         installed.package_root / "package-content" / "study-design.json"
@@ -165,6 +166,7 @@ def test_v3_markdown_package_builds_document_design_capability(tmp_path) -> None
     bundle = build_study_bundle(installed)
 
     assert bundle.study_design is not None
+    assert bundle.study_overview is bundle.study_design
     assert bundle.study_design.render_context() == (
         "# Overview\n\nAuthoritative Markdown."
     )

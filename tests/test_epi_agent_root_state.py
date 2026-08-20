@@ -15,6 +15,7 @@ from epi_agent.agent import (
 from epi_agent.protocol import ToolContext, ToolResult, ToolSpec
 from epi_agent.registry import ToolRegistry
 from epi_agent.runtime import (
+    ContextPromptError,
     EpiAgentRuntimeConfig,
     GenericEpiAgentState,
     build_epi_agent_graph,
@@ -66,6 +67,7 @@ def _runtime(
     *,
     model: Any,
     registry: ToolRegistry | None = None,
+    context_prompt_factory: Any | None = None,
 ) -> Any:
     studies = _studies()
     return build_epi_agent_graph(
@@ -83,7 +85,10 @@ def _runtime(
                 thread_id="thread-1",
                 policy=None,
             ),
-            context_prompt_factory=lambda _state: "Authorized artifact cards: []",
+            context_prompt_factory=(
+                context_prompt_factory
+                or (lambda _state: "Authorized artifact cards: []")
+            ),
         ),
     )
 
@@ -119,8 +124,30 @@ def test_root_runtime_records_final_answer_in_same_conversation_store() -> None:
     assert events[-1]["text"] == "Final epidemiology answer."
     assert result["final_response"] == "Final epidemiology answer."
     assert isinstance(model.observed_messages[0], SystemMessage)
-    assert isinstance(model.observed_messages[1], SystemMessage)
+    assert isinstance(model.observed_messages[1], HumanMessage)
     assert model.observed_messages[1].content == "Authorized artifact cards: []"
+
+
+def test_context_configuration_error_stops_before_the_model_call() -> None:
+    model = FinalModel()
+
+    def broken_context(_state: dict[str, Any]) -> str:
+        raise ContextPromptError("Installed-study routing context is too large.")
+
+    result = _runtime(
+        model=model,
+        context_prompt_factory=broken_context,
+    ).invoke(
+        _state(),
+        {"configurable": {"thread_id": "thread-1"}},
+    )
+
+    assert result["terminal_error"] == {
+        "code": "CONTEXT_CONFIGURATION_ERROR",
+        "message": "Installed-study routing context is too large.",
+        "recoverable": False,
+    }
+    assert model.observed_messages == []
 
 
 @dataclass(frozen=True)
@@ -436,9 +463,8 @@ def test_epi_context_prompt_omits_missing_card_timestamps() -> None:
 
 def test_epi_context_prompt_includes_installed_study_context() -> None:
     study_context = (
-        "<installed_study_routing_context>\n"
-        '{"study_count":0,"studies":[]}'
-        "\n</installed_study_routing_context>"
+        '{"context_kind":"installed_study_routing_evidence",'
+        '"study_count":0,"studies":[]}'
     )
     prompt = build_epi_agent_context_prompt(
         {"messages": []},
@@ -458,7 +484,7 @@ def test_study_context_is_sorted_and_reports_unavailable_overviews() -> None:
         )
     )
 
-    payload = json.loads(study_context.split("\n", 1)[1].rsplit("\n", 1)[0])
+    payload = json.loads(study_context)
     assert [study["study_id"] for study in payload["studies"]] == ["a", "z"]
     assert all(
         study["overview_available"] is False

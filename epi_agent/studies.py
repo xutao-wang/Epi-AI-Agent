@@ -44,6 +44,7 @@ class StudyBundle:
     description: str | None = None
     source_id: str = ""
     db_rag_paths: object | None = None
+    study_overview: StudyDesignProvider | None = None
 
 
 class StudyRegistry:
