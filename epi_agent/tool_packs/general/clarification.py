@@ -28,13 +28,6 @@ _AGENT_DELEGATION_OPTION_PATTERNS = (
         re.IGNORECASE,
     ),
 )
-_TECHNICAL_CLARIFICATION_PATTERN = re.compile(
-    r"\b(?:runtime|catalog|schema|table|column|field match|"
-    r"join key|linkage field|identifier|foreign key)\b",
-    re.IGNORECASE,
-)
-
-
 class ClarificationOptionArguments(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -99,22 +92,6 @@ def _is_agent_delegation_option(label: str) -> bool:
     )
 
 
-def _is_technical_clarification(
-    *,
-    question: str,
-    reason: str,
-    options: list[dict[str, Any]],
-) -> bool:
-    text = " ".join(
-        [
-            question,
-            reason,
-            *(str(option.get("label") or "") for option in options),
-        ]
-    )
-    return _TECHNICAL_CLARIFICATION_PATTERN.search(text) is not None
-
-
 class RequestClarificationTool:
     spec = ToolSpec(
         name="general-request_clarification",
@@ -138,21 +115,6 @@ class RequestClarificationTool:
         question = str(arguments["question"])
         reason = str(arguments.get("reason") or "")
         options = [dict(option) for option in list(arguments["options"])]
-        if _is_technical_clarification(
-            question=question,
-            reason=reason,
-            options=options,
-        ):
-            raise ToolExecutionError(
-                "TECHNICAL_CLARIFICATION_DEFERRED",
-                (
-                    "Technical schema-resolution questions cannot be sent to "
-                    "the user. Continue investigating with the catalog and "
-                    "relationship tools; report a technical failure only after "
-                    "the permitted checks are exhausted."
-                ),
-                recoverable=True,
-            )
         response = interrupt(
             {
                 "type": "agent_clarification",
