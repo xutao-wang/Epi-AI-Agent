@@ -4,7 +4,12 @@ from dataclasses import dataclass
 import json
 from typing import Any
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from pydantic import BaseModel
 
 from epi_agent.agent import (
@@ -20,10 +25,12 @@ from epi_agent.runtime import (
     GenericEpiAgentState,
     build_epi_agent_graph,
 )
+import epi_agent.runtime as runtime_module
 from epi_agent.studies import StudyBundle, StudyRegistry
 from epi_agent.tool_packs.studies import render_installed_study_context
 from graph.state import MetaKeys
 from utils.model_runtime_profiles import model_runtime_profile
+from llm_vllm import build_openai_llm
 
 
 class EmptyArguments(BaseModel):
@@ -148,6 +155,55 @@ def test_context_configuration_error_stops_before_the_model_call() -> None:
         "recoverable": False,
     }
     assert model.observed_messages == []
+
+
+def test_refreshed_context_survives_responses_api_history_compaction() -> None:
+    studies = _studies()
+    state = _state()
+    state["messages"] = [
+        HumanMessage(content="Original database question."),
+        AIMessage(
+            content="",
+            response_metadata={"id": "resp_previous"},
+            tool_calls=[
+                {
+                    "name": "db-tool",
+                    "args": {},
+                    "id": "call-1",
+                    "type": "tool_call",
+                }
+            ],
+        ),
+        ToolMessage(content="tool output", tool_call_id="call-1"),
+    ]
+    agent_config = EpiAgentRuntimeConfig(
+        model_profile=model_runtime_profile("gpt-5.4"),
+        agent_name="epi_agent",
+        system_prompt="Core instructions.",
+        registry=ToolRegistry(),
+        studies=studies,
+        context_factory=lambda state, _config, artifact_store: ToolContext(
+            studies=studies,
+            artifact_store=artifact_store,
+            thread_id="thread-1",
+            policy=None,
+        ),
+        context_prompt_factory=lambda _state: "fresh routing marker",
+    )
+
+    prepared = runtime_module._prepare_model_request(
+        state,
+        agent_config=agent_config,
+    )
+
+    assert not isinstance(prepared, dict)
+    request_messages = prepared[3]
+    payload = build_openai_llm(
+        model_name="gpt-5.4",
+        api_key="test-key",
+    )._get_request_payload(request_messages)
+    assert payload["previous_response_id"] == "resp_previous"
+    assert "fresh routing marker" in json.dumps(payload["input"])
 
 
 @dataclass(frozen=True)

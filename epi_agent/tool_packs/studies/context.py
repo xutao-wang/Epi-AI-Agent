@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from epi_agent.runtime import ContextPromptError
@@ -9,6 +10,7 @@ from epi_agent.studies import StudyBundle, StudyRegistry
 
 _MAX_ERROR_CHARS = 300
 _DEFAULT_MAX_CONTEXT_CHARS = 262_144
+_LOGGER = logging.getLogger(__name__)
 
 
 class StudyRoutingContextError(ContextPromptError):
@@ -34,8 +36,13 @@ def _entry(study: StudyBundle) -> dict[str, Any]:
         )
     try:
         overview = str(render_context() or "").strip()
-    except Exception as error:
-        return _unavailable(study, f"{type(error).__name__}: {error}")
+    except Exception:
+        _LOGGER.warning(
+            "Unable to render installed study overview for routing",
+            extra={"study_id": study.study_id},
+            exc_info=True,
+        )
+        return _unavailable(study, "overview_unreadable")
     if not overview:
         return _unavailable(study, "The installed study overview is empty.")
     return {

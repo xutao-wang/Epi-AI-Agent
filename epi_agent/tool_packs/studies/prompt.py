@@ -28,9 +28,12 @@ live labels with concise overview-derived scopes, and offer refinement to those
 scopes, installation of an appropriate package, upload of a relevant dataset,
 or a non-database question. If no study is installed, explicitly state that
 participant-database search and extraction are unavailable and do not invent
-choices. If overview evidence is unavailable and prevents a sound decision,
-explain the configuration problem and fail closed. Never inspect an unrelated
-catalog merely to search for a similarly named field.
+choices. If any installed study has overview_available=false, the complete
+zero/one/many comparison is impossible: call no study-dependent tool, explain
+which live study has unavailable routing evidence, and require that package
+configuration to be repaired before routing. Never prefer a study merely because
+its overview loaded successfully. Never inspect an unrelated catalog merely to
+search for a similarly named field.
 """
 
 

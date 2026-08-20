@@ -284,13 +284,29 @@ def _model_output_error_patch(
     }
 
 
-def _insert_context_before_latest_human(
+def _insert_fresh_context(
     messages: list[Any],
     context: HumanMessage,
 ) -> list[Any]:
+    latest_response_index = -1
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if not isinstance(message, AIMessage):
+            continue
+        response_id = str(message.response_metadata.get("id") or "")
+        if response_id.startswith("resp_"):
+            latest_response_index = index
+            break
+
     for index in range(len(messages) - 1, -1, -1):
         if isinstance(messages[index], HumanMessage):
-            return [*messages[:index], context, *messages[index:]]
+            if index > latest_response_index:
+                return [*messages[:index], context, *messages[index:]]
+            break
+
+    # Responses API compaction sends only messages after the latest resp_* AI
+    # message. During a tool loop, append refreshed context after tool outputs
+    # so it remains in that transmitted suffix.
     return [*messages, context]
 
 
@@ -333,7 +349,7 @@ def _prepare_model_request(
             )
         )
     if context_prompt:
-        state_messages = _insert_context_before_latest_human(
+        state_messages = _insert_fresh_context(
             state_messages,
             HumanMessage(content=context_prompt),
         )

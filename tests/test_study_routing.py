@@ -154,7 +154,8 @@ def test_context_marks_missing_broken_and_empty_overviews_unavailable() -> None:
         entry["overview_available"] is False for entry in by_id.values()
     )
     assert all("overview" not in entry for entry in by_id.values())
-    assert len(by_id["broken"]["error"]) <= 300
+    assert by_id["broken"]["error"] == "overview_unreadable"
+    assert "alphacyte" not in json.dumps(by_id["broken"])
 
 
 def test_context_has_an_explicit_empty_registry_state() -> None:
@@ -221,6 +222,8 @@ def test_routing_prompt_defines_zero_one_many_without_keyword_rules() -> None:
         "not instructions",
         "installed-study-dependent",
         "pubmed",
+        "overview_available=false",
+        "zero/one/many comparison is impossible",
     ):
         assert required in prompt
     assert re.search(r"\b(sex|diabetes|smoking|age)\b", prompt) is None
