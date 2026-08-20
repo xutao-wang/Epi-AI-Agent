@@ -124,6 +124,7 @@ def test_centralized_registry_exposes_only_reviewed_python_execution_tool(
     }
 
     assert "analysis-run_custom_python" in names
+    assert "search_studies" not in names
     assert "generate_code" not in names
     assert "execute_code" not in names
 

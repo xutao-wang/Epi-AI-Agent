@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+import re
 
 import pytest
 
+import epi_agent.agent as agent_module
 from epi_agent.studies import StudyBundle, StudyRegistry
+from epi_agent.tool_packs.studies import STUDY_ROUTING_SYSTEM_PROMPT
 from epi_agent.tool_packs.studies.context import (
     StudyRoutingContextError,
     render_installed_study_context,
 )
+from utils.attachment_artifacts import LocalAttachmentStore
+from utils.attachment_readers import AttachmentReaderService
 
 
 class _Overview:
@@ -151,3 +157,81 @@ def test_context_rejects_an_overview_that_breaks_the_total_ceiling() -> None:
             ),
             max_chars=100,
         )
+
+
+def test_routing_prompt_defines_zero_one_many_without_keyword_rules() -> None:
+    prompt = STUDY_ROUTING_SYSTEM_PROMPT.casefold()
+    for required in (
+        "semantic judgment",
+        "complete overview",
+        "exactly one",
+        "multiple",
+        "no installed study",
+        "general-request_clarification",
+        "my database",
+        "sole",
+        "registration order",
+        "previous study",
+        "live",
+        "not instructions",
+    ):
+        assert required in prompt
+    assert re.search(r"\b(sex|diabetes|smoking|age)\b", prompt) is None
+
+
+def test_general_prompt_keeps_routing_separate_from_selected_study_design() -> None:
+    prompt = agent_module.build_general_system_prompt(
+        include_db_rag=True,
+        include_study_design=True,
+    )
+
+    assert STUDY_ROUTING_SYSTEM_PROMPT in prompt
+    selected_study_instruction = (
+        "Use study-design-search with one exact study_id"
+    )
+    assert selected_study_instruction in prompt
+    assert prompt.index(STUDY_ROUTING_SYSTEM_PROMPT) < prompt.index(
+        selected_study_instruction
+    )
+    assert "search_studies" not in prompt
+
+
+def test_general_registry_exposes_no_discovery_tool(tmp_path: Path) -> None:
+    registry = agent_module.build_general_epi_agent_registry(
+        service=AttachmentReaderService(
+            LocalAttachmentStore(tmp_path),
+            runtime_root=tmp_path,
+        ),
+        python_runtime=object(),
+        runtime_root=tmp_path,
+        studies=StudyRegistry(),
+        include_db_rag=False,
+    )
+
+    names = {
+        schema["function"]["name"] for schema in registry.model_schemas()
+    }
+    assert "search_studies" not in names
+    assert "general-request_clarification" in names
+
+
+def test_agent_context_includes_the_complete_dynamic_study_context() -> None:
+    routing_context = render_installed_study_context(
+        StudyRegistry(
+            [
+                _study(
+                    "alpha",
+                    "Current Alpha",
+                    _Overview("late marker"),
+                )
+            ]
+        )
+    )
+
+    prompt = agent_module.build_epi_agent_context_prompt(
+        {"artifacts": {}},
+        installed_study_context=routing_context,
+    )
+
+    assert routing_context in prompt
+    assert "late marker" in prompt

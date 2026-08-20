@@ -40,7 +40,10 @@ from epi_agent.tool_packs.study_design import (
     STUDY_DESIGN_SYSTEM_PROMPT,
     build_study_design_tool_registry,
 )
-from epi_agent.tool_packs.studies import build_study_discovery_tool_registry
+from epi_agent.tool_packs.studies import (
+    STUDY_ROUTING_SYSTEM_PROMPT,
+    render_installed_study_context,
+)
 from utils.attachment_readers import AttachmentReaderService
 from utils.dataset_artifacts import is_selectable_dataset_artifact
 from utils.model_runtime_profiles import ModelRuntimeProfile
@@ -51,16 +54,6 @@ from utils.user_storage import UserStorageLayout
 _MAX_CARD_COLUMNS = 100
 _MAX_CARD_VALUE_CHARS = 500
 _MAX_CARD_LIST_ITEMS = 20
-
-
-STUDY_SELECTION_INSTRUCTIONS = """Study selection rules:
-- Choose the study independently for each request. Never assume that a previous study remains selected.
-- When the user or current context clearly identifies an installed study, use its exact study_id directly in the study-dependent search tool.
-- When the appropriate study is unclear, call search_studies to read bounded authoritative overviews. The tool does not rank or select a study.
-- If one study clearly fits after reading the available evidence, proceed automatically with that exact study_id.
-- If multiple studies remain genuinely plausible, call general-request_clarification alone before study-dependent retrieval.
-- Never invent a study ID or silently fall back to the sole, default, or previous study.
-- Multiple studies require separate retrieval calls and separate dataset plans. Never construct cross-study SQL."""
 
 
 GENERAL_CORE_INSTRUCTIONS = """You are the single reasoning owner for
@@ -150,7 +143,7 @@ def build_general_system_prompt(
 ) -> str:
     sections = [
         GENERAL_CORE_INSTRUCTIONS,
-        STUDY_SELECTION_INSTRUCTIONS,
+        STUDY_ROUTING_SYSTEM_PROMPT,
         build_publication_system_prompt(
             include_pubmed=is_pubmed_configured(),
         ),
@@ -178,7 +171,7 @@ def epi_agent_completion_issues(state: dict[str, Any]) -> list[str]:
 def build_epi_agent_context_prompt(
     state: dict[str, Any],
     *,
-    installed_study_directory: str = "",
+    installed_study_context: str = "",
 ) -> str:
     artifacts = dict(state.get("artifacts") or {})
     authorized_attachment_ids = set(
@@ -350,9 +343,9 @@ def build_epi_agent_context_prompt(
                 sort_keys=True,
             )
         )
-    study_directory = str(installed_study_directory or "").strip()
-    if study_directory:
-        contexts.append(study_directory)
+    study_context = str(installed_study_context or "").strip()
+    if study_context:
+        contexts.append(study_context)
     return "\n\n".join(contexts)
 
 
@@ -513,7 +506,7 @@ def build_general_epi_agent_graph(
     def context_prompt_factory(state: dict[str, Any]) -> str:
         return build_epi_agent_context_prompt(
             state,
-            installed_study_directory=render_installed_study_directory(studies),
+            installed_study_context=render_installed_study_context(studies),
         )
 
     return build_epi_agent_graph(
@@ -552,7 +545,6 @@ def build_general_epi_agent_registry(
     return ToolRegistry(
         [
             *build_general_tool_registry().tools(),
-            *build_study_discovery_tool_registry().tools(),
             *build_attachment_tool_registry(service).tools(),
             *build_publication_tool_registry().tools(),
             *(
@@ -581,15 +573,6 @@ def build_general_epi_agent_registry(
     )
 
 
-def render_installed_study_directory(studies: StudyRegistry) -> str:
-    lines = ["Installed studies:"]
-    lines.extend(
-        f"- study_id: {study.study_id}; label: {study.label}"
-        for study in sorted(studies.values, key=lambda item: item.study_id)
-    )
-    return "\n".join(lines)
-
-
 __all__ = [
     "EpiAgentState",
     "GENERAL_CORE_INSTRUCTIONS",
@@ -599,5 +582,4 @@ __all__ = [
     "build_epi_agent_context_prompt",
     "build_general_epi_agent_graph",
     "build_general_epi_agent_registry",
-    "render_installed_study_directory",
 ]

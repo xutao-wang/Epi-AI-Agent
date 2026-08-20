@@ -11,7 +11,6 @@ from epi_agent.agent import (
     GENERAL_CORE_INSTRUCTIONS,
     EpiAgentState,
     build_epi_agent_context_prompt,
-    render_installed_study_directory,
 )
 from epi_agent.protocol import ToolContext, ToolResult, ToolSpec
 from epi_agent.registry import ToolRegistry
@@ -21,6 +20,7 @@ from epi_agent.runtime import (
     build_epi_agent_graph,
 )
 from epi_agent.studies import StudyBundle, StudyRegistry
+from epi_agent.tool_packs.studies import render_installed_study_context
 from graph.state import MetaKeys
 from utils.model_runtime_profiles import model_runtime_profile
 
@@ -434,18 +434,22 @@ def test_epi_context_prompt_omits_missing_card_timestamps() -> None:
     assert "created_at" not in dataset_card
 
 
-def test_epi_context_prompt_includes_installed_study_directory() -> None:
-    directory = "Installed studies:\n- study_id: study-1; label: Study"
+def test_epi_context_prompt_includes_installed_study_context() -> None:
+    study_context = (
+        "<installed_study_routing_context>\n"
+        '{"study_count":0,"studies":[]}'
+        "\n</installed_study_routing_context>"
+    )
     prompt = build_epi_agent_context_prompt(
         {"messages": []},
-        installed_study_directory=directory,
+        installed_study_context=study_context,
     )
 
-    assert directory in prompt
+    assert study_context in prompt
 
 
-def test_study_directory_is_sorted_and_excludes_overview_content() -> None:
-    directory = render_installed_study_directory(
+def test_study_context_is_sorted_and_reports_unavailable_overviews() -> None:
+    study_context = render_installed_study_context(
         StudyRegistry(
             [
                 StudyBundle("z", "Zulu", None, None, {}),
@@ -454,10 +458,11 @@ def test_study_directory_is_sorted_and_excludes_overview_content() -> None:
         )
     )
 
-    assert directory == (
-        "Installed studies:\n"
-        "- study_id: a; label: Alpha\n"
-        "- study_id: z; label: Zulu"
+    payload = json.loads(study_context.split("\n", 1)[1].rsplit("\n", 1)[0])
+    assert [study["study_id"] for study in payload["studies"]] == ["a", "z"]
+    assert all(
+        study["overview_available"] is False
+        for study in payload["studies"]
     )
 
 

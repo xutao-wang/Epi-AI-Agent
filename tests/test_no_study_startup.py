@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import importlib
-import json
 import sqlite3
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 import pytest
 
@@ -410,39 +409,6 @@ class _FinalModel:
         return AIMessage(content="A generic epidemiology answer.")
 
 
-class _StudyEvidenceModel:
-    def __init__(self) -> None:
-        self.step = 0
-        self.messages: list[Any] = []
-
-    def bind_tools(self, _schemas: list[dict[str, Any]]) -> "_StudyEvidenceModel":
-        return self
-
-    def invoke(
-        self,
-        messages: list[Any],
-        *,
-        config: dict[str, Any],
-        **_kwargs: Any,
-    ) -> AIMessage:
-        del config
-        self.step += 1
-        self.messages = list(messages)
-        if self.step == 1:
-            return AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "name": "search_studies",
-                        "args": {"offset": 0, "limit": 5},
-                        "id": "call-1",
-                        "type": "tool_call",
-                    }
-                ],
-            )
-        return AIMessage(content="I inspected the available study overviews.")
-
-
 def _service(tmp_path: Path) -> AttachmentReaderService:
     return AttachmentReaderService(
         LocalAttachmentStore(tmp_path),
@@ -533,6 +499,10 @@ def test_generic_agent_completes_without_an_installed_study(tmp_path: Path) -> N
     )
 
     assert result["final_response"] == "A generic epidemiology answer."
+    rendered = "\n".join(
+        str(getattr(message, "content", "")) for message in model.messages
+    )
+    assert '"study_count":0' in rendered
 
 
 @pytest.mark.parametrize(
@@ -575,7 +545,9 @@ def test_study_evidence_tools_report_recoverable_no_study_error(
     assert error.value.recoverable is True
 
 
-def test_sole_study_is_listed_without_injecting_its_overview(tmp_path: Path) -> None:
+def test_sole_study_injects_its_complete_overview_without_selection_state(
+    tmp_path: Path,
+) -> None:
     model = _FinalModel()
     studies = StudyRegistry([_bundle("study-one", "sole-study-marker")])
     graph = build_general_epi_agent_graph(
@@ -597,8 +569,9 @@ def test_sole_study_is_listed_without_injecting_its_overview(tmp_path: Path) -> 
     rendered = "\n".join(
         str(getattr(message, "content", "")) for message in model.messages
     )
-    assert "study_id: study-one; label: study-one" in rendered
-    assert "sole-study-marker" not in rendered
+    assert '"study_id":"study-one"' in rendered
+    assert '"label":"study-one"' in rendered
+    assert "sole-study-marker" in rendered
 
 
 def test_legacy_active_study_state_does_not_hide_other_packages(
@@ -632,16 +605,16 @@ def test_legacy_active_study_state_does_not_hide_other_packages(
         for message in model.messages
     ]
     rendered = "\n".join(rendered_messages)
-    assert "study_id: study-one; label: study-one" in rendered
-    assert "study_id: study-two; label: study-two" in rendered
-    assert "selected-study-marker" not in rendered
-    assert "first-study-marker" not in rendered
+    assert '"study_id":"study-one"' in rendered
+    assert '"study_id":"study-two"' in rendered
+    assert "selected-study-marker" in rendered
+    assert "first-study-marker" in rendered
 
 
-def test_multiple_studies_can_be_inspected_without_prior_selection(
+def test_multiple_studies_are_injected_without_prior_selection(
     tmp_path: Path,
 ) -> None:
-    model = _StudyEvidenceModel()
+    model = _FinalModel()
     studies = StudyRegistry(
         [
             _bundle("study-one", "first-study-marker"),
@@ -663,16 +636,12 @@ def test_multiple_studies_can_be_inspected_without_prior_selection(
         {"configurable": {"thread_id": "thread-1"}},
     )
 
-    assert result["final_response"] == "I inspected the available study overviews."
-    tool_message = next(
-        message for message in model.messages if isinstance(message, ToolMessage)
+    assert result["final_response"] == "A generic epidemiology answer."
+    rendered = "\n".join(
+        str(getattr(message, "content", "")) for message in model.messages
     )
-    model_observation = json.loads(str(tool_message.content))
-    directory = json.loads(model_observation["message"])
-    assert [study["study_id"] for study in directory["studies"]] == [
-        "study-one",
-        "study-two",
-    ]
+    assert "first-study-marker" in rendered
+    assert "second-study-marker" in rendered
 
 
 def test_capabilities_are_aggregated_across_all_installed_studies(
