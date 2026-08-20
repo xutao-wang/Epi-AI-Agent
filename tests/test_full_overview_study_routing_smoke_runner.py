@@ -18,6 +18,9 @@ def test_routing_smoke_is_executable_and_uses_real_boundaries() -> None:
     required = {
         "install_study_archives",
         "discover_studies",
+        "create_package_archive",
+        "Urban Canopy Luminase Cohort",
+        "Agricultural Fermentation Survey",
         "api.app:app",
         "frontend/dist",
         "sync_playwright",
@@ -31,3 +34,4 @@ def test_routing_smoke_is_executable_and_uses_real_boundaries() -> None:
     assert "Fake" not in source
     assert "monkeypatch" not in source
     assert "stub" not in source.casefold()
+    assert "--study-archive" not in source

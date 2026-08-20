@@ -29,14 +29,43 @@ from scripts.e2e_agent_activity_timeline_real import (
 )
 from study_package.installer import install_study_archives
 from study_package.registry import discover_studies
+from tests.study_package_fixtures import (
+    create_package_archive,
+    minimal_manifest,
+)
 from utils.env_loader import load_app_environment
 
 
 HEADERS = {"X-Epi-Session-ID": LOCAL_SESSION_ID}
 COMPILED_FRONTEND = REPO_ROOT / "frontend/dist"
 UNSUPPORTED_QUERY = (
-    "Extract participant-level alphacyte crystallography measurements from "
+    "Extract participant-level velunoxide crystallography measurements from "
     "deep-ocean vent expeditions in my database."
+)
+_FICTIONAL_STUDIES = (
+    {
+        "study_id": "urban-canopy-luminase",
+        "label": "Urban Canopy Luminase Cohort",
+        "source_id": "urban-canopy-source",
+        "overview": (
+            "# Urban Canopy Luminase Cohort\n\n"
+            "A prospective observational cohort of rooftop-garden workers "
+            "studying fictional luminase exposure and seasonal leaf health "
+            "in inland cities. It contains no marine expedition or "
+            "crystallography measurements."
+        ),
+    },
+    {
+        "study_id": "agricultural-fermentation",
+        "label": "Agricultural Fermentation Survey",
+        "source_id": "fermentation-source",
+        "overview": (
+            "# Agricultural Fermentation Survey\n\n"
+            "A cross-sectional survey of fictional grain fermentation "
+            "practices among rural cooperatives. It contains no marine "
+            "expedition or crystallography measurements."
+        ),
+    },
 )
 
 
@@ -44,17 +73,32 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run the real full-overview study-routing smoke once."
     )
-    parser.add_argument(
-        "--study-archive",
-        action="append",
-        type=Path,
-        required=True,
-    )
     parser.add_argument("--api-port", type=int, default=8892)
     parser.add_argument("--timeout-seconds", type=int, default=300)
     parser.add_argument("--artifact-dir", type=Path)
     parser.add_argument("--environment-root", type=Path, default=REPO_ROOT)
     return parser
+
+
+def _create_fictional_archives(artifact_dir: Path) -> tuple[Path, ...]:
+    archives: list[Path] = []
+    for study in _FICTIONAL_STUDIES:
+        source_root = artifact_dir / "package-sources" / study["study_id"]
+        archive = create_package_archive(
+            source_root,
+            manifest=minimal_manifest(
+                study_id=study["study_id"],
+                package_version="1.0.0",
+                label=study["label"],
+                source_id=study["source_id"],
+                format_version=3,
+            ),
+            study_design_documents={
+                "overview.md": study["overview"],
+            },
+        )
+        archives.append(archive)
+    return tuple(archives)
 
 
 def _conversation_items(api_url: str) -> list[dict[str, Any]]:
@@ -177,14 +221,6 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.timeout_seconds > 300:
         raise ValueError("The feature smoke is limited to five minutes.")
-    archives = tuple(
-        path.expanduser().resolve() for path in args.study_archive
-    )
-    if len(archives) < 2:
-        raise ValueError("Provide at least two --study-archive arguments.")
-    for archive in archives:
-        if not archive.is_file():
-            raise FileNotFoundError(f"Study archive not found: {archive}")
 
     deadline = time.monotonic() + args.timeout_seconds
     artifact_dir = (
@@ -210,6 +246,7 @@ def main(argv: list[str] | None = None) -> int:
         if not (COMPILED_FRONTEND / "index.html").is_file():
             raise RuntimeError("Build frontend/dist before running this smoke.")
 
+        archives = _create_fictional_archives(artifact_dir)
         install_study_archives(archives, study_root / "studies")
         expected_labels = tuple(
             study.label
