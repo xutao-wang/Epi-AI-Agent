@@ -1093,6 +1093,16 @@ export default function App({
 
   return (
     <AppShell
+      headerAction={
+        <button
+          className="new-conversation-button"
+          disabled={isBusy}
+          onClick={newConversation}
+          type="button"
+        >
+          New conversation
+        </button>
+      }
       sidebar={
         <div className="settings-panel">
           {authenticatedUser ? (
@@ -1323,16 +1333,6 @@ export default function App({
               disabled={isComposerDisabled}
               errors={attachmentErrors}
               isUploading={isUploadingAttachments}
-              leadingAction={
-                <button
-                  className="new-conversation-button"
-                  disabled={isBusy}
-                  onClick={newConversation}
-                  type="button"
-                >
-                  New conversation
-                </button>
-              }
               onDismissError={dismissAttachmentError}
               onFilesSelected={selectAttachments}
               onRemove={removeStagedAttachment}

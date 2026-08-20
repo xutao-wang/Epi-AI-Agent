@@ -6,7 +6,6 @@ import type {
 
 interface Props {
   action: ReactNode;
-  leadingAction?: ReactNode;
   disabled: boolean;
   staged: AttachmentManifestSummary[];
   errors: AttachmentUploadError[];
@@ -31,7 +30,6 @@ function formatBytes(bytes: number): string {
 
 export default function AttachmentComposer({
   action,
-  leadingAction,
   disabled,
   staged,
   errors,
@@ -113,7 +111,6 @@ export default function AttachmentComposer({
         </ul>
       ) : null}
       <div className="message-form-actions">
-        {leadingAction}
         <div className="message-form-primary-actions">
           <button
             aria-label="Attach files"

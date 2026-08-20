@@ -26,29 +26,6 @@ describe("AttachmentComposer", () => {
     expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();
   });
 
-  it("keeps a leading action on the same row as Send", () => {
-    render(
-      <AttachmentComposer
-        action={<button type="submit">Send</button>}
-        disabled={false}
-        errors={[]}
-        isUploading={false}
-        leadingAction={<button type="button">New conversation</button>}
-        onDismissError={vi.fn()}
-        onFilesSelected={vi.fn()}
-        onRemove={vi.fn()}
-        staged={[]}
-      />,
-    );
-
-    const actions = screen.getByRole("button", { name: "Send" }).closest(
-      ".message-form-actions",
-    );
-    expect(actions).toContainElement(
-      screen.getByRole("button", { name: "New conversation" }),
-    );
-  });
-
   it("selects multiple supported files and removes a staged attachment", async () => {
     const onFilesSelected = vi.fn();
     const onRemove = vi.fn().mockResolvedValue(undefined);

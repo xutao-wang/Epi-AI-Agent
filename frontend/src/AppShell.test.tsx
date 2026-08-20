@@ -12,6 +12,7 @@ describe("AppShell", () => {
     render(
       <AppShell
         conversation={<p>Conversation content</p>}
+        headerAction={<button type="button">New conversation</button>}
         input={<p>Input form</p>}
         sidebar={<p>Model Settings</p>}
       />,
@@ -20,6 +21,9 @@ describe("AppShell", () => {
     expect(
       screen.getByRole("heading", { name: "Epidemiology Research Agent" }),
     ).toBeInTheDocument();
+    expect(screen.getByRole("banner")).toContainElement(
+      screen.getByRole("button", { name: "New conversation" }),
+    );
     expect(screen.getByText("Model Settings")).toBeInTheDocument();
     expect(
       screen.queryByText("Upload your dataset CSV and schema JSON"),

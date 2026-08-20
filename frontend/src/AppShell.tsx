@@ -26,12 +26,14 @@ interface Props {
   sidebar: ReactNode;
   conversation: ReactNode;
   input: ReactNode;
+  headerAction?: ReactNode;
 }
 
 export default function AppShell({
   sidebar,
   conversation,
   input,
+  headerAction,
 }: Props) {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(loadSidebarWidth);
@@ -90,7 +92,10 @@ export default function AppShell({
         role="separator"
       />
       <section className="report-main">
-        <h1>Epidemiology Research Agent</h1>
+        <header className="report-header">
+          <h1>Epidemiology Research Agent</h1>
+          {headerAction}
+        </header>
         <section className="conversation-section" aria-label="Conversation">
           {conversation}
         </section>

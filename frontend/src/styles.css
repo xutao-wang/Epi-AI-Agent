@@ -184,7 +184,14 @@ select {
   box-sizing: border-box;
 }
 
-.report-main h1 {
+.report-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.report-header h1 {
   margin: 0;
   font-size: 32px;
   font-weight: 650;
@@ -799,6 +806,10 @@ select {
 
   .report-main {
     padding: 20px;
+  }
+
+  .report-header {
+    align-items: flex-start;
   }
 }
 
@@ -1705,7 +1716,7 @@ select {
 .message-form-actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 8px;
 }
 
