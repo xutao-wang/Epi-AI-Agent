@@ -355,7 +355,7 @@ def test_v3_package_fixture_writes_markdown_and_matching_index(tmp_path: Path) -
         },
     )
 
-    overview = root / "study-design" / "overview.md"
+    overview = root / "study_design" / "overview.md"
     assert overview.is_file()
     collection = chromadb.PersistentClient(
         path=str(root / "database" / "index")

@@ -74,6 +74,31 @@ def test_stage_study_archive_copies_and_validates_real_package(tmp_path) -> None
     assert staged.archive_sha256 == expected_sha256
 
 
+def test_v3_fixture_builder_creates_required_study_design_overview(
+    tmp_path: Path,
+) -> None:
+    package_root = create_package_root(
+        tmp_path,
+        manifest=minimal_manifest(format_version=3),
+    )
+
+    manifest = json.loads((package_root / "study-package.json").read_text())
+
+    assert manifest["study_design"] == {
+        "root": "study_design",
+        "overview": "overview.md",
+    }
+    assert (package_root / "study_design" / "overview.md").is_file()
+
+    archive = create_package_archive_from_root(
+        package_root,
+        tmp_path / "study.tar.gz",
+    )
+    staged = stage_study_archive(archive, tmp_path / "runtime" / "studies")
+
+    assert staged.manifest.format_version == 3
+
+
 def test_stage_rejects_declared_relationship_column_missing_from_duckdb(
     tmp_path: Path,
 ) -> None:
@@ -126,7 +151,7 @@ def test_stage_v3_markdown_design_is_valid(tmp_path: Path) -> None:
 
 def test_stage_v3_non_markdown_file_returns_warning_not_failure(tmp_path: Path) -> None:
     package_root = _markdown_package_root(tmp_path / "source")
-    asset = package_root / "study-design" / "reference" / "diagram.png"
+    asset = package_root / "study_design" / "reference" / "diagram.png"
     asset.write_bytes(b"asset")
     archive = create_package_archive_from_root(
         package_root,
@@ -157,7 +182,7 @@ def test_stage_v3_rejects_invalid_overview_with_both_fixes(
     code: str,
 ) -> None:
     package_root = _markdown_package_root(tmp_path / "source")
-    (package_root / "study-design" / "overview.md").write_bytes(payload)
+    (package_root / "study_design" / "overview.md").write_bytes(payload)
     archive = create_package_archive_from_root(
         package_root,
         tmp_path / "study.tar.gz",
@@ -174,7 +199,7 @@ def test_stage_v3_rejects_invalid_overview_with_both_fixes(
 
 def test_stage_v3_rejects_missing_overview_with_both_fixes(tmp_path: Path) -> None:
     package_root = _markdown_package_root(tmp_path / "source")
-    (package_root / "study-design" / "overview.md").unlink()
+    (package_root / "study_design" / "overview.md").unlink()
     archive = create_package_archive_from_root(
         package_root,
         tmp_path / "study.tar.gz",
@@ -202,7 +227,7 @@ def test_stage_v3_rejects_invalid_optional_markdown_with_exact_path(
     code: str,
 ) -> None:
     package_root = _markdown_package_root(tmp_path / "source")
-    (package_root / "study-design" / "reference" / "visits.md").write_bytes(
+    (package_root / "study_design" / "reference" / "visits.md").write_bytes(
         payload
     )
     archive = create_package_archive_from_root(
@@ -219,7 +244,7 @@ def test_stage_v3_rejects_invalid_optional_markdown_with_exact_path(
 
 def test_stage_v3_rejects_markdown_hash_mismatch(tmp_path: Path) -> None:
     package_root = _markdown_package_root(tmp_path / "source")
-    (package_root / "study-design" / "reference" / "visits.md").write_text(
+    (package_root / "study_design" / "reference" / "visits.md").write_text(
         "# Visits\n\nChanged after indexing.",
         encoding="utf-8",
     )

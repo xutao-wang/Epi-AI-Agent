@@ -22,6 +22,8 @@ def minimal_manifest(
     format_version: Literal[2, 3] = 2,
     study_design_format: Literal["legacy", "markdown"] | None = None,
 ) -> dict[str, object]:
+    if format_version == 3 and study_design_format is None:
+        study_design_format = "markdown"
     if study_design_format == "legacy" and format_version != 2:
         raise ValueError("Legacy study design requires format version 2")
     if study_design_format == "markdown" and format_version != 3:
@@ -43,7 +45,7 @@ def minimal_manifest(
         manifest["study_design"] = {"document": "study-design/design.json"}
     elif study_design_format == "markdown":
         manifest["study_design"] = {
-            "root": "study-design",
+            "root": "study_design",
             "overview": "overview.md",
         }
     return manifest
