@@ -98,7 +98,7 @@ def test_manifest_accepts_v3_markdown_design() -> None:
             **MINIMAL_MANIFEST,
             "format_version": 3,
             "study_design": {
-                "root": "study_design",
+                "root": "study-design",
                 "overview": "overview.md",
             },
         }
@@ -106,10 +106,10 @@ def test_manifest_accepts_v3_markdown_design() -> None:
 
     assert manifest.format_version == 3
     assert manifest.study_design is not None
-    assert manifest.study_design.root == "study_design"
+    assert manifest.study_design.root == "study-design"
     assert manifest.study_design.overview == "overview.md"
     assert manifest.declared_paths()["study_design.root"] == (
-        "study_design",
+        "study-design",
         "directory",
     )
 
@@ -156,13 +156,13 @@ def test_v3_manifest_requires_exact_overview_name(overview: str) -> None:
 
 
 def test_v3_manifest_requires_study_design_root() -> None:
-    with pytest.raises(ValueError, match="study_design/overview.md"):
+    with pytest.raises(ValueError, match="study-design/overview.md"):
         parse_study_package_manifest(
             {
                 **MINIMAL_MANIFEST,
                 "format_version": 3,
                 "study_design": {
-                    "root": "study-design",
+                    "root": "study_design",
                     "overview": "overview.md",
                 },
             }
@@ -328,7 +328,7 @@ def test_load_installed_manifest_accepts_v3_study_design_directory(
             **MINIMAL_MANIFEST,
                 "format_version": 3,
                 "study_design": {
-                    "root": "study_design",
+                    "root": "study-design",
                     "overview": "overview.md",
                 },
         },
@@ -337,7 +337,7 @@ def test_load_installed_manifest_accepts_v3_study_design_directory(
     manifest = load_installed_manifest(package_root)
 
     assert manifest.study_design is not None
-    assert manifest.study_design.root == "study_design"
+    assert manifest.study_design.root == "study-design"
 
 
 def test_v3_package_fixture_writes_markdown_and_matching_index(tmp_path: Path) -> None:
@@ -355,7 +355,7 @@ def test_v3_package_fixture_writes_markdown_and_matching_index(tmp_path: Path) -
         },
     )
 
-    overview = root / "study_design" / "overview.md"
+    overview = root / "study-design" / "overview.md"
     assert overview.is_file()
     collection = chromadb.PersistentClient(
         path=str(root / "database" / "index")

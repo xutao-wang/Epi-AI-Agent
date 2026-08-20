@@ -45,7 +45,7 @@ def minimal_manifest(
         manifest["study_design"] = {"document": "study-design/design.json"}
     elif study_design_format == "markdown":
         manifest["study_design"] = {
-            "root": "study_design",
+            "root": "study-design",
             "overview": "overview.md",
         }
     return manifest

@@ -7,7 +7,7 @@
 ## Goal
 
 Every newly authored database study package must supply the authoritative
-`study_design/overview.md` document. This applies uniformly to RePORT India,
+`study-design/overview.md` document. This applies uniformly to RePORT India,
 MHANES, and any future study; no study-specific exceptions or defaults are
 introduced.
 
@@ -21,14 +21,14 @@ Markdown declaration:
 
 ```json
 "study_design": {
-  "root": "study_design",
+  "root": "study-design",
   "overview": "overview.md"
 }
 ```
 
 The manifest parser rejects a v3 package that omits `study_design`, uses a
 different root, or uses a different overview name. Existing package validation
-then verifies that the declared `study_design/overview.md` is a nonempty,
+then verifies that the declared `study-design/overview.md` is a nonempty,
 UTF-8 Markdown file within the existing 32 KiB limit and that its indexed
 provenance matches the package content.
 
@@ -54,7 +54,7 @@ missing, empty, invalid, oversized, or unsafe file after parsing.
 
 - A v3 manifest without `study_design` fails parsing.
 - A v3 manifest with a root other than `study_design` fails parsing.
-- A v3 fixture package is built with `study_design/overview.md` and passes
+- A v3 fixture package is built with `study-design/overview.md` and passes
   staging/install validation.
 - A v2 package without study design still parses, preserving legacy reads.
 - Existing overview-content validation tests continue to protect the file-level
