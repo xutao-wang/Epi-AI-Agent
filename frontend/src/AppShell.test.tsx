@@ -18,7 +18,7 @@ describe("AppShell", () => {
     );
 
     expect(
-      screen.getByRole("heading", { name: "AI Agent for RePORT" }),
+      screen.getByRole("heading", { name: "Epidemiology Research Agent" }),
     ).toBeInTheDocument();
     expect(screen.getByText("Model Settings")).toBeInTheDocument();
     expect(

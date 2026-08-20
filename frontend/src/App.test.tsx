@@ -3113,7 +3113,9 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
     expect(
-      await screen.findByRole("heading", { name: "AI Agent for RePORT" }),
+      await screen.findByRole("heading", {
+        name: "Epidemiology Research Agent",
+      }),
     ).toBeInTheDocument();
     expect(await screen.findByText("SELECT 1;")).toBeInTheDocument();
     expect(screen.queryByText("Generated datasets")).not.toBeInTheDocument();

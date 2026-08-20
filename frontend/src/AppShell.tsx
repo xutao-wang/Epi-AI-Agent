@@ -90,7 +90,7 @@ export default function AppShell({
         role="separator"
       />
       <section className="report-main">
-        <h1>AI Agent for RePORT</h1>
+        <h1>Epidemiology Research Agent</h1>
         <section className="conversation-section" aria-label="Conversation">
           {conversation}
         </section>
