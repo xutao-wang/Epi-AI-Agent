@@ -98,7 +98,7 @@ def test_manifest_accepts_v3_markdown_design() -> None:
             **MINIMAL_MANIFEST,
             "format_version": 3,
             "study_design": {
-                "root": "study-design",
+                "root": "study_design",
                 "overview": "overview.md",
             },
         }
@@ -106,20 +106,17 @@ def test_manifest_accepts_v3_markdown_design() -> None:
 
     assert manifest.format_version == 3
     assert manifest.study_design is not None
-    assert manifest.study_design.root == "study-design"
+    assert manifest.study_design.root == "study_design"
     assert manifest.study_design.overview == "overview.md"
     assert manifest.declared_paths()["study_design.root"] == (
-        "study-design",
+        "study_design",
         "directory",
     )
 
 
-def test_manifest_accepts_v3_without_study_design() -> None:
-    manifest = parse_study_package_manifest(
-        {**MINIMAL_MANIFEST, "format_version": 3}
-    )
-
-    assert manifest.study_design is None
+def test_manifest_rejects_v3_without_study_design() -> None:
+    with pytest.raises(ValueError, match="format_version 3 requires"):
+        parse_study_package_manifest({**MINIMAL_MANIFEST, "format_version": 3})
 
 
 @pytest.mark.parametrize(
@@ -158,14 +155,14 @@ def test_v3_manifest_requires_exact_overview_name(overview: str) -> None:
         )
 
 
-def test_v3_manifest_rejects_unsafe_study_design_root() -> None:
-    with pytest.raises(ValueError, match="relative path"):
+def test_v3_manifest_requires_study_design_root() -> None:
+    with pytest.raises(ValueError, match="study_design/overview.md"):
         parse_study_package_manifest(
             {
                 **MINIMAL_MANIFEST,
                 "format_version": 3,
                 "study_design": {
-                    "root": "../study-design",
+                    "root": "study-design",
                     "overview": "overview.md",
                 },
             }
@@ -329,18 +326,18 @@ def test_load_installed_manifest_accepts_v3_study_design_directory(
         tmp_path,
         {
             **MINIMAL_MANIFEST,
-            "format_version": 3,
-            "study_design": {
-                "root": "study-design",
-                "overview": "overview.md",
-            },
+                "format_version": 3,
+                "study_design": {
+                    "root": "study_design",
+                    "overview": "overview.md",
+                },
         },
     )
 
     manifest = load_installed_manifest(package_root)
 
     assert manifest.study_design is not None
-    assert manifest.study_design.root == "study-design"
+    assert manifest.study_design.root == "study_design"
 
 
 def test_v3_package_fixture_writes_markdown_and_matching_index(tmp_path: Path) -> None:

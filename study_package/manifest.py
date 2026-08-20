@@ -103,15 +103,19 @@ class StudyPackageManifest(_ManifestModel):
             return value
         version = value.get("format_version")
         design = value.get("study_design")
-        if not isinstance(design, dict):
-            return value
-        if version == 2 and set(design) != {"document"}:
+        if version == 3:
+            if not isinstance(design, dict) or set(design) != {"root", "overview"}:
+                raise ValueError("format_version 3 requires a study_design declaration")
+            if (
+                design.get("root") != "study_design"
+                or design.get("overview") != "overview.md"
+            ):
+                raise ValueError(
+                    "format_version 3 requires study_design/overview.md"
+                )
+        elif isinstance(design, dict) and version == 2 and set(design) != {"document"}:
             raise ValueError(
                 "study_design declaration does not match format_version 2"
-            )
-        if version == 3 and set(design) != {"root", "overview"}:
-            raise ValueError(
-                "study_design declaration does not match format_version 3"
             )
         return value
 
