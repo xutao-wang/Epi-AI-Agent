@@ -10,7 +10,14 @@ from pydantic import BaseModel
 from utils.performance import timing_stage
 
 from .catalog_relationships import CATALOG_VERSION
+from .config import EMBEDDING_MODEL
 from .retrieval import retrieve_queries
+from .retrieval_status import (
+    EmbeddingReasonCode,
+    RetrievalOutcome,
+    hybrid_status,
+    lexical_fallback_status,
+)
 
 
 _TOKEN = re.compile(r"[a-z0-9_]+")
@@ -40,9 +47,15 @@ class SchemaCatalog:
         catalog: dict[str, Any],
         *,
         default_source_id: str | None = None,
+        embedding_model: str = EMBEDDING_MODEL,
+        unavailable_reason_code: EmbeddingReasonCode = (
+            "EMBEDDING_CONFIGURATION_UNAVAILABLE"
+        ),
     ) -> None:
         self._catalog = dict(catalog)
         self._default_source_id = _as_text(default_source_id)
+        self.embedding_model = embedding_model
+        self._unavailable_reason_code = unavailable_reason_code
 
     def field_exists(self, table: str, column: str) -> bool:
         return any(
@@ -92,30 +105,58 @@ class SchemaCatalog:
         *,
         limit: int = 5,
     ) -> list[list[SchemaEvidenceHit]]:
-        if not queries:
-            return []
-        if limit < 1:
-            return [[] for _query in queries]
-        raise SemanticCatalogUnavailableError(
-            "Semantic catalog retrieval is unavailable for the selected study."
-        )
+        return self.search_many_with_status(queries, limit=limit).value
 
-
-class UnavailableSemanticSchemaCatalog(SchemaCatalog):
-    """Allow catalog inspection while making semantic search fail closed."""
-
-    def search_many(
+    def search_many_with_status(
         self,
         queries: list[str],
         *,
         limit: int = 5,
-    ) -> list[list[SchemaEvidenceHit]]:
-        del limit
-        if not queries:
-            return []
-        raise SemanticCatalogUnavailableError(
-            "Semantic catalog retrieval is unavailable for the selected study."
+    ) -> RetrievalOutcome[list[list[SchemaEvidenceHit]]]:
+        return self._lexical_outcome(
+            queries,
+            limit=limit,
+            reason_code=self._unavailable_reason_code,
         )
+
+    def _lexical_outcome(
+        self,
+        queries: list[str],
+        *,
+        limit: int,
+        reason_code: EmbeddingReasonCode,
+    ) -> RetrievalOutcome[list[list[SchemaEvidenceHit]]]:
+        results: list[list[SchemaEvidenceHit]] = []
+        for query in queries:
+            lexical_rows, exact_keys = _lexical_ranked_rows(
+                self._catalog,
+                query,
+                limit=limit,
+            )
+            results.append(
+                _fuse_ranked_rows(
+                    [],
+                    lexical_rows,
+                    exact_keys,
+                    limit=limit,
+                    default_source_id=self._default_source_id,
+                )
+            )
+        return RetrievalOutcome(
+            value=results,
+            status=lexical_fallback_status(self.embedding_model, reason_code),
+        )
+
+
+class UnavailableSemanticSchemaCatalog(SchemaCatalog):
+    """Allow exact inspection and lexical search without semantic retrieval."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        kwargs.setdefault(
+            "unavailable_reason_code",
+            "EMBEDDING_CREDENTIALS_MISSING",
+        )
+        super().__init__(*args, **kwargs)
 
 
 class SemanticSchemaCatalog(SchemaCatalog):
@@ -129,8 +170,13 @@ class SemanticSchemaCatalog(SchemaCatalog):
         column_collection: Any,
         embedding_function: Any,
         default_source_id: str | None = None,
+        embedding_model: str = EMBEDDING_MODEL,
     ) -> None:
-        super().__init__(catalog, default_source_id=default_source_id)
+        super().__init__(
+            catalog,
+            default_source_id=default_source_id,
+            embedding_model=embedding_model,
+        )
         self._table_collection = table_collection
         self._column_collection = column_collection
         self._embedding_function = embedding_function
@@ -141,18 +187,38 @@ class SemanticSchemaCatalog(SchemaCatalog):
         *,
         limit: int = 5,
     ) -> list[list[SchemaEvidenceHit]]:
+        return self.search_many_with_status(queries, limit=limit).value
+
+    def search_many_with_status(
+        self,
+        queries: list[str],
+        *,
+        limit: int = 5,
+    ) -> RetrievalOutcome[list[list[SchemaEvidenceHit]]]:
         if not queries:
-            return []
+            return RetrievalOutcome(value=[], status=hybrid_status(self.embedding_model))
         if limit < 1:
-            return [[] for _query in queries]
+            return RetrievalOutcome(
+                value=[[] for _query in queries],
+                status=hybrid_status(self.embedding_model),
+            )
         try:
             with timing_stage(
                 "db_rag.catalog.query_embedding",
                 query_count=len(queries),
             ):
                 embeddings = self._embedding_function.embed_query(queries)
-            if len(embeddings) != len(queries):
-                raise ValueError("Query embedding count does not match query count.")
+        except Exception:
+            return self._lexical_outcome(
+                queries,
+                limit=limit,
+                reason_code="EMBEDDING_PROVIDER_UNAVAILABLE",
+            )
+        if len(embeddings) != len(queries):
+            raise SemanticCatalogUnavailableError(
+                "Semantic catalog returned an invalid embedding batch."
+            )
+        try:
             vector_batches = retrieve_queries(
                 self._table_collection,
                 self._column_collection,
@@ -161,10 +227,16 @@ class SemanticSchemaCatalog(SchemaCatalog):
                 column_k=limit,
                 query_embeddings=embeddings,
             )
-        except Exception as error:
+        except Exception:
+            return self._lexical_outcome(
+                queries,
+                limit=limit,
+                reason_code="EMBEDDING_INDEX_UNAVAILABLE",
+            )
+        if len(vector_batches) != len(queries):
             raise SemanticCatalogUnavailableError(
-                "Semantic catalog retrieval is unavailable for the selected study."
-            ) from error
+                "Semantic catalog returned an invalid result batch."
+            )
 
         results: list[list[SchemaEvidenceHit]] = []
         for query, (table_rows, column_rows) in zip(queries, vector_batches):
@@ -184,7 +256,10 @@ class SemanticSchemaCatalog(SchemaCatalog):
                         default_source_id=self._default_source_id,
                     )
                 )
-        return results
+        return RetrievalOutcome(
+            value=results,
+            status=hybrid_status(self.embedding_model),
+        )
 
 
 def _evidence_key(row: dict[str, Any]) -> tuple[str, str]:

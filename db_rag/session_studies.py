@@ -12,6 +12,7 @@ from db_rag.catalog import (
     load_full_schema_catalog,
 )
 from db_rag.config import DbRagRuntimePaths
+from db_rag.retrieval_status import EmbeddingReasonCode
 from db_rag.local_knowledge import (
     LocalPublicationKnowledge,
     SemanticPublicationKnowledge,
@@ -42,12 +43,17 @@ def _catalog_data(paths: DbRagRuntimePaths) -> dict[str, object]:
 def _unavailable_study(
     study: StudyBundle,
     catalog_data: dict[str, object],
+    *,
+    embedding_model: str,
+    reason_code: EmbeddingReasonCode,
 ) -> StudyBundle:
     return replace(
         study,
         catalog=UnavailableSemanticSchemaCatalog(
             catalog_data,
             default_source_id=study.source_id,
+            embedding_model=embedding_model,
+            unavailable_reason_code=reason_code,
         ),
         knowledge=(
             UnavailableSemanticPublicationKnowledge(study.knowledge)
@@ -76,18 +82,44 @@ def bind_session_studies(
                 "Semantic catalog assets are unavailable for this study."
             )
             bound_studies.append(
-                _unavailable_study(study, {"tables": [], "columns": []})
+                _unavailable_study(
+                    study,
+                    {"tables": [], "columns": []},
+                    embedding_model=expected_embedding_model,
+                    reason_code="EMBEDDING_CONFIGURATION_UNAVAILABLE",
+                )
             )
             readiness_by_study[study.study_id] = readiness
             continue
 
         catalog_data = _catalog_data(paths)
+        if not api_key.strip():
+            readiness = _unavailable(
+                "Semantic retrieval requires OPENAI_API_KEY; lexical fallback is active."
+            )
+            bound_studies.append(
+                _unavailable_study(
+                    study,
+                    catalog_data,
+                    embedding_model=paths.embedding_model,
+                    reason_code="EMBEDDING_CREDENTIALS_MISSING",
+                )
+            )
+            readiness_by_study[study.study_id] = readiness
+            continue
         readiness = resolve_db_rag_readiness(
             paths=paths,
             expected_embedding_model=expected_embedding_model,
         )
         if not readiness.available:
-            bound_studies.append(_unavailable_study(study, catalog_data))
+            bound_studies.append(
+                _unavailable_study(
+                    study,
+                    catalog_data,
+                    embedding_model=paths.embedding_model,
+                    reason_code="EMBEDDING_CONFIGURATION_UNAVAILABLE",
+                )
+            )
             readiness_by_study[study.study_id] = readiness
             continue
 
@@ -139,7 +171,12 @@ def bind_session_studies(
             readiness = _unavailable(
                 "Semantic catalog binding is unavailable for this study."
             )
-            bound = _unavailable_study(study, catalog_data)
+            bound = _unavailable_study(
+                study,
+                catalog_data,
+                embedding_model=paths.embedding_model,
+                reason_code="EMBEDDING_INDEX_UNAVAILABLE",
+            )
 
         bound_studies.append(bound)
         readiness_by_study[study.study_id] = readiness

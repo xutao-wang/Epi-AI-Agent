@@ -228,7 +228,7 @@ def test_bind_session_studies_binds_publications_only_for_owning_study(
     assert bound.studies.require("nhanes-2017-2018").knowledge is None
 
 
-def test_one_failed_binding_does_not_enable_lexical_fallback(
+def test_one_failed_binding_enables_scoped_lexical_fallback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -260,8 +260,36 @@ def test_one_failed_binding_does_not_enable_lexical_fallback(
         "report-india-synthetic",
         "REPORT_TABLE",
     )
-    with pytest.raises(SemanticCatalogUnavailableError):
-        failed_catalog.search("FIELD")
+    outcome = failed_catalog.search_many_with_status(["FIELD"], limit=5)
+    assert outcome.status.mode == "lexical_fallback"
+    assert outcome.status.reason_code == "EMBEDDING_INDEX_UNAVAILABLE"
+    assert outcome.value[0][0].column == "FIELD"
+
+
+def test_missing_embedding_key_binds_lexical_fallback_without_opening_chroma(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = _bundle(tmp_path, "report-india-synthetic", "REPORT_TABLE")
+    monkeypatch.setattr(session_studies, "resolve_db_rag_readiness", _available)
+    monkeypatch.setattr(
+        session_studies.chromadb,
+        "PersistentClient",
+        _FakeClient,
+    )
+
+    bound = session_studies.bind_session_studies(
+        StudyRegistry([report]),
+        api_key="",
+        expected_embedding_model=EMBEDDING_MODEL,
+    )
+
+    outcome = bound.studies.require(
+        "report-india-synthetic"
+    ).catalog.search_many_with_status(["REPORT_TABLE"], limit=5)
+    assert _FakeClient.requested_paths == []
+    assert outcome.status.reason_code == "EMBEDDING_CREDENTIALS_MISSING"
+    assert outcome.value[0][0].table == "REPORT_TABLE"
 
 
 class _IsolatedEmbeddingFunction:

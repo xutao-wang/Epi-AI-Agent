@@ -62,15 +62,17 @@ def _catalog_data() -> dict[str, object]:
     }
 
 
-def test_base_catalog_preserves_exact_operations_but_cannot_search() -> None:
+def test_base_catalog_preserves_exact_operations_and_falls_back_to_lexical() -> None:
     catalog = SchemaCatalog(
         _catalog_data(),
         default_source_id="nhanes-2017-2018",
     )
 
-    with pytest.raises(SemanticCatalogUnavailableError):
-        catalog.search_many(["glycohemoglobin"], limit=5)
+    outcome = catalog.search_many_with_status(["glycohemoglobin"], limit=5)
 
+    assert outcome.status.mode == "lexical_fallback"
+    assert outcome.status.reason_code == "EMBEDDING_CONFIGURATION_UNAVAILABLE"
+    assert outcome.value[0][0].matched_by == ("lexical",)
     assert catalog.inspect_table("nhanes-2017-2018", "GHB_J")
     assert catalog.field_exists("GHB_J", "LBXGH")
 
@@ -148,7 +150,7 @@ def test_semantic_catalog_filters_rows_from_another_source() -> None:
     }
 
 
-def test_semantic_catalog_never_returns_lexical_only_after_vector_failure() -> None:
+def test_semantic_catalog_falls_back_after_vector_failure() -> None:
     catalog = SemanticSchemaCatalog(
         _catalog_data(),
         table_collection=_FailingCollection(),
@@ -157,16 +159,23 @@ def test_semantic_catalog_never_returns_lexical_only_after_vector_failure() -> N
         default_source_id="nhanes-2017-2018",
     )
 
-    with pytest.raises(SemanticCatalogUnavailableError):
-        catalog.search("LBXGH")
+    outcome = catalog.search_many_with_status(["LBXGH"], limit=5)
+
+    assert outcome.status.mode == "lexical_fallback"
+    assert outcome.status.reason_code == "EMBEDDING_INDEX_UNAVAILABLE"
+    assert outcome.value[0][0].column == "LBXGH"
+    assert outcome.value[0][0].matched_by == ("lexical",)
 
 
-def test_unavailable_semantic_catalog_allows_inspection_but_fails_search() -> None:
+def test_unavailable_semantic_catalog_allows_inspection_and_lexical_search() -> None:
     catalog = UnavailableSemanticSchemaCatalog(
         _catalog_data(),
         default_source_id="nhanes-2017-2018",
     )
 
+    outcome = catalog.search_many_with_status(["LBXGH"], limit=5)
+
     assert catalog.inspect_table("nhanes-2017-2018", "GHB_J")
-    with pytest.raises(SemanticCatalogUnavailableError):
-        catalog.search("LBXGH")
+    assert outcome.status.mode == "lexical_fallback"
+    assert outcome.status.reason_code == "EMBEDDING_CREDENTIALS_MISSING"
+    assert outcome.value[0][0].column == "LBXGH"

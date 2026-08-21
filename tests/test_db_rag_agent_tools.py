@@ -8,6 +8,7 @@ from db_rag.catalog import (
     SchemaEvidenceHit,
     SemanticCatalogUnavailableError,
 )
+from db_rag.retrieval_status import RetrievalOutcome, lexical_fallback_status
 from epi_agent.artifacts import StateArtifactStore
 from epi_agent.db_rag.tools import build_db_rag_tool_registry
 from epi_agent.protocol import (
@@ -56,6 +57,19 @@ class _UnavailableCatalog:
     def search_many(self, queries: list[str], *, limit: int):
         del queries, limit
         raise SemanticCatalogUnavailableError("semantic retrieval failed")
+
+
+class _FallbackCatalog(_HybridCatalog):
+    embedding_model = "OpenAI/text-embedding-3-large"
+
+    def search_many_with_status(self, queries: list[str], *, limit: int):
+        return RetrievalOutcome(
+            value=super().search_many(queries, limit=limit),
+            status=lexical_fallback_status(
+                self.embedding_model,
+                "EMBEDDING_CREDENTIALS_MISSING",
+            ),
+        )
 
 
 class _ManyHitCatalog:
@@ -155,6 +169,30 @@ def test_catalog_tool_persists_hybrid_retrieval_provenance() -> None:
     assert observation["probes"][0]["hits"][0]["matched_by"] == [
         "vector",
         "lexical",
+    ]
+
+
+def test_catalog_tool_persists_lexical_fallback_reason() -> None:
+    context = _context(_FallbackCatalog())
+
+    result = build_db_rag_tool_registry().invoke(
+        "dbrag-search_catalog",
+        {
+            "study_id": "nhanes-2017-2018",
+            "queries": ["glycemic control"],
+            "limit": 5,
+        },
+        context=context,
+    )
+
+    observation = context.artifact_store.require(result.artifacts[0]).content
+    assert observation["retrieval_mode"] == "lexical_fallback"
+    assert observation["embedding"]["available"] is False
+    assert observation["embedding"]["reason_code"] == (
+        "EMBEDDING_CREDENTIALS_MISSING"
+    )
+    assert "OPENAI_API_KEY is not configured" in observation["embedding"][
+        "message"
     ]
 
 
