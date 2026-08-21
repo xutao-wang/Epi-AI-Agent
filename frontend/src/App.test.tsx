@@ -1249,10 +1249,14 @@ describe("App", () => {
       ),
     ).toHaveClass("composer-model-lock-popover");
 
+    expect(
+      screen.queryByRole("button", {
+        name: "Start new conversation from saved conversations",
+      }),
+    ).not.toBeInTheDocument();
     const newConversation = screen.getByRole("button", {
-      name: "Start new conversation from saved conversations",
+      name: "New conversation",
     });
-    expect(newConversation).toHaveClass("conversation-history-new-button");
     fireEvent.click(newConversation);
 
     expect(
@@ -1921,9 +1925,7 @@ describe("App", () => {
       await Promise.resolve();
     });
     screen.getByRole("button", { name: "Untitled conversation" });
-    fireEvent.click(screen.getByRole("button", {
-      name: "Start new conversation from saved conversations",
-    }));
+    fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
     const stoppedAt = historyRequests;
 
     await act(async () => {
@@ -2091,6 +2093,56 @@ describe("App", () => {
     await screen.findByLabelText("Ask a question about your dataset!");
     expect(screen.queryByLabelText("Show debug state")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Debug state")).not.toBeInTheDocument();
+  });
+
+  it("starts a new conversation while the selected thread is running", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(runtimeOptionsResponse())
+      .mockResolvedValueOnce(createThreadResponse())
+      .mockResolvedValueOnce(
+        jsonResponse(
+          threadState({
+            run: {
+              state: "running",
+              steps: 1,
+              error: null,
+              error_code: null,
+              user_message: null,
+              started_at: 1,
+              updated_at: 1,
+            },
+            conversation: [
+              { id: "running-user", role: "user", text: "Long analysis" },
+            ],
+          }),
+        ),
+      );
+
+    render(
+      <App
+        apiBase="http://api.test"
+        fetchImpl={fetchMock}
+        loadConversationHistory={false}
+      />,
+    );
+    fireEvent.change(
+      await screen.findByLabelText("Ask a question about your dataset!"),
+      { target: { value: "Long analysis" } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await screen.findByRole("button", { name: "Cancel run" });
+
+    const newConversation = screen.getByRole("button", {
+      name: "New conversation",
+    });
+    expect(newConversation).toBeEnabled();
+    fireEvent.click(newConversation);
+
+    expect(screen.queryByText("Long analysis")).not.toBeInTheDocument();
+    expect(
+      screen.getByLabelText("Ask a question about your dataset!"),
+    ).toBeEnabled();
   });
 
   it("polls while a submitted message is running and renders the final state", async () => {

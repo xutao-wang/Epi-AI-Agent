@@ -902,7 +902,7 @@ export default function App({
   }
 
   function newConversation() {
-    if (isBusy) {
+    if (isConversationTransitionBusy) {
       return;
     }
 
@@ -939,13 +939,13 @@ export default function App({
     state?.run.error_code === "INTERRUPT_PROJECTION_FAILED";
   const isAwaitingHumanReview =
     Boolean(activeInterrupt) || hasUnprojectableInterrupt;
-  const isBusy =
+  const isConversationTransitionBusy =
     isSubmitting ||
     isResuming ||
     isCancelling ||
     isUploadingAttachments ||
-    isLoadingConversation ||
-    isRunInFlight;
+    isLoadingConversation;
+  const isBusy = isConversationTransitionBusy || isRunInFlight;
   const isComposerDisabled =
     !runtimeOptions || isBusy || isAwaitingHumanReview;
   const isSendDisabled =
@@ -1096,7 +1096,7 @@ export default function App({
       headerAction={
         <button
           className="new-conversation-button"
-          disabled={isBusy}
+          disabled={isConversationTransitionBusy}
           onClick={newConversation}
           type="button"
         >
@@ -1122,7 +1122,6 @@ export default function App({
             items={savedConversations}
             onArchive={archiveConversation}
             onDelete={deleteConversation}
-            onNewConversation={newConversation}
             onOpen={openConversation}
             onRename={renameConversation}
             onRestore={restoreConversation}

@@ -10,7 +10,6 @@ export default function ConversationHistory({
   onArchive,
   onRestore,
   onDelete,
-  onNewConversation,
 }: {
   items: ConversationSummary[];
   activeThreadId: string | null;
@@ -20,7 +19,6 @@ export default function ConversationHistory({
   onArchive: (threadId: string) => Promise<void>;
   onRestore: (threadId: string) => Promise<void>;
   onDelete: (threadId: string) => Promise<void>;
-  onNewConversation?: () => void;
 }) {
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
   const [titleDraft, setTitleDraft] = useState("");
@@ -63,16 +61,6 @@ export default function ConversationHistory({
     <section className="conversation-history" aria-label="Saved conversations">
       <div className="conversation-history-header">
         <h2>Saved conversations</h2>
-        {onNewConversation ? (
-          <button
-            aria-label="Start new conversation from saved conversations"
-            className="conversation-history-new-button"
-            onClick={onNewConversation}
-            type="button"
-          >
-            New conversation
-          </button>
-        ) : null}
       </div>
       <ol>
         {savedItems.map((item) => (

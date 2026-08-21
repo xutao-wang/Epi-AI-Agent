@@ -228,28 +228,6 @@ select {
   gap: 8px;
 }
 
-.conversation-history-new-button {
-  margin-left: auto;
-  border: 1px solid #0969da;
-  border-radius: 6px;
-  background: #0969da;
-  color: #ffffff;
-  padding: 5px 8px;
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.conversation-history-new-button:hover {
-  border-color: #0550ae;
-  background: #0550ae;
-}
-
-.conversation-history-new-button:focus-visible {
-  outline: 2px solid #0969da;
-  outline-offset: 2px;
-}
-
 .conversation-history ol {
   display: grid;
   gap: 4px;

@@ -21,7 +21,6 @@ const item = {
 describe("ConversationHistory", () => {
   it("opens a saved conversation and permits a manual rename", async () => {
     const onOpen = vi.fn();
-    const onNewConversation = vi.fn();
     const onRename = vi.fn().mockResolvedValue(undefined);
 
     render(
@@ -33,19 +32,11 @@ describe("ConversationHistory", () => {
         onArchive={vi.fn()}
         onRestore={vi.fn()}
         onDelete={vi.fn()}
-        onNewConversation={onNewConversation}
       />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: item.title }));
     expect(onOpen).toHaveBeenCalledWith(item.thread_id);
-
-    const newConversation = screen.getByRole("button", {
-      name: "Start new conversation from saved conversations",
-    });
-    expect(newConversation).toHaveClass("conversation-history-new-button");
-    fireEvent.click(newConversation);
-    expect(onNewConversation).toHaveBeenCalledOnce();
 
     expect(
       screen.getByRole("button", { name: "Rename " + item.title }),
