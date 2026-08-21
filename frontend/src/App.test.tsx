@@ -1652,6 +1652,118 @@ describe("App", () => {
     expect(resumedMessageBody).toBe(JSON.stringify({ text: "Continue the analysis" }));
   });
 
+  it("confirms an available replacement before continuing saved history", async () => {
+    const savedThreadId = "thread-saved";
+    const confirm = vi.spyOn(window, "confirm")
+      .mockReturnValueOnce(false)
+      .mockReturnValue(true);
+    let submittedBody: BodyInit | null | undefined;
+    const claudeOptions: RuntimeOptions = {
+      ...runtimeOptions,
+      defaults: {
+        ...defaultRuntimeSettings,
+        model_name: "claude-opus-5",
+      },
+      models: [
+        modelOption("claude-opus-5", "Claude Opus 5", {
+          provider: "anthropic",
+          provider_label: "Anthropic",
+          supports_sampling_controls: false,
+        }),
+      ],
+    };
+    const historicalState = threadState({
+      thread_id: savedThreadId,
+      conversation: [
+        { id: "prior-user", role: "user", text: "Compare TB survival" },
+      ],
+      runtime_settings: {
+        ...defaultRuntimeSettings,
+        model_name: "gpt-5.6-terra",
+      },
+      runtime_settings_locked: true,
+      model_name: "gpt-5.6-terra",
+      model_label: "gpt-5.6-terra (Medium)",
+      model_available: false,
+      model_replacement_required: true,
+    } as unknown as Partial<ApiThreadState>);
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "http://api.test/api/runtime/options") {
+        return Promise.resolve(runtimeOptionsResponse(claudeOptions));
+      }
+      if (url === "http://api.test/api/conversations") {
+        return Promise.resolve(jsonResponse({
+          items: [{
+            thread_id: savedThreadId,
+            title: "TB cohort survival analysis",
+            title_source: "automatic",
+            model_name: "gpt-5.6-terra",
+            created_at: "2026-07-30T00:00:00+00:00",
+            updated_at: "2026-07-30T00:00:00+00:00",
+          }],
+        }));
+      }
+      if (url === `http://api.test/api/threads/${savedThreadId}/state`) {
+        return Promise.resolve(jsonResponse(historicalState));
+      }
+      if (url.endsWith("/open")) {
+        return Promise.resolve(jsonResponse({
+          thread_id: savedThreadId,
+          title: "TB cohort survival analysis",
+          title_source: "automatic",
+          model_name: "gpt-5.6-terra",
+          created_at: "2026-07-30T00:00:00+00:00",
+          updated_at: "2026-07-30T00:00:00+00:00",
+        }));
+      }
+      if (
+        url === `http://api.test/api/threads/${savedThreadId}/messages`
+        && init?.method === "POST"
+      ) {
+        submittedBody = init.body;
+        return Promise.resolve(jsonResponse(threadState({
+          thread_id: savedThreadId,
+          runtime_settings: claudeOptions.defaults,
+          runtime_settings_locked: true,
+        })));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+
+    render(<App apiBase="http://api.test" fetchImpl={fetchMock} />);
+    fireEvent.click(await screen.findByRole("button", {
+      name: "TB cohort survival analysis",
+    }));
+
+    expect(await screen.findByText(/used gpt-5.6-terra \(Medium\)/i))
+      .toBeInTheDocument();
+    const replacement = screen.getByRole("combobox", {
+      name: "Replacement model",
+    });
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    fireEvent.change(replacement, { target: { value: "claude-opus-5" } });
+    fireEvent.change(screen.getByLabelText("Ask a question about your dataset!"), {
+      target: { value: "Continue the analysis" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(submittedBody).toBeUndefined();
+    expect(screen.getByLabelText("Ask a question about your dataset!"))
+      .toHaveValue("Continue the analysis");
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(submittedBody).toBe(JSON.stringify({
+        text: "Continue the analysis",
+        model_name: "claude-opus-5",
+      }));
+    });
+    expect(confirm).toHaveBeenLastCalledWith(
+      "This conversation used gpt-5.6-terra (Medium). Continue with Claude Opus 5?",
+    );
+  });
+
   it("keeps the newest saved-conversation list when an earlier refresh finishes late", async () => {
     const initialHistory = deferred<Response>();
     const refreshedHistory = deferred<Response>();

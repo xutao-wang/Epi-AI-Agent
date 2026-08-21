@@ -6,9 +6,11 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from dotenv import dotenv_values
 
 from run_fastapi import (
     StartupConfigurationError,
+    configure_and_verify_providers,
     configure_native_runtime,
     ensure_active_provider_credential,
     normalize_secret_input,
@@ -139,13 +141,7 @@ def test_configure_native_runtime_rejects_unconfirmed_missing_custom_directory(
 
 
 def test_configured_models_offer_only_profiled_models() -> None:
-    environ = {
-        "OPENAI_MODEL": "gpt-5.4",
-        "REPORT_AGENT_ALLOWED_MODELS": (
-            "gpt-5.4,gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol"
-        ),
-        "REPORT_AGENT_TITLE_MODEL": "gpt-5.6-luna",
-    }
+    environ = {"OPENAI_API_KEY": "configured"}
 
     assert configured_openai_models(environ) == (
         "gpt-5.4",
@@ -154,16 +150,6 @@ def test_configured_models_offer_only_profiled_models() -> None:
         "gpt-5.6-sol",
     )
     assert configured_title_model(environ) == "gpt-5.6-luna"
-
-
-def test_configured_models_reject_removed_gpt55() -> None:
-    with pytest.raises(ValueError, match="not an allowed application model"):
-        configured_openai_models(
-            {
-                "OPENAI_MODEL": "gpt-5.4",
-                "REPORT_AGENT_ALLOWED_MODELS": "gpt-5.4,gpt-5.5",
-            }
-        )
 
 
 def test_epi_agent_max_iterations_defaults_to_fifty() -> None:
@@ -193,17 +179,7 @@ def test_epi_agent_max_iterations_rejects_invalid_values(
         )
 
 
-def test_configured_models_reject_disallowed_default() -> None:
-    with pytest.raises(ValueError, match="OPENAI_MODEL"):
-        configured_openai_models(
-            {
-                "OPENAI_MODEL": "gpt-5.6-sol",
-                "REPORT_AGENT_ALLOWED_MODELS": "gpt-5.6-terra",
-            }
-        )
-
-
-def test_validate_startup_requires_openai_api_key(tmp_path: Path) -> None:
+def test_validate_startup_requires_a_configured_provider(tmp_path: Path) -> None:
     (tmp_path / "frontend" / "dist").mkdir(parents=True)
     (tmp_path / "frontend" / "dist" / "index.html").write_text(
         "<!doctype html>",
@@ -212,7 +188,7 @@ def test_validate_startup_requires_openai_api_key(tmp_path: Path) -> None:
 
     with pytest.raises(
         StartupConfigurationError,
-        match="OPENAI_API_KEY",
+        match="No verified AI model provider",
     ):
         validate_startup(
             project_root=tmp_path,
@@ -272,6 +248,126 @@ def test_parse_args_does_not_import_api_app(monkeypatch) -> None:
 )
 def test_normalize_secret_input(value: str, expected: str) -> None:
     assert normalize_secret_input(value) == expected
+
+
+def test_existing_openai_key_exposes_only_registered_gpt_models(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, str, str | None]] = []
+    persisted: list[dict[str, str]] = []
+    environ = {"OPENAI_API_KEY": "openai-key"}
+
+    catalog = configure_and_verify_providers(
+        project_root=tmp_path,
+        environ=environ,
+        verifier=lambda provider, key, *, base_url=None: calls.append(
+            (provider, key, base_url)
+        ),
+        persist=lambda _root, values: persisted.append(values),
+        input_fn=lambda _prompt: pytest.fail("provider menu should not open"),
+        getpass_fn=lambda _prompt: pytest.fail("key prompt should not open"),
+        output_fn=lambda _message: None,
+    )
+
+    assert calls == [("openai", "openai-key", None)]
+    assert catalog.available_model_ids == (
+        "gpt-5.4",
+        "gpt-5.6-luna",
+        "gpt-5.6-terra",
+        "gpt-5.6-sol",
+    )
+    assert persisted == []
+
+
+def test_existing_anthropic_key_exposes_only_registered_claude_models(
+    tmp_path: Path,
+) -> None:
+    catalog = configure_and_verify_providers(
+        project_root=tmp_path,
+        environ={"ANTHROPIC_API_KEY": "anthropic-key"},
+        verifier=lambda _provider, _key, **_kwargs: None,
+        persist=lambda _root, _values: None,
+        input_fn=lambda _prompt: pytest.fail("provider menu should not open"),
+        getpass_fn=lambda _prompt: pytest.fail("key prompt should not open"),
+        output_fn=lambda _message: None,
+    )
+
+    assert catalog.available_model_ids == (
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-haiku-4-5",
+    )
+
+
+def test_no_keys_can_configure_both_and_persist_only_verified_keys(
+    tmp_path: Path,
+) -> None:
+    secrets = iter(["openai-key", "anthropic-key"])
+    saved: list[dict[str, str]] = []
+
+    catalog = configure_and_verify_providers(
+        project_root=tmp_path,
+        environ={},
+        input_fn=lambda _prompt: "3",
+        getpass_fn=lambda _prompt: next(secrets),
+        verifier=lambda _provider, _key, **_kwargs: None,
+        persist=lambda _root, values: saved.append(values),
+        output_fn=lambda _message: None,
+    )
+
+    assert saved == [
+        {"OPENAI_API_KEY": "openai-key"},
+        {"ANTHROPIC_API_KEY": "anthropic-key"},
+    ]
+    assert "gpt-5.6-terra" in catalog.available_model_ids
+    assert "claude-opus-5" in catalog.available_model_ids
+
+
+def test_failed_compatible_endpoint_is_omitted_when_builtin_provider_works(
+    tmp_path: Path,
+) -> None:
+    registry = tmp_path / "custom_models.json"
+    registry.write_text(
+        '[{"id":"cluster-model","base_url":"https://llm.internal/v1"}]',
+        encoding="utf-8",
+    )
+    environ = {
+        "OPENAI_API_KEY": "openai-key",
+        "REPORT_AGENT_CUSTOM_MODELS_PATH": str(registry),
+    }
+
+    def verifier(_provider: str, _key: str, *, base_url=None) -> None:
+        if base_url:
+            raise ProviderCredentialError("network", "endpoint unavailable")
+
+    catalog = configure_and_verify_providers(
+        project_root=tmp_path,
+        environ=environ,
+        verifier=verifier,
+        persist=lambda _root, _values: None,
+        input_fn=lambda _prompt: "3",
+        getpass_fn=lambda _prompt: pytest.fail("key prompt should not open"),
+        output_fn=lambda _message: None,
+    )
+
+    assert "gpt-5.6-terra" in catalog.available_model_ids
+    assert "cluster-model" not in catalog.available_model_ids
+
+
+def test_native_runtime_persists_root_but_not_derived_checkpoint(
+    tmp_path: Path,
+) -> None:
+    selected = configure_native_runtime(
+        project_root=tmp_path,
+        environ={},
+        input_fn=lambda _prompt: "",
+        choose_directory=lambda: None,
+        persist=True,
+    )
+
+    saved = dotenv_values(tmp_path / ".env")
+    assert saved["REPORT_AGENT_RUNTIME_ROOT"] == str(selected)
+    assert "REPORT_AGENT_CHECKPOINT_DB_PATH" not in saved
 
 
 def test_existing_verified_key_does_not_prompt_or_persist(tmp_path: Path) -> None:
@@ -417,11 +513,10 @@ def test_main_does_not_start_uvicorn_when_credential_setup_fails(
     monkeypatch.setattr(run_fastapi, "load_app_environment", lambda _root: None)
     monkeypatch.setattr(run_fastapi, "configure_native_runtime", lambda: None)
     monkeypatch.setattr(run_fastapi, "prepare_environment", lambda: None)
-    monkeypatch.setattr(run_fastapi, "configure_model_provider", lambda **_kwargs: None)
     monkeypatch.setattr(
         run_fastapi,
-        "ensure_provider_credentials",
-        lambda: (_ for _ in ()).throw(
+        "configure_and_verify_providers",
+        lambda **_kwargs: (_ for _ in ()).throw(
             StartupConfigurationError("OpenAI API key setup was cancelled.")
         ),
     )
@@ -442,6 +537,8 @@ def test_main_verifies_credentials_before_starting_uvicorn(
     import run_fastapi
 
     events: list[str] = []
+    catalog = SimpleNamespace(default_model_id="gpt-5.6-terra")
+    application = object()
     monkeypatch.setenv("REPORT_AGENT_RUNTIME_ROOT", str(tmp_path))
     monkeypatch.setattr(
         run_fastapi,
@@ -460,18 +557,26 @@ def test_main_verifies_credentials_before_starting_uvicorn(
     )
     monkeypatch.setattr(
         run_fastapi,
-        "configure_model_provider",
-        lambda **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        run_fastapi,
-        "ensure_provider_credentials",
-        lambda: events.append("credentials"),
+        "configure_and_verify_providers",
+        lambda **_kwargs: events.append("credentials") or catalog,
     )
     monkeypatch.setattr(
         run_fastapi,
         "validate_startup",
-        lambda: events.append("startup"),
+        lambda **kwargs: (
+            kwargs["model_availability"] is catalog
+            or pytest.fail("catalog not validated")
+        ) and events.append("startup"),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "api.app",
+        SimpleNamespace(
+            build_application=lambda **kwargs: (
+                kwargs["model_availability"] is catalog
+                or pytest.fail("catalog not injected")
+            ) and application
+        ),
     )
     monkeypatch.setitem(
         sys.modules,
@@ -490,5 +595,5 @@ def test_main_verifies_credentials_before_starting_uvicorn(
         "environment",
         "credentials",
         "startup",
-        "uvicorn:api.app:app:0.0.0.0:9000:info",
+        f"uvicorn:{application}:0.0.0.0:9000:info",
     ]

@@ -139,6 +139,12 @@ def _classify_anthropic_error(exc: Exception) -> tuple[str, str] | None:
         )
     if isinstance(exc, anthropic.BadRequestError):
         message = str(exc).lower()
+        if "credit" in message or "billing" in message:
+            return _public_failure(
+                "PROVIDER_CREDITS_EXHAUSTED",
+                "The Anthropic account has no remaining API credits. Add "
+                "credits or use a funded API key, then retry.",
+            )
         if "prompt is too long" in message or "context" in message:
             return _public_failure(
                 "PROVIDER_CONTEXT_LIMIT_EXCEEDED",

@@ -4,7 +4,7 @@ import base64
 from copy import deepcopy
 import csv
 from concurrent.futures import ThreadPoolExecutor
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 import hashlib
 import io
@@ -92,7 +92,10 @@ from utils.review_interrupts import (
     project_review_interrupt,
     validate_resume_decision,
 )
-from utils.model_runtime_profiles import model_runtime_profile
+from utils.model_runtime_profiles import (
+    MODEL_RUNTIME_PROFILES,
+    ModelRuntimeProfile,
+)
 from utils.provider_errors import classify_llm_error
 from utils.run_cancellation import (
     CancellationToken,
@@ -259,6 +262,15 @@ class ThreadAwaitingReviewError(RuntimeError):
     def __init__(self, thread_id: str) -> None:
         self.thread_id = thread_id
         super().__init__(f"Thread {thread_id} is awaiting human review")
+
+
+class ModelReplacementRequiredError(RuntimeError):
+    def __init__(self, model_name: str) -> None:
+        self.model_name = model_name
+        super().__init__(
+            f"Model {model_name} is unavailable. Choose an available model "
+            "to continue."
+        )
 
 
 class StaleInterruptError(RuntimeError):
@@ -1127,6 +1139,7 @@ def _initial_graph_state(
 @dataclass
 class ThreadRuntime:
     settings: RuntimeSettings
+    model_available: bool = True
     thread_id: str = ""
     app: Any | None = None
     runner: ApiGraphRunner | None = None
@@ -1157,6 +1170,9 @@ class ReportAgentApiRuntime:
     graph_factory: GraphFactory
     default_runtime_settings: dict[str, Any]
     models: list[str]
+    registered_models: Mapping[str, ModelRuntimeProfile] = field(
+        default_factory=lambda: dict(MODEL_RUNTIME_PROFILES)
+    )
     runtime_root: str | Path | None = None
     checkpoint_path: str | Path | None = None
     capabilities: RuntimeCapabilities = field(
@@ -1242,7 +1258,7 @@ class ReportAgentApiRuntime:
             runtime_settings = identity if isinstance(identity, dict) else runtime_settings
         thread_id = new_thread_id()
         thread = ThreadRuntime(
-            settings=self._normalize_settings(runtime_settings),
+            settings=self._normalize_executable_settings(runtime_settings),
             thread_id=thread_id,
         )
         if self.history_store is not None and explicit_identity:
@@ -1323,7 +1339,7 @@ class ReportAgentApiRuntime:
                     self._clear_graph(thread)
                     self._threads.pop(key, None)
 
-    def _normalize_settings(
+    def _normalize_persisted_settings(
         self,
         settings: dict[str, Any] | None = None,
     ) -> RuntimeSettings:
@@ -1341,22 +1357,19 @@ class ReportAgentApiRuntime:
                 {key: value for key, value in settings.items() if value is not None}
             )
         normalized = RuntimeSettings(**merged)
-        if normalized.model_name not in self.models:
-            raise ValueError(
-                f"Unsupported model: {normalized.model_name}"
-            )
-        profile = model_runtime_profile(normalized.model_name)
-        if not profile.supports_sampling_controls:
-            normalized.temperature = None
-            normalized.top_p = None
-        if (
-            settings
-            and "model_name" in settings
-            and "timeout_seconds" not in settings
-        ):
-            normalized.timeout_seconds = float(
-                profile.workflow_timeout_seconds
-            )
+        profile = self.registered_models.get(normalized.model_name)
+        if profile is not None:
+            if not profile.supports_sampling_controls:
+                normalized.temperature = None
+                normalized.top_p = None
+            if (
+                settings
+                and "model_name" in settings
+                and "timeout_seconds" not in settings
+            ):
+                normalized.timeout_seconds = float(
+                    profile.workflow_timeout_seconds
+                )
         if normalized.temperature is not None and not 0 <= normalized.temperature <= 1:
             raise ValueError("temperature must be between 0 and 1")
         if normalized.top_p is not None and not 0 <= normalized.top_p <= 1:
@@ -1365,6 +1378,15 @@ class ReportAgentApiRuntime:
             raise ValueError("max_steps must be at least 1")
         if normalized.timeout_seconds is not None and normalized.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be greater than 0")
+        return normalized
+
+    def _normalize_executable_settings(
+        self,
+        settings: dict[str, Any] | None = None,
+    ) -> RuntimeSettings:
+        normalized = self._normalize_persisted_settings(settings)
+        if normalized.model_name not in self.models:
+            raise ValueError(f"Unsupported model: {normalized.model_name}")
         return normalized
 
     def _require_owned_thread(
@@ -1396,8 +1418,10 @@ class ReportAgentApiRuntime:
             thread = self._threads.get(key)
             if thread is None:
                 settings = {"model_name": record.model_name} if record else None
+                normalized = self._normalize_persisted_settings(settings)
                 thread = ThreadRuntime(
-                    settings=self._normalize_settings(settings),
+                    settings=normalized,
+                    model_available=normalized.model_name in self.models,
                     thread_id=thread_id,
                     locked=record is not None,
                 )
@@ -1582,15 +1606,15 @@ class ReportAgentApiRuntime:
         return None
 
     def runtime_info(self) -> RuntimeInfo:
-        return RuntimeInfo(**self._normalize_settings().model_dump())
+        return RuntimeInfo(**self._normalize_executable_settings().model_dump())
 
     def runtime_options(self) -> RuntimeOptions:
-        defaults = self._normalize_settings()
+        defaults = self._normalize_executable_settings()
         return RuntimeOptions(
             defaults=defaults,
             capabilities=self.capabilities,
             models=[
-                ModelOption(**model_runtime_profile(model).descriptor())
+                ModelOption(**self.registered_models[model].descriptor())
                 for model in self.models
             ],
         )
@@ -1947,10 +1971,34 @@ class ReportAgentApiRuntime:
             raise TypeError("text is required")
         attachment_ids = list(attachment_ids or [])
         thread = self._require_owned_thread(identity, thread_id)
-        if model_name:
+        if not thread.model_available:
+            if not model_name:
+                raise ModelReplacementRequiredError(thread.settings.model_name)
+            replacement = self._normalize_executable_settings(
+                {"model_name": model_name}
+            )
+            previous = thread.settings
+            thread.settings = replacement
+            try:
+                self._ensure_graph(identity, thread, provider_api_key)
+                if self.history_store is not None and not self.history_store.set_model(
+                    identity.owner_user_id,
+                    thread_id,
+                    replacement.model_name,
+                ):
+                    raise KeyError(thread_id)
+            except Exception:
+                thread.settings = previous
+                self._clear_graph(thread)
+                raise
+            thread.model_available = True
+            thread.locked = True
+        elif model_name:
             if thread.locked:
                 raise ValueError("The model is locked for this conversation.")
-            thread.settings = self._normalize_settings({"model_name": model_name})
+            thread.settings = self._normalize_executable_settings(
+                {"model_name": model_name}
+            )
         self._ensure_graph(identity, thread, provider_api_key)
         app, runner = self._bound_graph(thread)
         snapshot = app.get_state(
@@ -2580,13 +2628,18 @@ class ReportAgentApiRuntime:
         else:
             thread_id = identity
         thread = self._thread(identity, thread_id)
+        stored_profile = self.registered_models.get(thread.settings.model_name)
+        model_label = (
+            stored_profile.label if stored_profile is not None
+            else thread.settings.model_name
+        )
         if legacy_local_call and thread.app is None:
             local_identity = RequestIdentity(
                 user=AuthenticatedUser(owner_user_id="local-user"),
                 session_id=LOCAL_SESSION_ID,
             )
             self._ensure_graph(local_identity, thread, None)
-        if provider_api_key is not None:
+        if provider_api_key is not None and thread.model_available:
             if not isinstance(identity, RequestIdentity):
                 raise TypeError("identity must be a RequestIdentity")
             self._ensure_graph(identity, thread, provider_api_key)
@@ -2599,6 +2652,8 @@ class ReportAgentApiRuntime:
                     run_status=_idle_status(),
                     runtime_settings=thread.settings,
                     runtime_settings_locked=thread.locked,
+                    model_label=model_label,
+                    model_available=thread.model_available,
                 )
             return project_thread_state(
                 thread_id=thread_id,
@@ -2606,6 +2661,8 @@ class ReportAgentApiRuntime:
                 run_status=_idle_status(),
                 runtime_settings=thread.settings,
                 runtime_settings_locked=thread.locked,
+                model_label=model_label,
+                model_available=thread.model_available,
             )
         app, runner = self._bound_graph(thread)
         snapshot = app.get_state(
@@ -2632,6 +2689,8 @@ class ReportAgentApiRuntime:
             run_status=run_status,
             runtime_settings=thread.settings,
             runtime_settings_locked=thread.locked,
+            model_label=model_label,
+            model_available=thread.model_available,
         )
         if projected.active_interrupt is not None:
             self._activity_call(
@@ -2657,6 +2716,8 @@ class ReportAgentApiRuntime:
             run_status=run_status,
             runtime_settings=thread.settings,
             runtime_settings_locked=thread.locked,
+            model_label=model_label,
+            model_available=thread.model_available,
             activity_runs=self._activity_runs(thread_id),
         )
 
@@ -3238,6 +3299,8 @@ def project_thread_state(
     run_status: dict[str, Any],
     runtime_settings: RuntimeSettings | None = None,
     runtime_settings_locked: bool = False,
+    model_label: str = "",
+    model_available: bool = True,
     activity_runs: list[ActivityRun] | None = None,
 ) -> ApiThreadState:
     values = _projection_values(snapshot)
@@ -3341,4 +3404,10 @@ def project_thread_state(
         runtime_settings=runtime_settings,
         runtime_settings_locked=runtime_settings_locked,
         model_name=runtime_settings.model_name if runtime_settings else "",
+        model_label=(
+            model_label
+            or (runtime_settings.model_name if runtime_settings else "")
+        ),
+        model_available=model_available,
+        model_replacement_required=not model_available,
     )

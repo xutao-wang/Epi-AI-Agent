@@ -41,17 +41,19 @@ python -m playwright install chromium
 If Chromium is not installed, browser smokes are unavailable and must not be
 reported as passing.
 
-On the first native start, choose where to keep study data and local runtime
-data, then choose the AI model provider (OpenAI, Anthropic Claude, or a custom
-OpenAI-compatible endpoint). Re-open the provider menu any time with
+On the first native start, choose where to keep local runtime data, then choose
+the AI model provider (OpenAI, Anthropic Claude, both, or a compatible
+endpoint). Re-open the provider menu any time with
 `python run_fastapi.py --reconfigure`. Set `REPORT_AGENT_STUDY_ROOT` and
 `REPORT_AGENT_RUNTIME_ROOT` to preselect the local folders. They hold
 conversations, uploads, generated datasets, and results and are intentionally
 not committed.
 
-You will then be asked to enter the API key for each provider backing the
-configured models (OpenAI by default), so have it ready. Once verified, the
-app prints the following local address:
+The launcher verifies every configured provider on every start. A failed
+OpenAI or Anthropic key is reported by provider name and you are prompted for
+a replacement; the failed value is never saved. A failed compatible endpoint
+is omitted from the available model list for that run. Once at least one
+provider verifies, the app prints the following local address:
 
 <http://127.0.0.1:8000/>
 
@@ -67,19 +69,23 @@ continues to open a separate blank conversation and does not cancel work.
 
 ## Model providers
 
-Models are configured in `config/app.env`:
+The available model list is derived from verified providers:
 
-- `REPORT_AGENT_ALLOWED_MODELS` may mix OpenAI models (`gpt-*`, needs
-  `OPENAI_API_KEY`), Anthropic models (`claude-opus-5`, `claude-sonnet-5`,
-  `claude-haiku-4-5`, needs `ANTHROPIC_API_KEY`), and custom
-  OpenAI-compatible models served by e.g. vLLM.
-- `REPORT_AGENT_MODEL` selects the default model and must appear in the
-  allowed list. The startup provider menu writes both values to `.env`;
-  `--reconfigure` re-opens the menu.
+- A verified `OPENAI_API_KEY` shows every registered GPT model.
+- A verified `ANTHROPIC_API_KEY` shows every registered Claude model.
+- When both keys verify, both model families appear.
+- `REPORT_AGENT_MODEL` and `REPORT_AGENT_ALLOWED_MODELS` are obsolete and are
+  removed from `.env` during startup. The default is GPT-5.6 Terra when OpenAI
+  is available, otherwise Claude Opus 5.
 - Custom endpoints are registered in `config/custom_models.json` (see
   `config/custom_models.example.json`): each entry names the endpoint's
   `base_url`, the served model name, optional token limits, and an optional
-  `api_key_env` variable for its key.
+  `api_key_env` variable for its key. This option connects to an externally
+  managed compatible service; it does not install or start vLLM or Ray.
+
+Saved conversations remain readable if their original provider is unavailable.
+To send another message in such a conversation, select and confirm one of the
+currently available models; the conversation then continues with that model.
 
 Database extraction (DB-RAG semantic search) always embeds queries with
 OpenAI, so it needs `OPENAI_API_KEY` even when chatting with Claude or a

@@ -429,6 +429,9 @@ class ApiThreadState(BaseModel):
     runtime_settings: RuntimeSettings | None = None
     runtime_settings_locked: bool = False
     model_name: str = ""
+    model_label: str = ""
+    model_available: bool = True
+    model_replacement_required: bool = False
 
 
 class CreateThreadRequest(BaseModel):

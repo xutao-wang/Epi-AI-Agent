@@ -28,6 +28,7 @@ from openai import (
 
 from api.runtime import (
     ApiGraphRunner,
+    ModelReplacementRequiredError,
     ReportAgentApiRuntime,
     ThreadRuntime,
     ThreadAwaitingReviewError,
@@ -574,6 +575,153 @@ def test_runtime_reopens_saved_thread_with_its_persisted_model(tmp_path: Path) -
 
     assert reopened.settings.model_name == "gpt-5.6-luna"
     assert reopened.locked is True
+
+
+def test_saved_gpt_thread_loads_when_only_claude_is_available(
+    tmp_path: Path,
+) -> None:
+    history_store = ConversationHistoryStore(tmp_path / "history.db")
+    history_store.create(
+        "local-user",
+        "saved-thread",
+        model_name="gpt-5.6-terra",
+    )
+    factory = _RecordingGraphFactory()
+    runtime = ReportAgentApiRuntime(
+        graph_factory=factory,
+        default_runtime_settings={
+            **_DEFAULT_RUNTIME_SETTINGS,
+            "model_name": "claude-opus-5",
+        },
+        models=["claude-opus-5"],
+        history_store=history_store,
+    )
+
+    state = runtime.state(
+        _LOCAL_IDENTITY,
+        "saved-thread",
+        provider_api_key="local-environment",
+    )
+    listed = runtime.list_conversations(_LOCAL_IDENTITY)
+
+    assert state.runtime_settings is not None
+    assert state.runtime_settings.model_name == "gpt-5.6-terra"
+    assert state.model_label == "gpt-5.6-terra (Medium)"
+    assert state.model_available is False
+    assert state.model_replacement_required is True
+    assert listed[0].thread_id == "saved-thread"
+    assert factory.calls == []
+
+
+def test_unknown_historical_model_id_remains_readable(tmp_path: Path) -> None:
+    history_store = ConversationHistoryStore(tmp_path / "history.db")
+    history_store.create(
+        "local-user",
+        "legacy-thread",
+        model_name="removed-custom-model",
+    )
+    factory = _RecordingGraphFactory()
+    runtime = ReportAgentApiRuntime(
+        graph_factory=factory,
+        default_runtime_settings=_DEFAULT_RUNTIME_SETTINGS,
+        models=["gpt-5.4"],
+        history_store=history_store,
+    )
+
+    state = runtime.state(_LOCAL_IDENTITY, "legacy-thread")
+
+    assert state.runtime_settings is not None
+    assert state.runtime_settings.model_name == "removed-custom-model"
+    assert state.model_label == "removed-custom-model"
+    assert state.model_replacement_required is True
+    assert factory.calls == []
+
+
+def test_unavailable_historical_model_requires_explicit_replacement(
+    tmp_path: Path,
+) -> None:
+    history_store = ConversationHistoryStore(tmp_path / "history.db")
+    history_store.create(
+        "local-user",
+        "saved-thread",
+        model_name="gpt-5.6-terra",
+    )
+    factory = _RecordingGraphFactory()
+    runtime = ReportAgentApiRuntime(
+        graph_factory=factory,
+        default_runtime_settings={
+            **_DEFAULT_RUNTIME_SETTINGS,
+            "model_name": "claude-opus-5",
+        },
+        models=["claude-opus-5"],
+        history_store=history_store,
+    )
+
+    with pytest.raises(ModelReplacementRequiredError, match="gpt-5.6-terra"):
+        runtime.submit_message(
+            _LOCAL_IDENTITY,
+            "saved-thread",
+            "continue",
+            provider_api_key="local-environment",
+        )
+
+    runtime.submit_message(
+        _LOCAL_IDENTITY,
+        "saved-thread",
+        "continue",
+        model_name="claude-opus-5",
+        provider_api_key="local-environment",
+    )
+
+    saved = history_store.get("local-user", "saved-thread")
+    assert saved is not None
+    assert saved.model_name == "claude-opus-5"
+    assert factory.calls[0]["model_name"] == "claude-opus-5"
+    state = runtime.state(_LOCAL_IDENTITY, "saved-thread")
+    assert state.model_available is True
+    assert state.model_replacement_required is False
+    assert state.runtime_settings_locked is True
+
+
+def test_failed_replacement_graph_does_not_rewrite_historical_model(
+    tmp_path: Path,
+) -> None:
+    history_store = ConversationHistoryStore(tmp_path / "history.db")
+    history_store.create(
+        "local-user",
+        "saved-thread",
+        model_name="gpt-5.6-terra",
+    )
+
+    def failing_factory(_settings, _context):
+        raise RuntimeError("provider unavailable")
+
+    runtime = ReportAgentApiRuntime(
+        graph_factory=failing_factory,
+        default_runtime_settings={
+            **_DEFAULT_RUNTIME_SETTINGS,
+            "model_name": "claude-opus-5",
+        },
+        models=["claude-opus-5"],
+        history_store=history_store,
+    )
+
+    with pytest.raises(RuntimeError, match="provider unavailable"):
+        runtime.submit_message(
+            _LOCAL_IDENTITY,
+            "saved-thread",
+            "continue",
+            model_name="claude-opus-5",
+            provider_api_key="local-environment",
+        )
+
+    saved = history_store.get("local-user", "saved-thread")
+    assert saved is not None
+    assert saved.model_name == "gpt-5.6-terra"
+    thread = runtime._thread(_LOCAL_IDENTITY, "saved-thread")
+    assert thread.settings.model_name == "gpt-5.6-terra"
+    assert thread.model_available is False
+    assert thread.app is None
 
 
 def test_runtime_history_operations_are_scoped_to_request_identity(tmp_path: Path) -> None:

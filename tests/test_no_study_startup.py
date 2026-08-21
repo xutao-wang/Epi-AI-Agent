@@ -185,10 +185,44 @@ def test_application_factory_uses_fixed_local_identity(
     ].app is None
 
 
-def test_application_factory_requires_local_openai_key(tmp_path: Path) -> None:
+def test_application_factory_uses_only_verified_catalog_models(
+    tmp_path: Path,
+) -> None:
+    from api.app import build_application
+    from utils.model_availability import (
+        ProviderEndpoint,
+        build_model_availability,
+    )
+
+    environ = {
+        "ANTHROPIC_API_KEY": "anthropic-key",
+        "REPORT_AGENT_RUNTIME_ROOT": str(tmp_path / "runtime"),
+        "REPORT_AGENT_STUDY_ROOT": str(tmp_path / "studies"),
+    }
+    catalog = build_model_availability(
+        environ,
+        {ProviderEndpoint("anthropic", "ANTHROPIC_API_KEY")},
+    )
+
+    application = build_application(
+        environ=environ,
+        model_availability=catalog,
+    )
+
+    runtime = application.state.report_agent_runtime
+    assert runtime.models == [
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-haiku-4-5",
+    ]
+    assert runtime.default_runtime_settings["model_name"] == "claude-opus-5"
+    assert runtime.capabilities.db_rag_dataset.status == "not_configured"
+
+
+def test_application_factory_requires_at_least_one_provider(tmp_path: Path) -> None:
     from api.app import build_application
 
-    with pytest.raises(ValueError, match="OPENAI_API_KEY is required"):
+    with pytest.raises(ValueError, match="No verified AI model provider"):
         build_application(
             environ={
                 "REPORT_AGENT_RUNTIME_ROOT": str(tmp_path / "runtime"),

@@ -327,7 +327,7 @@ class CustomModelEntry(BaseModel):
             output_usd_per_million=price,
             provider=PROVIDER_OPENAI_COMPATIBLE,
             api_key_env=self.api_key_env,
-            api_key_required=False,
+            api_key_required=bool(self.api_key_env.strip()),
             base_url=self.base_url,
             remote_model_id=self.model or self.id,
             supports_vision=self.supports_vision,

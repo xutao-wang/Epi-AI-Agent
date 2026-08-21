@@ -68,3 +68,33 @@ def persist_local_env_values(
         temporary_path = Path(temporary.name)
     temporary_path.chmod(0o600)
     temporary_path.replace(path)
+
+
+def remove_local_env_values(
+    project_root: str | Path,
+    keys: set[str],
+) -> None:
+    """Atomically remove selected assignments from the project-local .env."""
+    path = local_env_path_for_project(project_root)
+    if not path.exists():
+        return
+    existing = path.read_text(encoding="utf-8")
+    lines: list[str] = []
+    for line in existing.splitlines():
+        key, separator, _value = line.partition("=")
+        if separator and key in keys:
+            continue
+        lines.append(line)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        delete=False,
+    ) as temporary:
+        content = "\n".join(lines).rstrip()
+        temporary.write(f"{content}\n" if content else "")
+        temporary_path = Path(temporary.name)
+    temporary_path.chmod(0o600)
+    temporary_path.replace(path)

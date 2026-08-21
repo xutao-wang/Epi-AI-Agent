@@ -203,6 +203,20 @@ class ConversationHistoryStore:
             )
         return result.rowcount == 1
 
+    def set_model(
+        self,
+        owner_user_id: str,
+        thread_id: str,
+        model_name: str,
+    ) -> bool:
+        with self._connect() as connection:
+            result = connection.execute(
+                "UPDATE conversation_history SET model_name = ?, updated_at = ? "
+                "WHERE owner_user_id = ? AND thread_id = ?",
+                (model_name, self._now(), owner_user_id, thread_id),
+            )
+        return result.rowcount == 1
+
     def delete_pending(self, owner_user_id: str, thread_id: str | None = None) -> bool:
         if thread_id is None:
             thread_id = owner_user_id
