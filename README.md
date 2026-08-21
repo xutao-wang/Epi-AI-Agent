@@ -25,8 +25,8 @@ archives used by this demo. Install both packages before starting the server:
 
 ```bash
 python study_installer.py --study \
-  report-india-synthetic-0.3.1.tar.gz \
-  nhanes-2017-2018-0.2.0.tar.gz
+  report-india-synthetic-0.4.0.tar.gz \
+  nhanes-2017-2018-0.3.0.tar.gz
 python run_fastapi.py
 ```
 
