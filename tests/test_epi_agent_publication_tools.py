@@ -4,6 +4,7 @@ import pytest
 
 from db_rag.knowledge import PublicationEvidenceHit
 from db_rag.local_knowledge import SemanticPublicationKnowledgeUnavailableError
+from db_rag.retrieval_status import RetrievalOutcome, lexical_fallback_status
 from epi_agent.artifacts import StateArtifactStore
 from epi_agent.protocol import ToolContext, ToolExecutionError
 from epi_agent.studies import StudyBundle, StudyRegistry
@@ -51,6 +52,19 @@ class _HybridKnowledge:
         ]
 
 
+class _FallbackKnowledge(_HybridKnowledge):
+    embedding_model = "OpenAI/text-embedding-3-large"
+
+    def search_with_status(self, query: str, *, limit: int = 5):
+        return RetrievalOutcome(
+            value=self.search(query, limit=limit),
+            status=lexical_fallback_status(
+                self.embedding_model,
+                "EMBEDDING_CREDENTIALS_MISSING",
+            ),
+        )
+
+
 def _context(knowledge) -> ToolContext:
     return ToolContext(
         studies=StudyRegistry(
@@ -86,6 +100,27 @@ def test_publication_tool_persists_hybrid_retrieval_provenance() -> None:
     observation = context.artifact_store.require(result.artifacts[0]).content
     assert observation["retrieval_mode"] == "hybrid_vector_lexical"
     assert observation["hits"][0]["matched_by"] == "vector,lexical"
+
+
+def test_publication_tool_persists_lexical_fallback_reason() -> None:
+    context = _context(_FallbackKnowledge())
+
+    result = build_publication_tool_registry(include_pubmed=False).invoke(
+        "publication-search_study_evidence",
+        {
+            "study_id": "report-india-synthetic",
+            "query": "cohort eligibility",
+            "limit": 5,
+        },
+        context=context,
+    )
+
+    observation = context.artifact_store.require(result.artifacts[0]).content
+    assert observation["retrieval_mode"] == "lexical_fallback"
+    assert observation["embedding"]["reason_code"] == (
+        "EMBEDDING_CREDENTIALS_MISSING"
+    )
+    assert "OPENAI_API_KEY is not configured" in result.message
 
 
 def test_publication_tool_translates_semantic_unavailability() -> None:

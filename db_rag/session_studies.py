@@ -56,7 +56,11 @@ def _unavailable_study(
             unavailable_reason_code=reason_code,
         ),
         knowledge=(
-            UnavailableSemanticPublicationKnowledge(study.knowledge)
+            UnavailableSemanticPublicationKnowledge(
+                study.knowledge,
+                embedding_model=embedding_model,
+                reason_code=reason_code,
+            )
             if isinstance(study.knowledge, LocalPublicationKnowledge)
             else study.knowledge
         ),
@@ -151,10 +155,13 @@ def bind_session_studies(
                         bound_knowledge,
                         collection=knowledge_collection,
                         embedding_function=embedder,
+                        embedding_model=paths.embedding_model,
                     )
                 except Exception:
                     bound_knowledge = UnavailableSemanticPublicationKnowledge(
-                        bound_knowledge
+                        bound_knowledge,
+                        embedding_model=paths.embedding_model,
+                        reason_code="EMBEDDING_INDEX_UNAVAILABLE",
                     )
             bound = replace(
                 study,

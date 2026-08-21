@@ -9,6 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from db_rag.local_knowledge import (
     SemanticPublicationKnowledgeUnavailableError,
 )
+from db_rag.config import EMBEDDING_MODEL
+from db_rag.retrieval_status import RetrievalOutcome, hybrid_status
 from epi_agent.protocol import (
     ArtifactStore,
     ToolContext,
@@ -160,9 +162,20 @@ def _search(
         )
     limit = min(int(arguments["limit"]), _MAX_SEARCH_HITS)
     try:
+        search_with_status = getattr(study.knowledge, "search_with_status", None)
+        outcome = (
+            search_with_status(arguments["query"], limit=limit)
+            if callable(search_with_status)
+            else RetrievalOutcome(
+                value=search(arguments["query"], limit=limit),
+                status=hybrid_status(
+                    getattr(study.knowledge, "embedding_model", EMBEDDING_MODEL)
+                ),
+            )
+        )
         hits = [
             _evidence_hit(hit, study_id=study.study_id)
-            for hit in search(arguments["query"], limit=limit)
+            for hit in outcome.value
         ][:limit]
     except SemanticPublicationKnowledgeUnavailableError as error:
         raise ToolExecutionError(
@@ -173,7 +186,8 @@ def _search(
     content = {
         "study_id": study.study_id,
         "query": arguments["query"],
-        "retrieval_mode": "hybrid_vector_lexical",
+        "retrieval_mode": outcome.status.mode,
+        "embedding": outcome.status.as_dict(),
         "hits": hits,
     }
     reference = _save_observation(

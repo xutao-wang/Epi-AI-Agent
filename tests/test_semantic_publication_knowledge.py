@@ -116,17 +116,18 @@ def test_semantic_publication_search_requires_vector_and_boosts_lexical() -> Non
     }
 
 
-def test_semantic_publication_search_never_falls_back_after_vector_failure() -> None:
+def test_semantic_publication_search_falls_back_after_vector_failure() -> None:
     knowledge = local_knowledge.SemanticPublicationKnowledge(
         _local(),
         collection=_FailingCollection(),
         embedding_function=_EmbeddingFunction(),
     )
 
-    with pytest.raises(
-        local_knowledge.SemanticPublicationKnowledgeUnavailableError
-    ):
-        knowledge.search("cohort eligibility", limit=2)
+    outcome = knowledge.search_with_status("cohort eligibility", limit=2)
+
+    assert outcome.status.mode == "lexical_fallback"
+    assert outcome.status.reason_code == "EMBEDDING_INDEX_UNAVAILABLE"
+    assert outcome.value[0].id == "publication.lexical-first"
 
 
 def test_semantic_publication_search_rejects_unverified_vector_ids() -> None:
@@ -223,11 +224,11 @@ def test_semantic_publication_fusion_never_replaces_vector_candidates() -> None:
 def test_unavailable_semantic_publication_preserves_exact_source_opening() -> None:
     knowledge = local_knowledge.UnavailableSemanticPublicationKnowledge(_local())
 
-    with pytest.raises(
-        local_knowledge.SemanticPublicationKnowledgeUnavailableError
-    ):
-        knowledge.search("cohort eligibility", limit=2)
+    outcome = knowledge.search_with_status("cohort eligibility", limit=2)
 
+    assert outcome.status.mode == "lexical_fallback"
+    assert outcome.status.reason_code == "EMBEDDING_CREDENTIALS_MISSING"
+    assert outcome.value[0].id == "publication.lexical-first"
     hits = knowledge.open_source("doi:10.1000/example", limit=5)
     assert {hit.id for hit in hits} == {
         "publication.vector-first",
