@@ -16,7 +16,7 @@ handling, or native Python execution.
 
 The cleanup is developed on
 `cleanup/local-only-before-master-merge-20260821`, based exactly on
-`local-multi-study` commit `bb5bde5`. The incomplete `master` merge was aborted
+`local-multi-study` commit `9838671`. The incomplete `master` merge was aborted
 before starting this work.
 
 The sequence is:
@@ -161,8 +161,10 @@ Acceptance requires:
 2. The complete retained Python test suite passes with AWS-, Cognito-, and
    Docker-only tests removed or replaced by local behavior coverage.
 3. The complete frontend test suite passes.
-4. The frontend production build succeeds, and its tracked build manifest is
-   refreshed using the repository's authoritative manifest command.
+4. The frontend production build succeeds and the tracked hashed assets match
+   `frontend/dist/index.html`. The AWS-only
+   `frontend/dist/build-manifest.json` provenance file is removed with its
+   release builder.
 5. Targeted local smoke coverage verifies startup, health, conversation
    creation, message execution boundaries, conversation history, attachments,
    installed-study routing, and native Python execution.
