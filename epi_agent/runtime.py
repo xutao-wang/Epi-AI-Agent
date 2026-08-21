@@ -83,7 +83,6 @@ class GenericEpiAgentState(LangChainAgentState):
     terminal_error: NotRequired[dict[str, Any]]
     terminal_control: NotRequired[dict[str, Any]]
     completion_blocked: NotRequired[bool]
-    agent_status: NotRequired[dict[str, Any]]
     model_output_state: NotRequired[dict[str, Any]]
     cancelled_turn: NotRequired[dict[str, Any]]
 
@@ -138,11 +137,6 @@ def _terminal_model_patch(error: dict[str, Any]) -> dict[str, Any]:
         "messages": [AIMessage(content="")],
         "terminal_error": error,
         "completion_blocked": False,
-        "agent_status": {
-            "status": "error",
-            "run_status": "error",
-            "terminal_error": error,
-        },
     }
 
 
@@ -1139,11 +1133,6 @@ def _execute_tools(
         patch.update(
             {
                 "terminal_control": terminal_control,
-                "agent_status": {
-                    "status": terminal_control["status"],
-                    "run_status": terminal_control["status"],
-                    "terminal_control": terminal_control,
-                },
             }
         )
     if terminal_error is not None:
@@ -1151,11 +1140,6 @@ def _execute_tools(
             {
                 "terminal_error": terminal_error,
                 "completion_blocked": False,
-                "agent_status": {
-                    "status": "error",
-                    "run_status": "error",
-                    "terminal_error": terminal_error,
-                },
             }
         )
     return patch
@@ -1434,21 +1418,10 @@ def build_epi_agent_graph(
     )
 
 
-def invoke_epi_agent(
-    *, graph: CompiledStateGraph, child_state: dict[str, Any], config: RunnableConfig
-) -> dict[str, Any]:
-    graph_config = dict(getattr(graph, "config", None) or {})
-    required = int(graph_config.get("recursion_limit") or 0)
-    if required > int(config.get("recursion_limit") or 0):
-        config = {**config, "recursion_limit": required}
-    return graph.invoke(child_state, config)
-
-
 __all__ = [
     "ContextPromptError",
     "EpiAgentRuntimeConfig",
     "GenericEpiAgentState",
     "analysis_completion_issues",
     "build_epi_agent_graph",
-    "invoke_epi_agent",
 ]

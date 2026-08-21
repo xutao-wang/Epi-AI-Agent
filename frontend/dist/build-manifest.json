@@ -1,5 +1,5 @@
 {
-  "built_at": "2026-08-20T17:12:09.498200+00:00",
+  "built_at": "2026-08-21T01:27:32.520459+00:00",
   "source_sha256": {
     "frontend/index.html": "89f2b276eb183f4ebfe35982a0cac2d863da771436560c61d977e282ee15b07a",
     "frontend/package-lock.json": "23253186864b6acb555626d0da169c7aefa12bbc98838e0bb341be240866c9b7",
@@ -8,7 +8,7 @@
     "frontend/src/AgentActivityTimeline.tsx": "bf11e9be781b4074a276b145e6c3e33130e8014cc0aee5442f63f2b7b1c28427",
     "frontend/src/AnalysisResultReview.test.tsx": "0b48095c202069586a683139bcaa755cc2a589a26c3659acc1a65ed2c48458a4",
     "frontend/src/AnalysisResultReview.tsx": "ab396bb240808398d9804fc70d30bb12591d67c2fdea756e29d740d4b56252ba",
-    "frontend/src/App.test.tsx": "7720d2f157ce6062e3356738046bd75f94daf0fd5d40a2ea4599d8b202e284ff",
+    "frontend/src/App.test.tsx": "576bf57d3077f4f399f26bc01c9782e611b25e3d03dae496e32c4b539b1d2b96",
     "frontend/src/App.tsx": "5303cf6c809c62284de44627e440edb508e390f797fa9f7d1c22aaad420d6b70",
     "frontend/src/AppShell.test.tsx": "c519044d167bf199bac0332171fa9a2d60a49aaddb20afae98b30f6dc6774489",
     "frontend/src/AppShell.tsx": "08b013bdc959a1da6aa29d3d7d95fa192d48aac342a33d5b024ec790f7479d17",
@@ -40,8 +40,6 @@
     "frontend/src/ProviderKeyGate.tsx": "dab236fe8022ba7b7cf3d94640447326220060a647d1d0284e23f9efb2e28037",
     "frontend/src/RuntimeSettingsPanel.test.tsx": "eba43dc9021dab1b71b6f47ba720bae3583a179b474ab2a878f464b374857846",
     "frontend/src/RuntimeSettingsPanel.tsx": "3ca4024db8a56bd419272c88d5194653d90a37e7ae4b713cb6e371be0cbd6df2",
-    "frontend/src/StructuredOutput.test.tsx": "ac2646de3aee749a7f47b9823a2b8616a779526fe19ee5d56bd27ddb6ba37e04",
-    "frontend/src/StructuredOutput.tsx": "a08fdab1385a3c0e15cbdc2bc4298c50a9aa21e6a29db7182a19b43809aef46f",
     "frontend/src/apiClient.test.ts": "5b27b9c391c9f123ffb671e6e189afa5cf810bb8805ee3f23238d05a2f5ec56e",
     "frontend/src/apiClient.ts": "4d1ec6d24e5252eab9a6aebe335223040eda989069a4babaab664c6ab1920865",
     "frontend/src/authClient.test.ts": "d810cbdbdb570bc66480e7fa9c3f419342b1652cbc1f184d2ba97a4438dc58f6",
@@ -53,7 +51,7 @@
     "frontend/src/messageRendering.ts": "6bbd0207f2a014e04998457768e3afb8edb075f66fe62a9100a1bc753ce4be5f",
     "frontend/src/reviewSelection.test.ts": "3f8b25c1386ac48456de39bebb96c056b9b25fa1e6627abb7c930847a6ec4f99",
     "frontend/src/reviewSelection.ts": "021c79c78e1ac4627a7563c848c59d36521cf227a4f7ee99ff3545ceac4a5d2f",
-    "frontend/src/styles.css": "83afbb061883abe918f8e16412b23afbe7243a857eb2d0147e2ff2390e3b40bc",
+    "frontend/src/styles.css": "9fce9ecf8be570fd1be16e496b2c6a81c4f2931ce3f8697f8c85bf1470d5d147",
     "frontend/src/types.ts": "23a2de5ed78b631df12aa07b43d1e39d95efa092a16f6b47c7308d633d346161",
     "frontend/src/vite-env.d.ts": "65996936fbb042915f7b74a200fcdde7e410f32a669b1ab9597cfaa4b0faddb5",
     "frontend/tsconfig.json": "a043926a1c02562384a05d174123966c72d6b145b8a89201e673d31a1f024de4",

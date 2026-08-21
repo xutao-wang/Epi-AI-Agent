@@ -749,46 +749,6 @@ select {
 }
 
 
-.structured-output-panel {
-  display: grid;
-  gap: 10px;
-  width: 100%;
-  margin-top: 12px;
-  border: 1px solid #d8dee4;
-  border-radius: 8px;
-  background: #ffffff;
-  padding: 14px;
-}
-
-.structured-output-panel h3 {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 650;
-}
-
-.structured-output-card {
-  display: grid;
-  gap: 6px;
-  border-left: 4px solid #0969da;
-  background: #f6f8fa;
-  padding: 10px 12px;
-}
-
-.structured-output-card h4 {
-  margin: 0;
-  color: #4b5563;
-  font-size: 14px;
-  font-weight: 650;
-}
-
-.structured-output-card p {
-  margin: 0;
-}
-
-.structured-output-warning {
-  border-left-color: #9a6700;
-}
-
 @media (max-width: 900px) {
   .report-app-shell,
   .report-app-shell.sidebar-collapsed {

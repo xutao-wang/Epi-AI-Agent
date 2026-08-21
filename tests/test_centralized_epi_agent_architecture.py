@@ -35,6 +35,9 @@ def test_retired_orchestrator_and_fallback_helpers_are_absent() -> None:
         "def merge_state_patch(",
         "def sole_study_id(",
         "def _sql_error_code(",
+        "def invoke_epi_agent(",
+        "def get_artifacts(",
+        "agent_status",
     )
     offenders: list[str] = []
     for root_name in ("db_rag", "epi_agent", "graph"):
@@ -43,7 +46,16 @@ def test_retired_orchestrator_and_fallback_helpers_are_absent() -> None:
             if any(token in source for token in forbidden):
                 offenders.append(str(path.relative_to(REPO_ROOT)))
 
+    retired_frontend = (
+        REPO_ROOT / "frontend" / "src" / "StructuredOutput.tsx",
+        REPO_ROOT / "frontend" / "src" / "StructuredOutput.test.tsx",
+    )
     assert offenders == []
+    assert [path.name for path in retired_frontend if path.exists()] == []
+    styles = (REPO_ROOT / "frontend" / "src" / "styles.css").read_text(
+        encoding="utf-8"
+    )
+    assert ".structured-output-" not in styles
 
 
 def test_production_has_no_import_or_runtime_reference_to_retired_agents() -> None:

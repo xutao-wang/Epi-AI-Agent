@@ -2112,9 +2112,6 @@ describe("App", () => {
             conversation: [
               { id: "user-1", role: "user", text: "Find NIH grants" },
             ],
-            diagnostics: {
-              next_action: "needs_code",
-            },
           }),
         ),
       )
