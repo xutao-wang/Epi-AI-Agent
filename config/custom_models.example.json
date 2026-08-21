@@ -1,0 +1,19 @@
+[
+  {
+    "id": "vllm:qwen3-72b",
+    "label": "Qwen3 72B (local vLLM)",
+    "base_url": "http://127.0.0.1:8001/v1",
+    "model": "Qwen/Qwen3-72B-Instruct",
+    "api_key_env": "VLLM_API_KEY",
+    "summary": "Locally served vLLM model.",
+    "reasoning_tier": "standard",
+    "initial_output_tokens": 8192,
+    "automatic_output_token_ceiling": 16384,
+    "user_output_token_increment": 8192,
+    "absolute_output_token_ceiling": 24576,
+    "request_timeout_seconds": 120,
+    "workflow_timeout_seconds": 300,
+    "output_usd_per_million": null,
+    "supports_vision": false
+  }
+]

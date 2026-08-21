@@ -6,6 +6,8 @@ from pathlib import Path
 
 
 DEFAULT_CORS_ALLOW_ORIGIN_REGEX = r"^http://(127\.0\.0\.1|localhost):\d+$"
+
+
 def native_static_dir(project_root: str | Path) -> Path:
     return Path(project_root).resolve() / "frontend" / "dist"
 

@@ -13,7 +13,4 @@ def build_db_rag_openai_llm(
     resolved = str(model or "").strip()
     if not resolved:
         return None
-    return build_openai_llm(
-        model_name=resolved,
-        api_key=api_key,
-    )
+    return build_openai_llm(model_name=resolved, api_key=api_key)

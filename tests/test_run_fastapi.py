@@ -417,9 +417,10 @@ def test_main_does_not_start_uvicorn_when_credential_setup_fails(
     monkeypatch.setattr(run_fastapi, "load_app_environment", lambda _root: None)
     monkeypatch.setattr(run_fastapi, "configure_native_runtime", lambda: None)
     monkeypatch.setattr(run_fastapi, "prepare_environment", lambda: None)
+    monkeypatch.setattr(run_fastapi, "configure_model_provider", lambda **_kwargs: None)
     monkeypatch.setattr(
         run_fastapi,
-        "ensure_active_provider_credential",
+        "ensure_provider_credentials",
         lambda: (_ for _ in ()).throw(
             StartupConfigurationError("OpenAI API key setup was cancelled.")
         ),
@@ -459,7 +460,12 @@ def test_main_verifies_credentials_before_starting_uvicorn(
     )
     monkeypatch.setattr(
         run_fastapi,
-        "ensure_active_provider_credential",
+        "configure_model_provider",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        run_fastapi,
+        "ensure_provider_credentials",
         lambda: events.append("credentials"),
     )
     monkeypatch.setattr(
@@ -486,4 +492,3 @@ def test_main_verifies_credentials_before_starting_uvicorn(
         "startup",
         "uvicorn:api.app:app:0.0.0.0:9000:info",
     ]
-

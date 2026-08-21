@@ -304,6 +304,29 @@ def _insert_fresh_context(
     return [*messages, context]
 
 
+def _adapt_messages_for_profile(
+    messages: list[Any],
+    profile: Any,
+) -> list[Any]:
+    """Providers without mid-conversation system support (Anthropic) reject
+    non-consecutive system messages; re-emit them as user turns at request
+    time so checkpointed state stays provider-agnostic."""
+    if getattr(profile, "supports_mid_conversation_system", True):
+        return messages
+    # Strictest common contract (Anthropic SDK, many vLLM chat templates):
+    # exactly one system message, at index 0. Later system turns are re-sent
+    # as user turns; adjacent user turns merge downstream where needed.
+    return [
+        messages[0],
+        *[
+            HumanMessage(content=message.content)
+            if isinstance(message, SystemMessage)
+            else message
+            for message in messages[1:]
+        ],
+    ]
+
+
 def _prepare_model_request(
     state: dict[str, Any],
     *,
@@ -377,11 +400,14 @@ def _prepare_model_request(
         if phase == "authorized"
         else agent_config.model_profile.initial_output_tokens
     )
-    messages = [
-        SystemMessage(content=agent_config.system_prompt),
-        *state_messages,
-        *continuation_messages,
-    ]
+    messages = _adapt_messages_for_profile(
+        [
+            SystemMessage(content=agent_config.system_prompt),
+            *state_messages,
+            *continuation_messages,
+        ],
+        agent_config.model_profile,
+    )
     return iteration_count, output_state, phase, messages, budget
 
 
@@ -414,7 +440,7 @@ def _call_model(
         answer = model.bind_tools(agent_config.registry.model_schemas()).invoke(
             messages,
             config=config,
-            max_completion_tokens=budget,
+            **agent_config.model_profile.output_budget_kwargs(budget),
         )
     finally:
         cancellation_point()
@@ -457,7 +483,7 @@ async def _acall_model(
         ).ainvoke(
             messages,
             config=config,
-            max_completion_tokens=budget,
+            **agent_config.model_profile.output_budget_kwargs(budget),
         )
     finally:
         cancellation_point()
@@ -738,6 +764,19 @@ def _model_output_gate(
 ) -> dict[str, Any]:
     cancellation_point()
     profile = agent_config.model_profile
+    incremental_cost = profile.incremental_output_cost_display
+    if incremental_cost is None:
+        cost_sentence = (
+            "Continuing with another "
+            f"{profile.user_output_token_increment:,} tokens will incur "
+            "additional output charges (pricing unavailable for this model)."
+        )
+    else:
+        cost_sentence = (
+            "Continuing with another "
+            f"{profile.user_output_token_increment:,} tokens may cost "
+            f"up to an additional {incremental_cost} in output charges."
+        )
     try:
         decision = interrupt(
             {
@@ -748,16 +787,11 @@ def _model_output_gate(
                     profile.automatic_output_token_ceiling
                 ),
                 "continuation_tokens": profile.user_output_token_increment,
-                "additional_output_cost": (
-                    profile.incremental_output_cost_display
-                ),
+                "additional_output_cost": incremental_cost or "unknown",
                 "message": (
                     f"{profile.label} reached its "
                     f"{profile.automatic_output_token_ceiling:,}-token turn "
-                    "limit. Continuing with another "
-                    f"{profile.user_output_token_increment:,} tokens may cost "
-                    "up to an additional "
-                    f"{profile.incremental_output_cost_display} in output charges."
+                    f"limit. {cost_sentence}"
                 ),
                 "actions": ["continue", "cancel"],
             }

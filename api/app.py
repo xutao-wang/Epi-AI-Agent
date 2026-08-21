@@ -9,8 +9,8 @@ from fastapi import FastAPI
 
 from api.activity_store import SqliteActivityStore
 from api.conversation_history import (
+    ConversationTitleGenerator,
     ConversationHistoryStore,
-    OpenAIConversationTitleGenerator,
 )
 from api.deployment import (
     checkpoint_db_path,
@@ -31,17 +31,17 @@ from epi_agent.activity import NULL_ACTIVITY_SINK
 from epi_agent.studies import StudyRegistry
 from epi_agent.runtimes.python import LocalPythonRuntime
 from graph.builder import build_graph
-from llm_vllm import build_openai_llm
+from llm_vllm import build_chat_llm, build_openai_llm, resolve_provider_api_key
 from study_package.registry import discover_studies
 from utils.env_loader import load_app_environment
-from utils.model_runtime_profiles import model_runtime_profile
+from utils.model_runtime_profiles import ModelRuntimeProfile, model_runtime_profile
 from utils.runtime_defaults import (
     DEFAULT_MAX_AUTO_STEPS,
-    DEFAULT_OPENAI_MODEL,
     DEFAULT_TEMPERATURE,
     DEFAULT_TOP_P,
+    configured_default_model,
     configured_epi_agent_max_iterations,
-    configured_openai_models,
+    configured_models,
     configured_title_model,
 )
 
@@ -59,15 +59,39 @@ def _history_store(
     return store
 
 
+def _provider_key(
+    profile: ModelRuntimeProfile,
+    environ: Mapping[str, str],
+) -> str:
+    configured = (
+        str(environ.get(profile.api_key_env, "") or "").strip()
+        if profile.api_key_env
+        else ""
+    )
+    if not configured and profile.api_key_required:
+        env_name = profile.api_key_env or "the provider API key"
+        raise ValueError(f"{env_name} is required.")
+    return resolve_provider_api_key(profile, api_key=configured)
+
+
 def _db_rag_readiness(
     studies: StudyRegistry,
     *,
     embedding_model: str,
+    embedding_api_key: str,
 ) -> DbRagReadiness:
     if not studies.values:
         return DbRagReadiness(
             status="not_configured",
             message=_NO_STUDY_MESSAGE,
+        )
+    if not embedding_api_key:
+        return DbRagReadiness(
+            status="not_configured",
+            message=(
+                "DB-RAG semantic search requires OPENAI_API_KEY for query "
+                "embeddings; add the key to enable database extraction."
+            ),
         )
     readiness = [
         resolve_db_rag_readiness(
@@ -127,13 +151,15 @@ def build_application(*, environ: Mapping[str, str] | None = None) -> FastAPI:
         load_app_environment()
         environ = os.environ
 
-    provider_api_key = str(environ.get("OPENAI_API_KEY", "") or "").strip()
-    if not provider_api_key:
-        raise ValueError("OPENAI_API_KEY is required.")
-    model_name = environ.get("OPENAI_MODEL", DEFAULT_OPENAI_MODEL)
-    allowed_models = configured_openai_models(environ)
+    model_name = configured_default_model(environ)
+    allowed_models = configured_models(environ)
     title_model = configured_title_model(environ)
     max_iterations = configured_epi_agent_max_iterations(environ)
+    default_profile = model_runtime_profile(model_name)
+    _provider_key(default_profile, environ)
+    title_profile = model_runtime_profile(title_model)
+    _provider_key(title_profile, environ)
+    embedding_api_key = str(environ.get("OPENAI_API_KEY", "") or "").strip()
 
     runtime_root_path = (
         Path(environ["REPORT_AGENT_RUNTIME_ROOT"])
@@ -166,6 +192,7 @@ def build_application(*, environ: Mapping[str, str] | None = None) -> FastAPI:
     db_rag_readiness = _db_rag_readiness(
         studies,
         embedding_model=db_rag_embedding_model,
+        embedding_api_key=embedding_api_key,
     )
 
     def graph_factory(
@@ -174,13 +201,18 @@ def build_application(*, environ: Mapping[str, str] | None = None) -> FastAPI:
     ):
         bound_studies = bind_session_studies(
             studies,
-            api_key=context.provider_api_key,
+            api_key=embedding_api_key,
             expected_embedding_model=db_rag_embedding_model,
         )
         profile = model_runtime_profile(settings.model_name)
-        llm = build_openai_llm(
+        llm_builder = (
+            build_openai_llm
+            if profile.provider == "openai"
+            else build_chat_llm
+        )
+        llm = llm_builder(
             model_name=settings.model_name,
-            api_key=context.provider_api_key,
+            api_key=_provider_key(profile, environ),
             temperature=settings.temperature,
             top_p=settings.top_p,
         )
@@ -219,10 +251,12 @@ def build_application(*, environ: Mapping[str, str] | None = None) -> FastAPI:
         runtime_root=runtime_root_path,
         checkpoint_path=db_path,
         history_store=history_store,
-        title_generator_factory=lambda _settings, provider_api_key: (
-            OpenAIConversationTitleGenerator.from_credentials(
-                model_name=title_model,
-                api_key=provider_api_key,
+        title_generator_factory=lambda _settings, _provider_api_key: (
+            ConversationTitleGenerator(
+                build_chat_llm(
+                    model_name=title_model,
+                    api_key=_provider_key(title_profile, environ),
+                )
             )
         ),
         capabilities=RuntimeCapabilities(
@@ -246,7 +280,7 @@ def build_application(*, environ: Mapping[str, str] | None = None) -> FastAPI:
 
     application = create_app(
         runtime=report_runtime,
-        provider_api_key=provider_api_key,
+        provider_api_key="local-environment",
         static_dir=selected_static_dir,
     )
     application.state.report_agent_runtime = report_runtime

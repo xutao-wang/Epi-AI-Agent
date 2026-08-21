@@ -945,6 +945,22 @@ export default function App({
     attachmentErrors.length > 0;
   const showInitialChatPrompt = !(state?.conversation.length);
   const modelLocked = Boolean(state?.runtime_settings_locked);
+  const modelProviderGroups = useMemo(() => {
+    const groups: Array<{
+      label: string;
+      models: NonNullable<typeof runtimeOptions>["models"];
+    }> = [];
+    for (const model of runtimeOptions?.models ?? []) {
+      const groupLabel = model.provider_label || "Models";
+      const group = groups.find((entry) => entry.label === groupLabel);
+      if (group) {
+        group.models.push(model);
+      } else {
+        groups.push({ label: groupLabel, models: [model] });
+      }
+    }
+    return groups;
+  }, [runtimeOptions]);
   const selectedModel = runtimeOptions?.models.find(
     (model) => model.id === selectedRuntimeSettings.model_name,
   );
@@ -1276,10 +1292,14 @@ export default function App({
                       }
                       value={selectedRuntimeSettings.model_name}
                     >
-                      {runtimeOptions?.models.map((model) => (
-                        <option key={model.id} value={model.id}>
-                          {model.label}
-                        </option>
+                      {modelProviderGroups.map((group) => (
+                        <optgroup key={group.label} label={group.label}>
+                          {group.models.map((model) => (
+                            <option key={model.id} value={model.id}>
+                              {model.label}
+                            </option>
+                          ))}
+                        </optgroup>
                       ))}
                     </select>
                   )}

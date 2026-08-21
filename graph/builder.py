@@ -26,12 +26,14 @@ from utils.user_storage import ThreadStorageScope, UserStorageLayout
 def _build_attachment_reader_service(
     llm: Any,
     runtime_root: str | Path,
+    *,
+    supports_vision: bool = True,
 ) -> AttachmentReaderService:
     root = Path(runtime_root).expanduser().resolve()
     return AttachmentReaderService(
         LocalAttachmentStore(root),
         runtime_root=root,
-        vision_analyzer=LangChainVisionAnalyzer(llm),
+        vision_analyzer=LangChainVisionAnalyzer(llm) if supports_vision else None,
     )
 
 
@@ -60,7 +62,15 @@ def build_graph(
         )
         if storage.root != expected_storage.root:
             raise ValueError("storage does not belong to runtime_root")
-    attachment_reader_service = _build_attachment_reader_service(llm, root)
+    attachment_reader_service = (
+        _build_attachment_reader_service(llm, root)
+        if model_profile.supports_vision
+        else _build_attachment_reader_service(
+            llm,
+            root,
+            supports_vision=False,
+        )
+    )
     if db_rag_readiness_by_study is not None:
         include_db_rag = any(
             readiness.available

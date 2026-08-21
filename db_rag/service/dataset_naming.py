@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from typing import Any
@@ -8,6 +9,8 @@ from typing import Any
 from db_rag.config import resolve_db_rag_dataset_naming_model
 from db_rag.generation import parse_json_object
 from utils.llm_response import coerce_text_content
+
+_LOGGER = logging.getLogger(__name__)
 
 _DATASET_NAME_MAX_CHARS = 90
 _DATASET_NAME_MAX_WORDS = 8
@@ -186,7 +189,11 @@ def generate_dataset_name(
         )
         content = coerce_text_content(getattr(response.choices[0].message, "content", ""))
         parsed = parse_json_object(content) or {}
-    except Exception:
+    except Exception as error:
+        _LOGGER.warning(
+            "Dataset naming model call failed; using heuristic name: %s",
+            error,
+        )
         return fallback
 
     return _concise_model_name(parsed.get("name")) or fallback

@@ -93,6 +93,7 @@ from utils.review_interrupts import (
     validate_resume_decision,
 )
 from utils.model_runtime_profiles import model_runtime_profile
+from utils.provider_errors import classify_llm_error
 from utils.run_cancellation import (
     CancellationToken,
     RunCancelled,
@@ -217,6 +218,9 @@ def _run_failure(exc: Exception) -> tuple[str, str]:
             "The selected OpenAI model is unavailable to this API project. Choose "
             "another model and retry.",
         )
+    provider_failure = classify_llm_error(exc)
+    if provider_failure[0] != "RUN_FAILED":
+        return provider_failure
     return _public_failure(
         "RUN_FAILED",
         "The request failed unexpectedly. Check the server log for details.",

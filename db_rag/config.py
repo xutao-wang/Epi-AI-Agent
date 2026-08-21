@@ -53,6 +53,13 @@ def shared_env_path_for_project(project_root: Path = PROJECT_ROOT) -> Path:
     return app_env_path_for_project(project_root)
 
 
+def embedding_credentials_ready() -> bool:
+    """DB-RAG semantic search embeds queries with OpenAI regardless of the
+    active chat provider; without OPENAI_API_KEY it degrades to unavailable."""
+    load_app_environment(PROJECT_ROOT)
+    return bool(str(os.getenv("OPENAI_API_KEY", "") or "").strip())
+
+
 def resolve_db_rag_embedding_model() -> str:
     load_app_environment(PROJECT_ROOT)
     model = str(os.getenv("DB_RAG_EMBEDDING_MODEL", "") or "").strip()

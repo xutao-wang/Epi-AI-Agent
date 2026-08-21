@@ -118,13 +118,13 @@ def test_graph_factory_binds_all_studies_with_the_provider_key(
     assert bind_calls == [
         {
             "studies": discovered_studies,
-            "api_key": "session-key",
+            "api_key": "startup-provider-key",
             "expected_embedding_model": EMBEDDING_MODEL,
         }
     ]
     assert graph_kwargs["studies"] is bound_studies
     assert graph_kwargs["db_rag_readiness_by_study"] == readiness_by_study
-    assert "session-key" not in repr(graph_kwargs)
+    assert "startup-provider-key" not in repr(graph_kwargs)
 
 
 def test_startup_claims_legacy_history_for_local_user(tmp_path: Path) -> None:
@@ -544,4 +544,3 @@ def test_optional_tool_context_has_no_unguarded_study_dereferences() -> None:
                 unsafe.append(f"{path}:{line_number}")
 
     assert unsafe == []
-

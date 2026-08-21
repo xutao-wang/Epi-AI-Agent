@@ -23,6 +23,8 @@ function modelOption(
   return {
     id,
     label,
+    provider: "openai",
+    provider_label: "OpenAI",
     reasoning_tier,
     supports_sampling_controls: supportsSamplingControls,
     summary: `${label} guidance.`,

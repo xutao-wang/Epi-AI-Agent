@@ -73,6 +73,8 @@ class ModelOption(BaseModel):
 
     id: str
     label: str
+    provider: Literal["openai", "anthropic", "openai_compatible"] = "openai"
+    provider_label: str = "OpenAI"
     reasoning_tier: Literal["standard", "low", "medium", "high"]
     supports_sampling_controls: bool
     summary: str
@@ -82,8 +84,8 @@ class ModelOption(BaseModel):
     absolute_output_token_ceiling: int = Field(gt=0)
     request_timeout_seconds: int = Field(gt=0)
     workflow_timeout_seconds: int = Field(gt=0)
-    automatic_output_cost: str
-    incremental_output_cost: str
+    automatic_output_cost: str | None = None
+    incremental_output_cost: str | None = None
 
 
 class RuntimeOptions(BaseModel):
@@ -329,7 +331,7 @@ class ModelOutputLimitInterrupt(BaseModel):
     model_label: str = Field(min_length=1)
     automatic_token_ceiling: int = Field(gt=0)
     continuation_tokens: int = Field(gt=0)
-    additional_output_cost: str = Field(pattern=r"^\$\d+\.\d{2}$")
+    additional_output_cost: str = Field(pattern=r"^(\$\d+\.\d{2}|unknown)$")
     message: str = Field(min_length=1, max_length=2_000)
     actions: tuple[Literal["continue"], Literal["cancel"]]
 

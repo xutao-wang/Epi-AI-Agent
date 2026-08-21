@@ -47,6 +47,17 @@ export default function RuntimeSettingsPanel({
   const modelValue = selectedModel ? selectedModelName : "";
   const supportsSamplingControls =
     selectedModel?.supports_sampling_controls ?? false;
+  const providerGroups: Array<{ label: string; models: typeof modelOptions }> =
+    [];
+  for (const model of modelOptions) {
+    const groupLabel = model.provider_label || "Models";
+    const group = providerGroups.find((entry) => entry.label === groupLabel);
+    if (group) {
+      group.models.push(model);
+    } else {
+      providerGroups.push({ label: groupLabel, models: [model] });
+    }
+  }
   const controlsDisabled = locked;
 
   function updateSettings(update: Partial<RuntimeSettings>) {
@@ -98,10 +109,14 @@ export default function RuntimeSettingsPanel({
           <option disabled value="">
             Select model
           </option>
-          {modelOptions.map((model) => (
-            <option key={model.id} value={model.id}>
-              {model.label}
-            </option>
+          {providerGroups.map((group) => (
+            <optgroup key={group.label} label={group.label}>
+              {group.models.map((model) => (
+                <option key={model.id} value={model.id}>
+                  {model.label}
+                </option>
+              ))}
+            </optgroup>
           ))}
         </select>
       </label>

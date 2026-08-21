@@ -69,9 +69,13 @@ export interface RuntimeCapabilities {
   db_rag_dataset: RuntimeCapability;
 }
 
+export type ModelProvider = "openai" | "anthropic" | "openai_compatible";
+
 export interface ModelOption {
   id: string;
   label: string;
+  provider: ModelProvider;
+  provider_label: string;
   reasoning_tier: "standard" | "low" | "medium" | "high";
   supports_sampling_controls: boolean;
   summary: string;
@@ -81,8 +85,8 @@ export interface ModelOption {
   absolute_output_token_ceiling: number;
   request_timeout_seconds: number;
   workflow_timeout_seconds: number;
-  automatic_output_cost: string;
-  incremental_output_cost: string;
+  automatic_output_cost: string | null;
+  incremental_output_cost: string | null;
 }
 
 export interface RuntimeOptions {
