@@ -88,10 +88,13 @@ Saved conversations remain readable if their original provider is unavailable.
 To send another message in such a conversation, select and confirm one of the
 currently available models; the conversation then continues with that model.
 
-Database extraction (DB-RAG semantic search) always embeds queries with
-OpenAI, so it needs `OPENAI_API_KEY` even when chatting with Claude or a
-custom model; without it the app still runs and reports database search as
-not configured.
+Evidence retrieval uses the package's configured OpenAI embedding model when
+`OPENAI_API_KEY` is available, even when the chat model is Claude or a custom
+model. Catalog, reviewed-publication, and study-design searches then combine
+vector and lexical ranking. Without the key, those tools continue with
+lexical-only search and explicitly report the unavailable embedding model and
+reason without stopping the agent. Building or rebuilding a study package's
+embedding index still requires embedding credentials.
 
 ## Included demo data
 

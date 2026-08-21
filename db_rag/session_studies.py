@@ -98,8 +98,12 @@ def bind_session_studies(
 
         catalog_data = _catalog_data(paths)
         if not api_key.strip():
-            readiness = _unavailable(
-                "Semantic retrieval requires OPENAI_API_KEY; lexical fallback is active."
+            readiness = DbRagReadiness(
+                status="available",
+                message=(
+                    "DB-RAG dataset retrieval is available with lexical fallback; "
+                    "OPENAI_API_KEY is not configured."
+                ),
             )
             bound_studies.append(
                 _unavailable_study(

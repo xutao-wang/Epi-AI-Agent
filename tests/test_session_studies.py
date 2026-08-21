@@ -288,6 +288,10 @@ def test_missing_embedding_key_binds_lexical_fallback_without_opening_chroma(
         "report-india-synthetic"
     ).catalog.search_many_with_status(["REPORT_TABLE"], limit=5)
     assert _FakeClient.requested_paths == []
+    assert bound.readiness["report-india-synthetic"].available is True
+    assert "lexical fallback" in bound.readiness[
+        "report-india-synthetic"
+    ].message
     assert outcome.status.reason_code == "EMBEDDING_CREDENTIALS_MISSING"
     assert outcome.value[0][0].table == "REPORT_TABLE"
 

@@ -18,6 +18,7 @@ from utils.env_loader import load_app_environment
 
 from .config import PROJECT_ROOT
 from .retrieval_status import (
+    EmbeddingReasonCode,
     RetrievalOutcome,
     hybrid_status,
     lexical_fallback_status,
@@ -27,7 +28,9 @@ from .vectorstore import OpenAIEmbeddingFunction
 
 _TOKEN = re.compile(r"[a-z0-9]+")
 _HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*$")
-_STOPWORDS = frozenset({"a", "an", "and", "for", "from", "in", "of", "on", "or", "the", "to"})
+_STOPWORDS = frozenset(
+    {"a", "an", "and", "for", "from", "in", "of", "on", "or", "the", "to"}
+)
 
 
 @dataclass(frozen=True)
@@ -172,7 +175,7 @@ class MarkdownStudyDesign:
         query: str,
         *,
         limit: int,
-        reason_code,
+        reason_code: EmbeddingReasonCode,
     ) -> RetrievalOutcome[tuple[StudyDesignHit, ...]]:
         query_tokens = {
             token
@@ -182,7 +185,11 @@ class MarkdownStudyDesign:
         ranked: list[tuple[tuple[int, int, int, str, int], StudyDesignHit]] = []
         root = self.design_root.resolve()
         for path in sorted(root.rglob("*.md")):
-            if path.is_symlink() or not path.is_file() or root not in path.resolve().parents:
+            if (
+                path.is_symlink()
+                or not path.is_file()
+                or root not in path.resolve().parents
+            ):
                 continue
             raw = path.read_text(encoding="utf-8")
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -223,7 +230,15 @@ class MarkdownStudyDesign:
                 ranked.append(
                     ((phrase, heading_overlap, body_overlap, relative, -ordinal), hit)
                 )
-        ranked.sort(key=lambda item: (-item[0][0], -item[0][1], -item[0][2], item[0][3], -item[0][4]))
+        ranked.sort(
+            key=lambda item: (
+                -item[0][0],
+                -item[0][1],
+                -item[0][2],
+                item[0][3],
+                -item[0][4],
+            )
+        )
         return RetrievalOutcome(
             value=tuple(hit for _score, hit in ranked[:limit]),
             status=lexical_fallback_status(self.embedding_model, reason_code),

@@ -86,14 +86,6 @@ def _db_rag_readiness(
             status="not_configured",
             message=_NO_STUDY_MESSAGE,
         )
-    if not embedding_api_key:
-        return DbRagReadiness(
-            status="not_configured",
-            message=(
-                "DB-RAG semantic search requires OPENAI_API_KEY for query "
-                "embeddings; add the key to enable database extraction."
-            ),
-        )
     readiness = [
         resolve_db_rag_readiness(
             paths=paths,
@@ -104,6 +96,14 @@ def _db_rag_readiness(
     ]
     available_count = sum(item.available for item in readiness)
     if available_count:
+        if not embedding_api_key:
+            return DbRagReadiness(
+                status="available",
+                message=(
+                    "DB-RAG dataset retrieval is available with lexical fallback; "
+                    "OPENAI_API_KEY is not configured."
+                ),
+            )
         return DbRagReadiness(
             status="available",
             message=(
