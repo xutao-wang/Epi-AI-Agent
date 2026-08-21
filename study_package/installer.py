@@ -12,11 +12,12 @@ import uuid
 import chromadb
 import duckdb
 
-from db_rag.local_knowledge import LocalPublicationKnowledge
-from db_rag.relationships import (
-    build_relationship_inventory,
-    catalog_relationship_keys,
+from db_rag.catalog_relationships import (
+    CATALOG_VERSION,
+    parse_catalog_relationships,
 )
+from db_rag.local_knowledge import LocalPublicationKnowledge
+from db_rag.relationships import build_relationship_inventory
 from db_rag.study_design import LocalStudyDesign
 
 from .manifest import (
@@ -111,8 +112,13 @@ def _validate_catalog(path: Path) -> dict[str, object]:
         catalog = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise ValueError(f"database.catalog is not valid JSON: {path}") from error
-    if not isinstance(catalog, dict) or catalog.get("catalog_version") != 1:
-        raise ValueError("database.catalog must use catalog_version 1")
+    if (
+        not isinstance(catalog, dict)
+        or catalog.get("catalog_version") != CATALOG_VERSION
+    ):
+        raise ValueError(
+            f"database.catalog must use catalog_version {CATALOG_VERSION}"
+        )
     if not isinstance(catalog.get("tables"), list) or not catalog["tables"]:
         raise ValueError("database.catalog contains no tables")
     if not isinstance(catalog.get("columns"), list) or not catalog["columns"]:
@@ -305,10 +311,12 @@ def validate_staged_package(
 
     _validate_duckdb(resolved["database.duckdb"])
     catalog = _validate_catalog(resolved["database.catalog"])
-    build_relationship_inventory(
+    relationship_spec = parse_catalog_relationships(catalog)
+    inventory = build_relationship_inventory(
         resolved["database.duckdb"],
-        relationship_keys=catalog_relationship_keys(catalog),
+        relationship_spec=relationship_spec,
     )
+    inventory.validate_declared_relationships()
     _validate_index(resolved["database.index"])
     if manifest.knowledge is not None:
         _validate_knowledge(resolved["knowledge.root"])
@@ -515,6 +523,7 @@ def activate_study_version(
     studies_root: Path,
 ) -> InstalledStudy:
     installed = load_installed_study(package_root(studies_root, study_id, package_version))
+    validate_staged_package(installed.package_root, installed.manifest)
     registry = load_registry(studies_root)
     active = dict(registry.active)
     active[study_id] = package_version

@@ -61,14 +61,8 @@ def test_database_only_package_builds_minimal_study_bundle(tmp_path) -> None:
     assert bundle.catalog.inspect_table("nondefault-source", "participants")
 
 
-def test_database_package_binds_catalog_relationship_keys(tmp_path) -> None:
+def test_database_package_binds_catalog_relationship_specification(tmp_path) -> None:
     package_root = create_package_root(tmp_path / "source")
-    catalog_path = package_root / "database" / "schema_catalog.json"
-    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
-    catalog["tables"][0].update(
-        {"has_subjid_join": True, "subjid_col": "SUBJID"}
-    )
-    catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
     archive = create_package_archive_from_root(
         package_root,
         tmp_path / "example-study.tar.gz",
@@ -81,9 +75,10 @@ def test_database_package_binds_catalog_relationship_keys(tmp_path) -> None:
     bundle = build_study_bundle(installed)
     source = bundle.data_sources["example-source"]
 
-    assert source.relationship_keys == {
-        "participants": {"report_participant": "SUBJID"}
+    assert source.relationship_spec.table_keys == {
+        "participants": {"participant_key": "SUBJID"}
     }
+    assert source.relationship_spec.relationships == ()
 
 
 def test_knowledge_only_package_builds_knowledge_capability(tmp_path) -> None:
