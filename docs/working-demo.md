@@ -9,9 +9,24 @@ source .venv/bin/activate
 python run_fastapi.py
 ```
 
-Python 3.12 and `OPENAI_API_KEY` are required. The launcher verifies the key
-from `.env` (or prompts for and saves a verified key), prepares the selected
-runtime directory, and serves the committed browser build.
+Python 3.12 and at least one usable model provider are required. On first run,
+the launcher offers OpenAI, Anthropic, both, or a registered compatible
+endpoint. It securely prompts for missing built-in provider keys, verifies all
+configured providers on every startup, saves only verified keys to `.env`,
+prepares the selected runtime directory, and serves the committed browser
+build. Run `python run_fastapi.py --reconfigure` to add, replace, or remove a
+provider.
+
+The model selector is derived from providers that passed startup verification:
+OpenAI enables registered GPT models, Anthropic enables registered Claude
+models, and a reachable registered compatible endpoint enables its declared
+models. `REPORT_AGENT_MODEL` and `REPORT_AGENT_ALLOWED_MODELS` are not setup
+inputs and are removed from `.env` during startup. Compatible endpoints must
+already be running; this repository does not install or launch vLLM or Ray.
+
+If a saved conversation names a model that is not currently available, its
+history still loads. Continuing it requires selecting and confirming an
+available replacement model.
 
 Requests use the fixed `local-user` identity internally. Legacy unowned local
 conversation rows are claimed for that identity so prior local work remains
@@ -24,10 +39,11 @@ The defaults are project-local and can be overridden in `.env`:
 
 - `REPORT_AGENT_RUNTIME_ROOT` stores conversations, uploads, generated data,
   and execution artifacts.
-- `REPORT_AGENT_CHECKPOINT_DB_PATH` selects the SQLite checkpoint/history
-  database.
 - `REPORT_AGENT_STUDY_ROOT` contains installed study packages.
 - `REPORT_AGENT_STATIC_DIR` selects the compiled frontend bundle.
+
+The checkpoint/history database is derived from `REPORT_AGENT_RUNTIME_ROOT`;
+it is not configured separately by the normal setup flow.
 
 The study installer and application launcher prompt for local directories when
 needed. Persistent data formats and ownership layout remain stable across
