@@ -7,24 +7,6 @@ export type RunState =
   | "error"
   | "timeout";
 
-export interface CognitoPublicConfig {
-  authority: string;
-  client_id: string;
-  logout_endpoint: string;
-  redirect_uri: string;
-  post_logout_redirect_uri: string;
-}
-
-export interface PublicAppConfig {
-  auth_mode: "local" | "cognito";
-  provider_key_required: boolean;
-  cognito: CognitoPublicConfig | null;
-}
-
-export interface ProviderKeyStatus {
-  configured: boolean;
-}
-
 export type ActivityItemStatus = "running" | "completed" | "waiting";
 
 export type ActivityRunState =

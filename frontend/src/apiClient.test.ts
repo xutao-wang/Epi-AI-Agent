@@ -15,7 +15,6 @@ import {
   restoreConversation,
   getRuntimeInfo,
   getRuntimeOptions,
-  LOCAL_SESSION_ID,
   resumeInterrupt,
   resetThread,
   submitMessage,
@@ -132,82 +131,18 @@ const approvePayload: ResumeInterruptPayload = {
 };
 
 describe("apiClient", () => {
-  it("adds the access token and tab session to protected requests", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ items: [] }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }),
-    );
-    const client = createApiClient({
-      apiBase: "http://api.test",
-      fetchImpl: fetchMock,
-      getAccessToken: async () => "access-token",
-      sessionId: "11111111-1111-4111-8111-111111111111",
-    });
-
-    await client.listConversations();
-
-    const request = new Request(fetchMock.mock.calls[0][0], fetchMock.mock.calls[0][1]);
-    expect(request.headers.get("Authorization")).toBe("Bearer access-token");
-    expect(request.headers.get("X-Epi-Session-ID")).toBe(
-      "11111111-1111-4111-8111-111111111111",
-    );
-  });
-
-  it("keeps Cognito headers on provider-key deletion and protected blob reads", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(new Response(null, { status: 204 }))
-      .mockResolvedValueOnce(
-        new Response("dataset", { headers: { "Content-Type": "text/csv" } }),
-      );
-    const client = createApiClient({
-      apiBase: "http://api.test",
-      fetchImpl: fetchMock,
-      getAccessToken: async () => "access-token",
-      sessionId: "11111111-1111-4111-8111-111111111111",
-    });
-
-    await client.clearProviderKey();
-    await client.fetchDatasetBlob("thread-1", "dataset-1");
-
-    for (const [input, init] of fetchMock.mock.calls) {
-      const request = new Request(input, init);
-      expect(request.headers.get("Authorization")).toBe("Bearer access-token");
-      expect(request.headers.get("X-Epi-Session-ID")).toBe(
-        "11111111-1111-4111-8111-111111111111",
-      );
-    }
-    expect(new Request(fetchMock.mock.calls[0][0], fetchMock.mock.calls[0][1]).method).toBe(
-      "DELETE",
-    );
-    expect(String(fetchMock.mock.calls[1][0])).toContain("/datasets/dataset-1/download");
-  });
-
-  it("omits the bearer token in local mode", async () => {
+  it("sends local requests without authentication or session headers", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ items: [] }));
-    const client = createApiClient({ apiBase: "http://api.test", fetchImpl: fetchMock });
+    const client = createApiClient({
+      apiBase: "http://api.test",
+      fetchImpl: fetchMock,
+    });
 
     await client.listConversations();
 
     const request = new Request(fetchMock.mock.calls[0][0], fetchMock.mock.calls[0][1]);
     expect(request.headers.get("Authorization")).toBeNull();
-    expect(request.headers.get("X-Epi-Session-ID")).toBe(LOCAL_SESSION_ID);
-  });
-
-  it("adds the fixed local session header to bound client requests", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ items: [] }));
-    const client = createApiClient({
-      apiBase: "http://api.test",
-      fetchImpl: fetchMock,
-    });
-
-    await client.listConversations();
-
-    const request = new Request(fetchMock.mock.calls[0][0], fetchMock.mock.calls[0][1]);
-    expect(request.headers.get("X-Epi-Session-ID")).toBe(LOCAL_SESSION_ID);
-    expect(LOCAL_SESSION_ID).toBe("00000000-0000-4000-8000-000000000001");
+    expect(request.headers.get("X-Epi-Session-ID")).toBeNull();
   });
 
   it("fetches protected attachment blobs through the bound client", async () => {
@@ -226,7 +161,6 @@ describe("apiClient", () => {
 
     const request = new Request(fetchMock.mock.calls[0][0], fetchMock.mock.calls[0][1]);
     expect(request.url).toBe("http://api.test/api/threads/thread-1/attachments/attachment-1");
-    expect(request.headers.get("X-Epi-Session-ID")).toBe(LOCAL_SESSION_ID);
   });
 
   it("fetches artifact, dataset, and thread-export blobs through the bound client", async () => {
@@ -249,10 +183,6 @@ describe("apiClient", () => {
       "http://api.test/api/threads/thread-1/datasets/dataset-1/download",
       "http://api.test/api/threads/thread-1/export.zip",
     ]);
-    for (const [url, init] of fetchMock.mock.calls) {
-      const request = new Request(url, init);
-      expect(request.headers.get("X-Epi-Session-ID")).toBe(LOCAL_SESSION_ID);
-    }
   });
 
   it("lists saved conversations", async () => {
@@ -667,26 +597,21 @@ describe("apiClient", () => {
     );
   });
 
-  it("authenticates cancellation through the factory client", async () => {
+  it("cancels a run without authentication headers", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(threadState));
     const client = createApiClient({
       apiBase: "http://api.test",
       fetchImpl: fetchMock,
-      getAccessToken: async () => "access-token",
-      sessionId: "11111111-1111-4111-8111-111111111111",
     });
 
     await client.cancelRun("thread-1");
 
-    expect(fetchMock).toHaveBeenCalledOnce();
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("http://api.test/api/threads/thread-1/cancel");
-    expect(init.method).toBe("POST");
-    const headers = new Headers(init.headers);
-    expect(headers.get("Authorization")).toBe("Bearer access-token");
-    expect(headers.get("X-Epi-Session-ID")).toBe(
-      "11111111-1111-4111-8111-111111111111",
-    );
+    expect(init).toEqual({ method: "POST", headers: expect.any(Headers) });
+    const request = new Request(url, init);
+    expect(request.headers.get("Authorization")).toBeNull();
+    expect(request.headers.get("X-Epi-Session-ID")).toBeNull();
   });
 
   it("resets a thread", async () => {

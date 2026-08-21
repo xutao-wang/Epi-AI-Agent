@@ -9,9 +9,8 @@ import {
   within,
 } from "@testing-library/react";
 import { StrictMode } from "react";
-import type { User } from "oidc-client-ts";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import AuthenticatedApp, {
+import {
   AppForTesting as App,
   isPendingMessageAcknowledged,
 } from "./App";
@@ -293,63 +292,14 @@ afterEach(() => {
 });
 
 describe("App", () => {
-  it("uses the injected authenticated user and sign-out handler", async () => {
-    const onSignOut = vi.fn().mockResolvedValue(undefined);
-    const apiClient = createApiClient({
-      apiBase: "http://api.test",
-      fetchImpl: vi.fn().mockResolvedValue(runtimeOptionsResponse()),
-    });
-    const user = {
-      access_token: "access-token",
-      expired: false,
-      profile: { sub: "user-1", email: "analyst@example.com" },
-    } as User;
+  it("renders the local application without hosted account controls", async () => {
+    render(<App apiBase="http://api.test" loadConversationHistory={false} />);
 
-    render(
-      <AuthenticatedApp
-        apiClient={apiClient}
-        authenticatedUser={user}
-        loadConversationHistory={false}
-        onSignOut={onSignOut}
-      />,
-    );
-
-    expect(await screen.findByText("Signed in as analyst@example.com")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
-    expect(onSignOut).toHaveBeenCalledOnce();
-  });
-
-  it("renders a safe retry state when authenticated sign-out fails", async () => {
-    const onSignOut = vi
-      .fn()
-      .mockRejectedValue(new Error("secret-provider-delete-detail"));
-    const apiClient = createApiClient({
-      apiBase: "http://api.test",
-      fetchImpl: vi.fn().mockResolvedValue(runtimeOptionsResponse()),
-    });
-    const user = {
-      access_token: "access-token",
-      expired: false,
-      profile: { sub: "user-1", email: "analyst@example.com" },
-    } as User;
-    render(
-      <AuthenticatedApp
-        apiClient={apiClient}
-        authenticatedUser={user}
-        loadConversationHistory={false}
-        onSignOut={onSignOut}
-      />,
-    );
-
-    fireEvent.click(await screen.findByRole("button", { name: "Sign out" }));
-
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Sign out could not be completed",
-    );
-    expect(screen.getByRole("alert")).not.toHaveTextContent(
-      "secret-provider-delete-detail",
-    );
-    expect(screen.getByRole("button", { name: "Sign out" })).toBeEnabled();
+    expect(
+      await screen.findByText("Ask questions about your data or query from existing database"),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sign out" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Signed-in user")).not.toBeInTheDocument();
   });
 
   it("shows the updated initial prompt and example question without a ready status", async () => {
@@ -3843,3 +3793,4 @@ describe("App", () => {
     expect(screen.queryByText("Dataset ID: approved-subset")).not.toBeInTheDocument();
   });
 });
+

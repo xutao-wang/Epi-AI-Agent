@@ -10,13 +10,10 @@ import type {
   RuntimeOptions,
   RuntimeSettings,
   ConversationSummary,
-  ProviderKeyStatus,
   TablePreview,
 } from "./types";
 
 type FetchImpl = typeof fetch;
-
-export const LOCAL_SESSION_ID = "00000000-0000-4000-8000-000000000001";
 
 interface CreateThreadResponse {
   thread_id: string;
@@ -25,8 +22,6 @@ interface CreateThreadResponse {
 export interface CreateApiClientOptions {
   apiBase?: string;
   fetchImpl?: FetchImpl;
-  getAccessToken?: () => Promise<string | null>;
-  sessionId?: string;
 }
 
 export class ApiError extends Error {
@@ -450,86 +445,48 @@ async function fetchThreadExportBlob(
 export function createApiClient({
   apiBase = "",
   fetchImpl = fetch,
-  getAccessToken,
-  sessionId = LOCAL_SESSION_ID,
 }: CreateApiClientOptions = {}) {
-  const requestWithHeaders = (init: RequestInit, token: string | null) => {
+  const localFetch: FetchImpl = (input, init = {}) => {
     const headers = new Headers(init.headers);
-    headers.set("X-Epi-Session-ID", sessionId);
-    if (token) {
-      headers.set("Authorization", `Bearer ${token}`);
-    }
-    return { ...init, headers };
+    return fetchImpl(input, { ...init, headers });
   };
-  const authenticatedFetch: FetchImpl = getAccessToken
-    ? async (input, init = {}) =>
-        fetchImpl(input, requestWithHeaders(init, await getAccessToken()))
-    : (input, init = {}) =>
-        fetchImpl(input, requestWithHeaders(init, null));
 
   return {
-    requiresProviderKey: sessionId !== LOCAL_SESSION_ID,
-    async getProviderKeyStatus(): Promise<ProviderKeyStatus> {
-      return parseJsonResponse<ProviderKeyStatus>(
-        await authenticatedFetch(apiUrl(apiBase, "/api/session/provider-key")),
-      );
-    },
-    async setProviderKey(apiKey: string): Promise<ProviderKeyStatus> {
-      return parseJsonResponse<ProviderKeyStatus>(
-        await authenticatedFetch(
-          apiUrl(apiBase, "/api/session/provider-key"),
-          {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ api_key: apiKey }),
-          },
-        ),
-      );
-    },
-    async clearProviderKey(): Promise<void> {
-      const response = await authenticatedFetch(
-        apiUrl(apiBase, "/api/session/provider-key"),
-        { method: "DELETE" },
-      );
-      if (!response.ok) {
-        throw new ApiError(response.status, await responseDetail(response));
-      }
-    },
     createThread(modelName?: string) {
-      return createThread(authenticatedFetch, apiBase, modelName);
+      return createThread(localFetch, apiBase, modelName);
     },
     getRuntimeInfo() {
-      return getRuntimeInfo(authenticatedFetch, apiBase);
+      return getRuntimeInfo(localFetch, apiBase);
     },
     listConversations() {
-      return listConversations(authenticatedFetch, apiBase);
+      return listConversations(localFetch, apiBase);
     },
     renameConversation(threadId: string, title: string) {
-      return renameConversation(authenticatedFetch, apiBase, threadId, title);
+      return renameConversation(localFetch, apiBase, threadId, title);
     },
     markConversationOpened(threadId: string) {
-      return markConversationOpened(authenticatedFetch, apiBase, threadId);
+      return markConversationOpened(localFetch, apiBase, threadId);
     },
     archiveConversation(threadId: string) {
-      return archiveConversation(authenticatedFetch, apiBase, threadId);
+      return archiveConversation(localFetch, apiBase, threadId);
     },
     restoreConversation(threadId: string) {
-      return restoreConversation(authenticatedFetch, apiBase, threadId);
+      return restoreConversation(localFetch, apiBase, threadId);
     },
     deleteConversation(threadId: string) {
-      return deleteConversation(authenticatedFetch, apiBase, threadId);
+      return deleteConversation(localFetch, apiBase, threadId);
     },
     getRuntimeOptions() {
-      return getRuntimeOptions(authenticatedFetch, apiBase);
+      return getRuntimeOptions(localFetch, apiBase);
     },
     resetThread(threadId: string) {
-      return resetThread(authenticatedFetch, apiBase, threadId);
+      return resetThread(localFetch, apiBase, threadId);
     },
     getThreadState(threadId: string) {
-      return getThreadState(authenticatedFetch, apiBase, threadId);
+      return getThreadState(localFetch, apiBase, threadId);
     },
     cancelRun(threadId: string) {
-      return cancelRun(authenticatedFetch, apiBase, threadId);
+      return cancelRun(localFetch, apiBase, threadId);
     },
     submitMessage(
       threadId: string,
@@ -538,7 +495,7 @@ export function createApiClient({
       modelName?: string,
     ) {
       return submitMessage(
-        authenticatedFetch,
+        localFetch,
         apiBase,
         threadId,
         text,
@@ -547,11 +504,11 @@ export function createApiClient({
       );
     },
     uploadAttachments(threadId: string, files: File[]) {
-      return uploadAttachments(authenticatedFetch, apiBase, threadId, files);
+      return uploadAttachments(localFetch, apiBase, threadId, files);
     },
     discardStagedAttachment(threadId: string, attachmentId: string) {
       return discardStagedAttachment(
-        authenticatedFetch,
+        localFetch,
         apiBase,
         threadId,
         attachmentId,
@@ -559,7 +516,7 @@ export function createApiClient({
     },
     fetchAttachmentBlob(threadId: string, attachmentId: string) {
       return fetchAttachmentBlob(
-        authenticatedFetch,
+        localFetch,
         apiBase,
         threadId,
         attachmentId,
@@ -570,34 +527,34 @@ export function createApiClient({
       interruptId: string,
       payload: ResumeInterruptPayload,
     ) {
-      return resumeInterrupt(authenticatedFetch, apiBase, threadId, interruptId, payload);
+      return resumeInterrupt(localFetch, apiBase, threadId, interruptId, payload);
     },
     getDatasetPreview(threadId: string, datasetId: string, limit = 100) {
-      return getDatasetPreview(authenticatedFetch, apiBase, threadId, datasetId, limit);
+      return getDatasetPreview(localFetch, apiBase, threadId, datasetId, limit);
     },
     getDatasetSchema(threadId: string, datasetId: string) {
-      return getDatasetSchema(authenticatedFetch, apiBase, threadId, datasetId);
+      return getDatasetSchema(localFetch, apiBase, threadId, datasetId);
     },
     getDatasetProvenance(threadId: string, datasetId: string) {
-      return getDatasetProvenance(authenticatedFetch, apiBase, threadId, datasetId);
+      return getDatasetProvenance(localFetch, apiBase, threadId, datasetId);
     },
     getAnalysisResult(threadId: string, analysisId: string) {
-      return getAnalysisResult(authenticatedFetch, apiBase, threadId, analysisId);
+      return getAnalysisResult(localFetch, apiBase, threadId, analysisId);
     },
     fetchArtifactBlob(threadId: string, artifactId: string) {
-      return fetchArtifactBlob(authenticatedFetch, apiBase, threadId, artifactId);
+      return fetchArtifactBlob(localFetch, apiBase, threadId, artifactId);
     },
     fetchDatasetBlob(threadId: string, datasetId: string) {
-      return fetchDatasetBlob(authenticatedFetch, apiBase, threadId, datasetId);
+      return fetchDatasetBlob(localFetch, apiBase, threadId, datasetId);
     },
     getTablePreview(threadId: string, artifactId: string, limit = 100) {
-      return getTablePreview(authenticatedFetch, apiBase, threadId, artifactId, limit);
+      return getTablePreview(localFetch, apiBase, threadId, artifactId, limit);
     },
     getArtifactText(threadId: string, artifactId: string) {
-      return getArtifactText(authenticatedFetch, apiBase, threadId, artifactId);
+      return getArtifactText(localFetch, apiBase, threadId, artifactId);
     },
     fetchThreadExportBlob(threadId: string) {
-      return fetchThreadExportBlob(authenticatedFetch, apiBase, threadId);
+      return fetchThreadExportBlob(localFetch, apiBase, threadId);
     },
   };
 }

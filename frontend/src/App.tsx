@@ -1,5 +1,4 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { User } from "oidc-client-ts";
 import { ApiError, createApiClient, type ApiClient } from "./apiClient";
 import AgentActivityTimeline from "./AgentActivityTimeline";
 import AttachmentComposer from "./AttachmentComposer";
@@ -30,8 +29,6 @@ import type { FormEvent, KeyboardEvent } from "react";
 
 interface Props {
   apiClient: ApiClient;
-  authenticatedUser: User | null;
-  onSignOut: () => Promise<void>;
   loadConversationHistory?: boolean;
 }
 
@@ -144,8 +141,6 @@ function ActivityMessage({ detail, steps, title }: ActivityMessageProps) {
 
 export default function App({
   apiClient,
-  authenticatedUser,
-  onSignOut,
   loadConversationHistory = true,
 }: Props) {
   const createThreadPromiseRef = useRef<Promise<string> | null>(null);
@@ -194,16 +189,10 @@ export default function App({
     Record<string, ClarificationExchange>
   >({});
   const [isModelLockHintVisible, setIsModelLockHintVisible] = useState(false);
-  const [isSigningOut, setIsSigningOut] = useState(false);
-  const [signOutError, setSignOutError] = useState(false);
   const [isLoadingConversation, setIsLoadingConversation] = useState(false);
   const [restoredReviewThreadId, setRestoredReviewThreadId] = useState<
     string | null
   >(null);
-  const authenticatedEmail =
-    typeof authenticatedUser?.profile.email === "string"
-      ? authenticatedUser.profile.email
-      : null;
 
   useEffect(() => {
     let isMounted = true;
@@ -1080,17 +1069,6 @@ export default function App({
     }
   }
 
-  async function signOut() {
-    setIsSigningOut(true);
-    setSignOutError(false);
-    try {
-      await onSignOut();
-    } catch {
-      setSignOutError(true);
-      setIsSigningOut(false);
-    }
-  }
-
   return (
     <AppShell
       headerAction={
@@ -1105,17 +1083,6 @@ export default function App({
       }
       sidebar={
         <div className="settings-panel">
-          {authenticatedUser ? (
-            <section className="authenticated-user-panel" aria-label="Signed-in user">
-              <p>{authenticatedEmail ? `Signed in as ${authenticatedEmail}` : "Signed in"}</p>
-              {signOutError ? (
-                <p role="alert">Sign out could not be completed. Please try again.</p>
-              ) : null}
-              <button disabled={isSigningOut} onClick={() => void signOut()} type="button">
-                {isSigningOut ? "Signing out" : "Sign out"}
-              </button>
-            </section>
-          ) : null}
           <ConversationHistory
             activeThreadId={threadId}
             actionsDisabled={isBusy}
@@ -1356,9 +1323,7 @@ export function AppForTesting({
   return (
     <App
       apiClient={apiClient}
-      authenticatedUser={null}
       loadConversationHistory={loadConversationHistory}
-      onSignOut={async () => undefined}
     />
   );
 }
