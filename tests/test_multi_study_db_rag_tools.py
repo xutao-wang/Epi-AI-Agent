@@ -14,7 +14,11 @@ from epi_agent.artifacts import (
 )
 from epi_agent.db_rag.prompt import DB_RAG_SYSTEM_PROMPT
 from epi_agent.db_rag.reviews import _plan_review_view
-from epi_agent.db_rag.tools import build_db_rag_tool_registry
+from epi_agent.db_rag.tools import (
+    _profile_matches_operation,
+    _safe_relationship_profile,
+    build_db_rag_tool_registry,
+)
 from epi_agent.protocol import ToolContext, ToolExecutionError
 from epi_agent.studies import StudyBundle, StudyRegistry
 
@@ -87,9 +91,14 @@ class _RelationshipInventory:
     ):
         return [
             {
-                "left_table": left_table,
-                "right_table": right_table,
-                "max_hops": max_hops,
+                "tables": [left_table, right_table],
+                "profiles": [
+                    self.profile_relationship(
+                        left_table,
+                        right_table,
+                        [("CHILD_TOKEN", "ADULT_TOKEN")],
+                    )
+                ],
             }
         ][:max_paths]
 
@@ -103,8 +112,26 @@ class _RelationshipInventory:
             "left_table": left_table,
             "right_table": right_table,
             "key_pairs": key_pairs,
-            "left_rows": 10,
-            "right_rows": 12,
+            "left_distinct_keys": 2,
+            "right_distinct_keys": 1,
+            "matched_keys": 1,
+            "joined_rows": 2,
+            "left_cardinality": "many",
+            "right_cardinality": "one",
+            "warnings": [],
+            "relationship_evidence": [
+                {
+                    "left_column": key_pairs[0][0],
+                    "right_column": key_pairs[0][1],
+                    "left_join_key": "child_key",
+                    "right_join_key": "adult_key",
+                    "source": "declared_relationship",
+                    "relationship_id": "guardian_link",
+                    "expected_cardinality": "many_to_one",
+                    "note": "Each child references one guardian.",
+                    "direction": "forward",
+                }
+            ],
         }
 
 
@@ -360,6 +387,11 @@ def test_db_rag_prompt_requires_scalar_study_scope_and_exact_refs() -> None:
     assert "copy the returned table_ref and field_ref" in prompt
     assert "separate catalog calls" in prompt
     assert "Never combine studies in one dataset plan" in prompt
+    assert (
+        "Use the exact join columns, direction, and declared relationship "
+        "evidence returned by relationship tools. Never rename, substitute, "
+        "or infer a join key."
+    ) in prompt
 
 
 def test_db_rag_prompt_requires_evidence_first_clarification_order() -> None:
@@ -415,6 +447,19 @@ def test_relationship_profile_preserves_both_study_scoped_table_refs() -> None:
     assert message["right_table_ref"]["table"] == "RIGHT_TABLE"
     artifact = context.artifact_store.require(result.artifacts[0])
     assert artifact.provenance["study_id"] == "study-one"
+    evidence = message["profile"]["relationship_evidence"][0]
+    assert evidence == {
+        "left_column": "SEQN",
+        "right_column": "SEQN",
+        "left_join_key": "child_key",
+        "right_join_key": "adult_key",
+        "source": "declared_relationship",
+        "relationship_id": "guardian_link",
+        "expected_cardinality": "many_to_one",
+        "note": "Each child references one guardian.",
+        "direction": "forward",
+    }
+    assert artifact.content["profile"]["relationship_evidence"] == [evidence]
 
 
 def test_join_path_result_preserves_required_field_refs() -> None:
@@ -452,4 +497,48 @@ def test_join_path_result_preserves_required_field_refs() -> None:
         context=context,
     )
 
-    assert json.loads(result.message)["required_fields"] == required_fields
+    message = json.loads(result.message)
+    assert message["required_fields"] == required_fields
+    assert (
+        message["paths"][0]["profiles"][0]["relationship_evidence"][0]
+        ["relationship_id"]
+        == "guardian_link"
+    )
+
+
+def test_relationship_evidence_preserves_exact_physical_edge_matching() -> None:
+    profile = _safe_relationship_profile(
+        {
+            "left_table": "CHILDREN",
+            "right_table": "ADULTS",
+            "key_pairs": [["CHILD_TOKEN", "ADULT_TOKEN"]],
+            "left_distinct_keys": 2,
+            "right_distinct_keys": 1,
+            "matched_keys": 1,
+            "joined_rows": 2,
+            "left_cardinality": "many",
+            "right_cardinality": "one",
+            "warnings": [],
+            "relationship_evidence": [
+                {
+                    "left_column": "CHILD_TOKEN",
+                    "right_column": "ADULT_TOKEN",
+                    "left_join_key": "child_key",
+                    "right_join_key": "adult_key",
+                    "source": "declared_relationship",
+                    "relationship_id": "guardian_link",
+                    "expected_cardinality": "many_to_one",
+                    "note": "Each child references one guardian.",
+                    "direction": "forward",
+                }
+            ],
+        }
+    )
+
+    assert profile["relationship_evidence"][0]["relationship_id"] == "guardian_link"
+    assert _profile_matches_operation(
+        profile,
+        left_table="CHILDREN",
+        right_table="ADULTS",
+        key_pairs=[("CHILD_TOKEN", "ADULT_TOKEN")],
+    )

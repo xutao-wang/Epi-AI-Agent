@@ -20,10 +20,10 @@
 - No frontend file changes are required, so no frontend bundle rebuild is performed.
 - The dedicated internal smoke must use production installation and relationship boundaries, must not stub applicable dependencies, must finish within five minutes, and must run exactly once after focused and full tests pass.
 - Implement in isolated worktrees at execution time: Database from local `master`, and Epi-AI-Agent from `local-multi-study` containing design commit `c94c745`.
-- After creating the Epi-AI-Agent worktree, link its ignored `.venv` name to
-  `/Users/xutaowang/Desktop/RA work/Epi-Agent/Epi-AI-Agent/.venv` so every
-  `.venv/bin/python` command below uses the required existing Python 3.12
-  environment without creating a second environment.
+- In the Epi-AI-Agent worktree, execute each `.venv/bin/python` command below
+  with `/Users/xutaowang/Desktop/RA work/Epi-Agent/Epi-AI-Agent/.venv/bin/python`;
+  this uses the required existing Python 3.12 environment without creating or
+  tracking a second environment.
 
 ---
 
@@ -647,7 +647,6 @@ Expected: tests pass; `rg` returns no production-code matches. Test fixture matc
 - Modify: `tests/test_db_rag_relationship_readiness.py:1-61`
 - Modify: `tests/test_report_study_bundle.py:280-340`
 - Modify: `tests/test_session_studies.py:27-52`
-- Modify: `tests/test_db_rag_service_schema.py:7-28`
 
 **Interfaces:**
 - Consumes: `parse_catalog_relationships` and `build_relationship_inventory(..., relationship_spec=...)`.
@@ -681,7 +680,11 @@ Change `create_package_root` to emit:
 }
 ```
 
-Update the missing-key installer and readiness tests to use `join_keys` plus `has_participant_key_join`. Add an installer test that changes the fixture to catalog version 1 and expects `database.catalog must use catalog_version 2`. Update session/service fixtures to version 2 with their dynamic key declarations.
+Update the missing-key installer and readiness tests to use `join_keys` plus
+`has_participant_key_join`. Add an installer test that changes the fixture to
+catalog version 1 and expects `database.catalog must use catalog_version 2`.
+Update the tracked session fixture to version 2 with its dynamic key
+declarations.
 
 Add an activation regression that installs a valid fixture, changes only its
 installed catalog version to 1, and verifies activation fails clearly before
@@ -722,8 +725,7 @@ and use table metadata `{"has_person_token_join": True}`. Assert the output cont
   tests/test_installed_study_bundle.py \
   tests/test_db_rag_relationship_readiness.py \
   tests/test_report_study_bundle.py \
-  tests/test_session_studies.py \
-  tests/test_db_rag_service_schema.py -q
+  tests/test_session_studies.py -q
 ```
 
 Expected: failures show the installer still requires version 1, the builder lacks `join_keys`/`relationships`, and the study source still accepts `relationship_keys`.
@@ -813,7 +815,7 @@ git add db_rag/catalog.py db_rag/study.py db_rag/readiness.py \
   study_package/installer.py tests/study_package_fixtures.py \
   tests/test_study_package_installer.py tests/test_installed_study_bundle.py \
   tests/test_db_rag_relationship_readiness.py tests/test_report_study_bundle.py \
-  tests/test_session_studies.py tests/test_db_rag_service_schema.py
+  tests/test_session_studies.py
 git commit -m "feat: require catalog v2 study relationships"
 ```
 
@@ -1105,7 +1107,6 @@ git commit -m "test: smoke catalog v2 relationship routing"
   tests/test_db_rag_relationship_readiness.py \
   tests/test_report_study_bundle.py \
   tests/test_session_studies.py \
-  tests/test_db_rag_service_schema.py \
   tests/test_multi_study_db_rag_tools.py -q
 ```
 

@@ -37,7 +37,9 @@ with two or more concise, evidence-supported fixed options.
 Fixed options must be concrete scientific choices; never include a delegation
 option such as "you choose" or "let the agent decide", because the UI supplies
 that one standard choice.
-Use relationship tools to resolve database linkage. Before asking about
+Use relationship tools to resolve database linkage. Use the exact join columns,
+direction, and declared relationship evidence returned by relationship tools.
+Never rename, substitute, or infer a join key. Before asking about
 database uncertainty, search the runtime catalog, inspect plausible tables,
 and check relationship paths as applicable. A missing direct name does not
 establish that the data are absent: broaden catalog searches and inspect all

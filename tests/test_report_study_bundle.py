@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from db_rag import vectorstore
+from db_rag.catalog_relationships import CatalogRelationshipSpec
 from db_rag.catalog import (
     SchemaCatalog,
     SemanticSchemaCatalog,
@@ -71,21 +72,27 @@ def test_duckdb_study_source_caches_relationship_inventory(
     monkeypatch,
 ) -> None:
     inventory = object()
-    builds: list[tuple[Path, dict[str, dict[str, str]] | None]] = []
+    builds: list[tuple[Path, CatalogRelationshipSpec]] = []
 
-    def fake_build(path: Path, *, relationship_keys=None):
-        builds.append((path, relationship_keys))
+    def fake_build(path: Path, *, relationship_spec):
+        builds.append((path, relationship_spec))
         return inventory
 
     monkeypatch.setattr("db_rag.study.build_relationship_inventory", fake_build)
     database = tmp_path / "report.duckdb"
     database.touch()
-    keys = {"participants": {"report_participant": "SUBJID"}}
-    source = DuckDbStudyDataSource(database, relationship_keys=keys)
+    specification = CatalogRelationshipSpec(
+        table_keys={"participants": {"participant_key": "PERSON_TOKEN"}},
+        relationships=(),
+    )
+    source = DuckDbStudyDataSource(
+        database,
+        relationship_spec=specification,
+    )
 
     assert source.relationship_inventory() is inventory
     assert source.relationship_inventory() is inventory
-    assert builds == [(database, keys)]
+    assert builds == [(database, specification)]
 
 
 def test_markdown_publications_are_not_parsed(tmp_path: Path) -> None:
@@ -291,35 +298,38 @@ def test_full_catalog_retains_table_profile_metadata() -> None:
                 "metadata": {
                     "table": "screening",
                     "row_count": 12,
-                    "seqn_col": "SEQN",
-                    "subjid_col": "SUBJID_PSEUDO",
-                    "fid_col": "FID_PSEUDO",
-                    "has_seqn_join": True,
-                    "has_subjid_join": True,
-                    "has_fid_join": True,
+                    "has_person_token_join": True,
                 },
             }
         ],
         column_chunks=[],
         source_fingerprint="schema-fingerprint",
+        join_keys={"person_token": "PERSON_TOKEN"},
+        relationships=[],
     )
 
+    assert catalog["catalog_version"] == 2
+    assert catalog["join_keys"] == {"person_token": "PERSON_TOKEN"}
+    assert catalog["relationships"] == []
     assert catalog["tables"][0] == {
         "table": "screening",
         "text": "Table: screening",
         "row_count": 12,
-        "seqn_col": "SEQN",
-        "subjid_col": "SUBJID_PSEUDO",
-        "fid_col": "FID_PSEUDO",
-        "has_seqn_join": True,
-        "has_subjid_join": True,
-        "has_fid_join": True,
+        "has_person_token_join": True,
     }
+    assert not {
+        "seqn_col",
+        "subjid_col",
+        "fid_col",
+        "has_seqn_join",
+        "has_subjid_join",
+        "has_fid_join",
+    } & set(catalog["tables"][0])
 
 
 @pytest.mark.parametrize("value", ["false", 1, None])
 def test_full_catalog_rejects_non_boolean_relationship_flags(value: object) -> None:
-    with pytest.raises(ValueError, match="has_seqn_join must be a boolean"):
+    with pytest.raises(ValueError, match="has_person_token_join must be a boolean"):
         build_full_schema_catalog(
             table_chunks=[
                 {
@@ -327,13 +337,14 @@ def test_full_catalog_rejects_non_boolean_relationship_flags(value: object) -> N
                     "text": "Table: screening",
                     "metadata": {
                         "table": "screening",
-                        "seqn_col": "SEQN",
-                        "has_seqn_join": value,
+                        "has_person_token_join": value,
                     },
                 }
             ],
             column_chunks=[],
             source_fingerprint="schema-fingerprint",
+            join_keys={"person_token": "PERSON_TOKEN"},
+            relationships=[],
         )
 
 

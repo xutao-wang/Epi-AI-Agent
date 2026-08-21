@@ -176,8 +176,16 @@ def create_package_root(
     (database_root / "schema_catalog.json").write_text(
         json.dumps(
             {
-                "catalog_version": 1,
-                "tables": [{"table": "participants", "text": "Participant records"}],
+                "catalog_version": 2,
+                "join_keys": {"participant_key": "SUBJID"},
+                "relationships": [],
+                "tables": [
+                    {
+                        "table": "participants",
+                        "text": "Participant records",
+                        "has_participant_key_join": True,
+                    }
+                ],
                 "columns": [
                     {
                         "table": "participants",

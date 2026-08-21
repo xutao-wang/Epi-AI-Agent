@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 import json
 import re
 from pathlib import Path
@@ -8,10 +9,10 @@ from typing import Any, Literal
 from pydantic import BaseModel
 from utils.performance import timing_stage
 
+from .catalog_relationships import CATALOG_VERSION
 from .retrieval import retrieve_queries
 
 
-CATALOG_VERSION = 1
 _TOKEN = re.compile(r"[a-z0-9_]+")
 _RRF_K = 60
 _LEXICAL_STOPWORDS = frozenset(
@@ -385,21 +386,23 @@ def _column_entry(chunk: Any) -> dict[str, Any]:
     return entry
 
 
-def _table_entry(chunk: Any) -> dict[str, Any]:
+def _table_entry(
+    chunk: Any,
+    join_key_ids: tuple[str, ...],
+) -> dict[str, Any]:
     entry: dict[str, Any] = {
         "table": _as_text(_chunk_value(chunk, "table")),
         "text": _as_text(_chunk_value(chunk, "text")),
     }
     metadata = _chunk_metadata(chunk)
-    for key in ("row_count", "seqn_col", "subjid_col", "fid_col"):
-        if key in metadata:
-            entry[key] = metadata[key]
-    for key in ("has_seqn_join", "has_subjid_join", "has_fid_join"):
-        if key in metadata:
-            value = metadata[key]
-            if not isinstance(value, bool):
-                raise ValueError(f"{key} must be a boolean")
-            entry[key] = value
+    if "row_count" in metadata:
+        entry["row_count"] = metadata["row_count"]
+    for key_id in join_key_ids:
+        key = f"has_{key_id}_join"
+        value = metadata.get(key)
+        if not isinstance(value, bool):
+            raise ValueError(f"{key} must be a boolean")
+        entry[key] = value
     return entry
 
 
@@ -408,9 +411,16 @@ def build_full_schema_catalog(
     table_chunks: list[Any],
     column_chunks: list[Any],
     source_fingerprint: str,
+    join_keys: Mapping[str, str],
+    relationships: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
+    join_key_copy = json.loads(json.dumps(dict(join_keys)))
+    relationship_copy = json.loads(
+        json.dumps([dict(relationship) for relationship in relationships])
+    )
+    join_key_ids = tuple(join_key_copy)
     tables = [
-        _table_entry(chunk)
+        _table_entry(chunk, join_key_ids)
         for chunk in list(table_chunks or [])
         if _as_text(_chunk_value(chunk, "table"))
     ]
@@ -421,6 +431,8 @@ def build_full_schema_catalog(
     ]
     return {
         "catalog_version": CATALOG_VERSION,
+        "join_keys": join_key_copy,
+        "relationships": relationship_copy,
         "source_fingerprint": _as_text(source_fingerprint),
         "include_excel_profiles": True,
         "contains_raw_excel_rows": False,

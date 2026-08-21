@@ -25,13 +25,14 @@ def _write_assets_with_missing_declared_key(root: Path) -> DbRagRuntimePaths:
     catalog_path.write_text(
         json.dumps(
             {
-                "catalog_version": 1,
+                "catalog_version": 2,
+                "join_keys": {"participant_key": "MISSING_SUBJID"},
+                "relationships": [],
                 "tables": [
                     {
                         "table": "participants",
                         "text": "Participant records.",
-                        "has_subjid_join": True,
-                        "subjid_col": "MISSING_SUBJID",
+                        "has_participant_key_join": True,
                     }
                 ],
                 "columns": [
@@ -76,3 +77,18 @@ def test_declared_relationship_column_missing_from_duckdb_is_not_configured(
 
     assert readiness.status == "not_configured"
     assert "missing duckdb column" in readiness.message.casefold()
+
+
+def test_catalog_v1_has_explicit_not_configured_message(tmp_path: Path) -> None:
+    paths = _write_assets_with_missing_declared_key(tmp_path)
+    catalog = json.loads(paths.catalog_path.read_text(encoding="utf-8"))
+    catalog["catalog_version"] = 1
+    paths.catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+
+    readiness = resolve_db_rag_readiness(paths=paths)
+
+    assert readiness.status == "not_configured"
+    assert readiness.message == (
+        "DB-RAG dataset is not configured: the schema catalog must use "
+        "catalog_version 2."
+    )

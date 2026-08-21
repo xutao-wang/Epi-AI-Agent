@@ -11,7 +11,12 @@ import tarfile
 import pytest
 
 import study_package.installer as installer
-from study_package.installer import InstalledStudy, stage_study_archive
+from study_package.installer import (
+    InstalledStudy,
+    activate_study_version,
+    install_study_archives,
+    stage_study_archive,
+)
 from tests.study_package_fixtures import (
     create_package_archive,
     create_package_archive_from_root,
@@ -105,9 +110,7 @@ def test_stage_rejects_declared_relationship_column_missing_from_duckdb(
     package_root = create_package_root(tmp_path / "source")
     catalog_path = package_root / "database" / "schema_catalog.json"
     catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
-    catalog["tables"][0].update(
-        {"has_subjid_join": True, "subjid_col": "MISSING_SUBJID"}
-    )
+    catalog["join_keys"] = {"participant_key": "MISSING_SUBJID"}
     catalog["columns"].append(
         {
             "table": "participants",
@@ -123,6 +126,47 @@ def test_stage_rejects_declared_relationship_column_missing_from_duckdb(
 
     with pytest.raises(ValueError, match="missing DuckDB column"):
         stage_study_archive(archive, tmp_path / "runtime" / "studies")
+
+
+def test_stage_rejects_catalog_v1(tmp_path: Path) -> None:
+    package_root = create_package_root(tmp_path / "source")
+    catalog_path = package_root / "database" / "schema_catalog.json"
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    catalog["catalog_version"] = 1
+    catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+    archive = create_package_archive_from_root(
+        package_root,
+        tmp_path / "study.tar.gz",
+    )
+
+    with pytest.raises(ValueError, match="catalog_version 2"):
+        stage_study_archive(archive, tmp_path / "runtime" / "studies")
+
+
+def test_activate_rejects_installed_catalog_v1(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    studies_root = tmp_path / "runtime" / "studies"
+    installed = install_study_archives(
+        [create_package_archive(tmp_path / "source")],
+        studies_root,
+    )[0]
+    catalog_path = installed.package_root / "database" / "schema_catalog.json"
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    catalog["catalog_version"] = 1
+    catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+    registry_writes: list[object] = []
+    monkeypatch.setattr(
+        installer,
+        "write_registry",
+        lambda *_args, **_kwargs: registry_writes.append(object()),
+    )
+
+    with pytest.raises(ValueError, match="catalog_version 2"):
+        activate_study_version("example-study", "1.0.0", studies_root)
+
+    assert registry_writes == []
 
 
 def test_installed_study_exposes_task_two_installation_identity() -> None:

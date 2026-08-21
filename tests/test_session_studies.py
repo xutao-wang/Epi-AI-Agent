@@ -37,8 +37,16 @@ def _bundle(
     catalog_path.write_text(
         json.dumps(
             {
-                "catalog_version": 1,
-                "tables": [{"table": table, "text": f"{table} records"}],
+                "catalog_version": 2,
+                "join_keys": {"record_key": "FIELD"},
+                "relationships": [],
+                "tables": [
+                    {
+                        "table": table,
+                        "text": f"{table} records",
+                        "has_record_key_join": True,
+                    }
+                ],
                 "columns": [
                     {
                         "table": table,

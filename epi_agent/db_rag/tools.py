@@ -435,6 +435,42 @@ def _safe_key_pairs(value: Any) -> list[list[str]]:
     return pairs
 
 
+def _safe_relationship_evidence(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    required = {
+        key: _bounded_text(value.get(key), limit=300)
+        for key in (
+            "left_column",
+            "right_column",
+            "left_join_key",
+            "right_join_key",
+        )
+    }
+    if not all(required.values()):
+        return {}
+    source = _bounded_text(value.get("source"), limit=100)
+    if source not in {"shared_join_key", "declared_relationship"}:
+        return {}
+    result: dict[str, Any] = {**required, "source": source}
+    for key in ("relationship_id", "note"):
+        text = _bounded_text(value.get(key), limit=500)
+        if text:
+            result[key] = text
+    expected = _bounded_text(value.get("expected_cardinality"), limit=100)
+    if expected in {
+        "one_to_one",
+        "one_to_many",
+        "many_to_one",
+        "many_to_many",
+    }:
+        result["expected_cardinality"] = expected
+    direction = _bounded_text(value.get("direction"), limit=100)
+    if direction in {"forward", "reverse"}:
+        result["direction"] = direction
+    return result
+
+
 def _safe_relationship_profile(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
@@ -455,6 +491,14 @@ def _safe_relationship_profile(value: Any) -> dict[str, Any]:
         _collection(value, "warnings"),
         limit=20,
     )
+    profile["relationship_evidence"] = [
+        evidence
+        for evidence in (
+            _safe_relationship_evidence(item)
+            for item in _collection(value, "relationship_evidence")[:20]
+        )
+        if evidence
+    ]
     return profile
 
 
@@ -1377,16 +1421,17 @@ def _find_join_paths(arguments: dict[str, Any], context: ToolContext) -> ToolRes
         ],
         "paths": paths,
     }
+    rendered_content = _render_relationship(content)
     reference = _save_observation(
         context,
         kind="relationship_profile",
-        content=content,
+        content=rendered_content,
         producer="dbrag-find_join_paths",
         summary=f"{len(paths)} observed join paths",
         study_id=study.study_id,
     )
     return ToolResult(
-        message=json.dumps(_render_relationship(content), sort_keys=True),
+        message=json.dumps(rendered_content, sort_keys=True),
         artifacts=(reference,),
     )
 
@@ -1438,10 +1483,11 @@ def _profile_relationship(
         "right_table_ref": right_ref.model_dump(mode="json"),
         "profile": profile_content,
     }
+    rendered_content = _render_relationship(content)
     reference = _save_observation(
         context,
         kind="relationship_profile",
-        content=content,
+        content=rendered_content,
         producer="dbrag-profile_relationship",
         summary=(
             f"Observed relationship between {left_ref.table} "
@@ -1450,7 +1496,7 @@ def _profile_relationship(
         study_id=study.study_id,
     )
     return ToolResult(
-        message=json.dumps(_render_relationship(content), sort_keys=True),
+        message=json.dumps(rendered_content, sort_keys=True),
         artifacts=(reference,),
     )
 
