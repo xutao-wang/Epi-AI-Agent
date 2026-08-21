@@ -10,7 +10,10 @@ currently selected conversation has an active background run.
 - Remove the duplicate **New conversation** button from the saved-conversations
   sidebar.
 - Keep the upper-right **New conversation** button as the sole control.
-- Do not disable that button merely because the selected conversation is busy.
+- Keep that button enabled while the selected conversation has a background run.
+  A short-lived submission, upload, resume, cancellation, or conversation-load
+  transition may still disable it to prevent an in-flight request from reclaiming
+  the new blank selection.
 
 ## Behavior
 
