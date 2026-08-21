@@ -535,6 +535,8 @@ export default function App({
 
         if (nextState.run.state === "running") {
           timeoutId = window.setTimeout(pollOnce, POLL_INTERVAL_MS);
+        } else if (loadConversationHistory) {
+          void refreshSavedConversations();
         }
       } catch (pollError) {
         if (

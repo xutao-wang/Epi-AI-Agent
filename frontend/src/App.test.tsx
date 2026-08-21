@@ -2184,6 +2184,84 @@ describe("App", () => {
     );
   });
 
+  it("refreshes the saved conversation when a running thread reaches review", async () => {
+    vi.useFakeTimers();
+    let conversationRequests = 0;
+    const summary = {
+      thread_id: "thread-1",
+      title: "Generated review title",
+      title_source: "automatic",
+      model_name: "gpt-5.6-terra",
+      created_at: "2026-08-21T00:00:00+00:00",
+      updated_at: "2026-08-21T00:00:00+00:00",
+      last_opened_at: null,
+      archived_at: null,
+      awaiting_review: false,
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "http://api.test/api/runtime/options") {
+        return Promise.resolve(runtimeOptionsResponse());
+      }
+      if (url === "http://api.test/api/conversations") {
+        conversationRequests += 1;
+        return Promise.resolve(jsonResponse({
+          items: conversationRequests === 1
+            ? []
+            : [{ ...summary, awaiting_review: conversationRequests > 2 }],
+        }));
+      }
+      if (url === "http://api.test/api/threads" && init?.method === "POST") {
+        return Promise.resolve(createThreadResponse());
+      }
+      if (
+        url === "http://api.test/api/threads/thread-1/messages" &&
+        init?.method === "POST"
+      ) {
+        return Promise.resolve(jsonResponse(threadState({
+          run: {
+            state: "running",
+            steps: 1,
+            error: null,
+            error_code: null,
+            user_message: null,
+            started_at: 1,
+            updated_at: 1,
+          },
+          conversation: [{ id: "user-1", role: "user", text: "Build a dataset" }],
+        })));
+      }
+      if (url === "http://api.test/api/threads/thread-1/state") {
+        return Promise.resolve(jsonResponse(reviewState()));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+
+    render(<App apiBase="http://api.test" fetchImpl={fetchMock} />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    fireEvent.change(
+      screen.getByLabelText("Ask a question about your dataset!"),
+      { target: { value: "Build a dataset" } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByRole("button", { name: "Generated review title" }))
+      .toBeInTheDocument();
+    expect(screen.queryByText("Awaiting review")).not.toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+
+    expect(screen.getByText("Awaiting review")).toBeInTheDocument();
+  });
+
   it("cancels a running turn, retains its message, and re-enables the composer", async () => {
     const cancelResponse = deferred<Response>();
     const runningState = threadState({
@@ -3793,4 +3871,3 @@ describe("App", () => {
     expect(screen.queryByText("Dataset ID: approved-subset")).not.toBeInTheDocument();
   });
 });
-
