@@ -170,6 +170,7 @@ export default function App({
   const [titlePollingThreadId, setTitlePollingThreadId] = useState<string | null>(null);
   const [selectedRuntimeSettings, setSelectedRuntimeSettings] =
     useState<RuntimeSettings>(EMPTY_RUNTIME_SETTINGS);
+  const [replacementModelName, setReplacementModelName] = useState("");
   const [message, setMessage] = useState("");
   const [pendingUserMessage, setPendingUserMessage] =
     useState<ConversationMessageType | null>(null);
@@ -314,6 +315,9 @@ export default function App({
         model_name: nextState.model_name ?? current.model_name,
       }));
     }
+    if (!nextState.model_replacement_required) {
+      setReplacementModelName("");
+    }
     if (
       (nextState.run.state === "error" || nextState.run.state === "timeout") &&
       nextState.run.user_message
@@ -381,6 +385,7 @@ export default function App({
     selectedThreadIdRef.current = nextThreadId;
     setThreadId(nextThreadId);
     setState(null);
+    setReplacementModelName("");
     setPendingUserMessage(null);
     setSubmittedClarifications({});
     setError(null);
@@ -628,6 +633,22 @@ export default function App({
       return;
     }
 
+    const replacementModel = state?.model_replacement_required
+      ? runtimeOptions.models.find((model) => model.id === replacementModelName)
+      : undefined;
+    if (state?.model_replacement_required && !replacementModel) {
+      setError("Choose an available model before continuing this conversation.");
+      return;
+    }
+    if (
+      replacementModel &&
+      !window.confirm(
+        `This conversation used ${state?.model_label ?? state?.model_name ?? "an unavailable model"}. Continue with ${replacementModel.label}?`,
+      )
+    ) {
+      return;
+    }
+
     const optimisticMessageId = `pending-user-${Date.now()}`;
     const optimisticMessage: ConversationMessageType = {
       id: optimisticMessageId,
@@ -663,6 +684,7 @@ export default function App({
         activeThreadId,
         text,
         attachmentIds,
+        replacementModel?.id,
       );
       if (!applyOwnedThreadState(activeThreadId, generation, nextState)) {
         return;
@@ -903,6 +925,7 @@ export default function App({
     selectedThreadIdRef.current = null;
     setThreadId(null);
     setState(null);
+    setReplacementModelName("");
     setMessage("");
     setPendingUserMessage(null);
     setError(null);
@@ -939,12 +962,16 @@ export default function App({
   const isBusy = isConversationTransitionBusy || isRunInFlight;
   const isComposerDisabled =
     !runtimeOptions || isBusy || isAwaitingHumanReview;
+  const requiresModelReplacement = Boolean(state?.model_replacement_required);
   const isSendDisabled =
     isComposerDisabled ||
+    (requiresModelReplacement && !replacementModelName) ||
     (!message.trim() && stagedAttachments.length === 0) ||
     attachmentErrors.length > 0;
   const showInitialChatPrompt = !(state?.conversation.length);
-  const modelLocked = Boolean(state?.runtime_settings_locked);
+  const modelLocked = Boolean(
+    state?.runtime_settings_locked && !requiresModelReplacement,
+  );
   const modelProviderGroups = useMemo(() => {
     const groups: Array<{
       label: string;
@@ -1232,6 +1259,37 @@ export default function App({
             {chatDisabledReason ? (
               <p className="message-form-note">{chatDisabledReason}</p>
             ) : null}
+            {requiresModelReplacement ? (
+              <section className="model-replacement-notice" role="alert">
+                <p>
+                  This conversation used {state?.model_label ?? state?.model_name},
+                  which is not currently available. Choose an available model to continue.
+                </p>
+                <label>
+                  Replacement model
+                  <select
+                    aria-label="Replacement model"
+                    disabled={isBusy || !runtimeOptions}
+                    onChange={(event) => {
+                      setReplacementModelName(event.target.value);
+                      setError(null);
+                    }}
+                    value={replacementModelName}
+                  >
+                    <option value="">Choose a model</option>
+                    {modelProviderGroups.map((group) => (
+                      <optgroup key={group.label} label={group.label}>
+                        {group.models.map((model) => (
+                          <option key={model.id} value={model.id}>
+                            {model.label}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ))}
+                  </select>
+                </label>
+              </section>
+            ) : null}
             <textarea
               aria-label="Ask a question about your dataset!"
               disabled={isComposerDisabled}
@@ -1251,7 +1309,7 @@ export default function App({
             <AttachmentComposer
               action={
                 <>
-                  {modelLocked ? (
+                  {requiresModelReplacement ? null : modelLocked ? (
                     <div className="composer-locked-model">
                       <button
                         aria-controls="model-lock-hint"

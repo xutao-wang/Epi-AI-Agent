@@ -418,6 +418,9 @@ export interface ApiThreadState {
   runtime_settings: RuntimeSettings | null;
   runtime_settings_locked: boolean;
   model_name?: string;
+  model_label?: string;
+  model_available?: boolean;
+  model_replacement_required?: boolean;
   datasets: Array<{ id: string; label: string; row_count: number | null }>;
   file_artifacts: FileArtifactSummary[];
   output: Record<string, unknown>;

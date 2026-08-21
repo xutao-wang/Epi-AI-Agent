@@ -1534,6 +1534,28 @@ select {
   font-size: 14px;
 }
 
+.model-replacement-notice {
+  border: 1px solid #d6a400;
+  border-radius: 8px;
+  background: #fff8db;
+  color: #493900;
+  padding: 0.75rem 1rem;
+}
+
+.model-replacement-notice p {
+  margin: 0 0 0.5rem;
+}
+
+.model-replacement-notice label {
+  display: grid;
+  gap: 0.25rem;
+  font-weight: 600;
+}
+
+.model-replacement-notice select {
+  max-width: 22rem;
+}
+
 .message-form textarea {
   min-height: 110px;
   resize: vertical;
