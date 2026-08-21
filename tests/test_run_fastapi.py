@@ -47,7 +47,7 @@ def test_prepare_environment_sets_project_local_defaults(tmp_path: Path) -> None
     assert environ["REPORT_AGENT_CHECKPOINT_DB_PATH"] == str(
         (tmp_path / "runtime" / "agent_memory_fastapi.db").resolve()
     )
-    assert environ["REPORT_AGENT_AUTH_MODE"] == "local"
+    assert "REPORT_AGENT_AUTH_MODE" not in environ
 
 
 def test_prepare_environment_preserves_explicit_paths(tmp_path: Path) -> None:
@@ -69,45 +69,18 @@ def test_prepare_environment_preserves_explicit_paths(tmp_path: Path) -> None:
     )
 
 
-def test_prepare_provider_credentials_verifies_only_local_mode() -> None:
+def test_prepare_provider_credentials_always_verifies_local_key() -> None:
     import run_fastapi
 
+    environ = {"OPENAI_API_KEY": "key"}
     verifier = Mock()
 
     run_fastapi.prepare_provider_credentials(
-        {"REPORT_AGENT_AUTH_MODE": "local", "OPENAI_API_KEY": "key"},
-        verifier=verifier,
-    )
-    verifier.assert_called_once()
-    verifier.reset_mock()
-
-    run_fastapi.prepare_provider_credentials(
-        {
-            "REPORT_AGENT_AUTH_MODE": "cognito",
-            "REPORT_AGENT_AWS_REGION": "us-east-1",
-            "REPORT_AGENT_COGNITO_USER_POOL_ID": "us-east-1_example",
-            "REPORT_AGENT_COGNITO_APP_CLIENT_ID": "client-123",
-            "REPORT_AGENT_COGNITO_LOGOUT_ENDPOINT": "https://auth.example/logout",
-            "REPORT_AGENT_AUTH_REDIRECT_URI": "https://demo.example/callback",
-            "REPORT_AGENT_AUTH_POST_LOGOUT_REDIRECT_URI": "https://demo.example/",
-        },
+        environ,
         verifier=verifier,
     )
 
-    verifier.assert_not_called()
-
-
-def test_prepare_provider_credentials_rejects_invalid_mode() -> None:
-    import run_fastapi
-
-    with pytest.raises(
-        StartupConfigurationError,
-        match="REPORT_AGENT_AUTH_MODE must be 'local' or 'cognito'",
-    ):
-        run_fastapi.prepare_provider_credentials(
-            {"REPORT_AGENT_AUTH_MODE": "shared"},
-            verifier=Mock(),
-        )
+    verifier.assert_called_once_with(environ=environ)
 
 
 def test_configure_native_runtime_uses_project_runtime_after_default_confirmation(
@@ -244,87 +217,6 @@ def test_validate_startup_requires_openai_api_key(tmp_path: Path) -> None:
         validate_startup(
             project_root=tmp_path,
             environ={},
-            python_version=(3, 12),
-        )
-
-
-def test_validate_startup_cognito_does_not_require_server_openai_key(
-    tmp_path: Path,
-) -> None:
-    static_dir = tmp_path / "frontend" / "dist"
-    static_dir.mkdir(parents=True)
-    (static_dir / "index.html").write_text("<!doctype html>", encoding="utf-8")
-
-    validate_startup(
-        project_root=tmp_path,
-        environ={
-            "REPORT_AGENT_AUTH_MODE": "cognito",
-            "REPORT_AGENT_AWS_REGION": "us-east-1",
-            "REPORT_AGENT_COGNITO_USER_POOL_ID": "us-east-1_example",
-            "REPORT_AGENT_COGNITO_APP_CLIENT_ID": "client-123",
-            "REPORT_AGENT_COGNITO_LOGOUT_ENDPOINT": "https://auth.example/logout",
-            "REPORT_AGENT_AUTH_REDIRECT_URI": "https://demo.example/callback",
-            "REPORT_AGENT_AUTH_POST_LOGOUT_REDIRECT_URI": "https://demo.example/",
-        },
-        python_version=(3, 12),
-    )
-
-
-def test_validate_startup_cognito_requires_complete_configuration(
-    tmp_path: Path,
-) -> None:
-    static_dir = tmp_path / "frontend" / "dist"
-    static_dir.mkdir(parents=True)
-    (static_dir / "index.html").write_text("<!doctype html>", encoding="utf-8")
-
-    with pytest.raises(
-        StartupConfigurationError,
-        match="REPORT_AGENT_COGNITO_APP_CLIENT_ID",
-    ):
-        validate_startup(
-            project_root=tmp_path,
-            environ={
-                "REPORT_AGENT_AUTH_MODE": "cognito",
-                "REPORT_AGENT_AWS_REGION": "us-east-1",
-                "REPORT_AGENT_COGNITO_USER_POOL_ID": "us-east-1_example",
-                "REPORT_AGENT_COGNITO_LOGOUT_ENDPOINT": "https://auth.example/logout",
-                "REPORT_AGENT_AUTH_REDIRECT_URI": "https://demo.example/callback",
-                "REPORT_AGENT_AUTH_POST_LOGOUT_REDIRECT_URI": "https://demo.example/",
-            },
-            python_version=(3, 12),
-        )
-
-
-@pytest.mark.parametrize(
-    ("variable", "value"),
-    [
-        ("WEB_CONCURRENCY", "2"),
-        ("REPORT_AGENT_WEB_CONCURRENCY", "4"),
-        ("WEB_CONCURRENCY", "many"),
-    ],
-)
-def test_validate_startup_cognito_requires_one_worker(
-    tmp_path: Path,
-    variable: str,
-    value: str,
-) -> None:
-    static_dir = tmp_path / "frontend" / "dist"
-    static_dir.mkdir(parents=True)
-    (static_dir / "index.html").write_text("<!doctype html>", encoding="utf-8")
-
-    with pytest.raises(StartupConfigurationError, match="one worker"):
-        validate_startup(
-            project_root=tmp_path,
-            environ={
-                "REPORT_AGENT_AUTH_MODE": "cognito",
-                "REPORT_AGENT_AWS_REGION": "us-east-1",
-                "REPORT_AGENT_COGNITO_USER_POOL_ID": "us-east-1_example",
-                "REPORT_AGENT_COGNITO_APP_CLIENT_ID": "client-123",
-                "REPORT_AGENT_COGNITO_LOGOUT_ENDPOINT": "https://auth.example/logout",
-                "REPORT_AGENT_AUTH_REDIRECT_URI": "https://demo.example/callback",
-                "REPORT_AGENT_AUTH_POST_LOGOUT_REDIRECT_URI": "https://demo.example/",
-                variable: value,
-            },
             python_version=(3, 12),
         )
 
@@ -594,3 +486,4 @@ def test_main_verifies_credentials_before_starting_uvicorn(
         "startup",
         "uvicorn:api.app:app:0.0.0.0:9000:info",
     ]
+

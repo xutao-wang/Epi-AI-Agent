@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 import sys
@@ -35,36 +36,9 @@ class _SuccessfulWorker:
         return b"", b""
 
 
-@pytest.mark.parametrize(
-    ("worker_launcher", "expected_prefix"),
-    [
-        (
-            (
-                "/usr/bin/sudo",
-                "-n",
-                "/usr/local/libexec/epi-agent-python-worker",
-            ),
-            [
-                "/usr/bin/sudo",
-                "-n",
-                "/usr/local/libexec/epi-agent-python-worker",
-            ],
-        ),
-        (
-            None,
-            [
-                sys.executable,
-                str(Path(local_process.__file__).with_name("worker.py")),
-            ],
-        ),
-    ],
-    ids=("hosted-launcher", "native-local-worker"),
-)
-def test_python_runtime_uses_configured_launcher_or_native_worker(
+def test_python_runtime_uses_native_worker(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    worker_launcher: tuple[str, ...] | None,
-    expected_prefix: list[str],
 ) -> None:
     launched: list[_SuccessfulWorker] = []
 
@@ -84,7 +58,6 @@ def test_python_runtime_uses_configured_launcher_or_native_worker(
     monkeypatch.setattr(local_process.subprocess, "Popen", popen)
     runtime = LocalPythonRuntime(
         runtime_root=tmp_path,
-        worker_launcher=worker_launcher,
         memory_limit_bytes=None,
     )
 
@@ -99,6 +72,10 @@ def test_python_runtime_uses_configured_launcher_or_native_worker(
     assert result.output_text == "ok"
     assert len(launched) == 1
     command = launched[0].command
+    expected_prefix = [
+        sys.executable,
+        str(Path(local_process.__file__).with_name("worker.py")),
+    ]
     assert command[: len(expected_prefix)] == expected_prefix
     assert command[len(expected_prefix) :] == [
         "--input-dir",
@@ -119,18 +96,7 @@ def test_python_runtime_uses_configured_launcher_or_native_worker(
     )
 
 
-@pytest.mark.parametrize(
-    "worker_launcher",
-    [
-        (),
-        ("relative-launcher",),
-        ("/usr/local/libexec/alternate-worker",),
-        ("/usr/bin/sudo", "-n", "/usr/local/libexec/alternate-worker"),
-        ("/usr/bin/sudo", "-n", "/usr/local/libexec/epi-agent-python-worker", "--x"),
-    ],
-)
-def test_python_runtime_rejects_invalid_worker_launcher(
-    worker_launcher: tuple[str, ...],
-) -> None:
-    with pytest.raises(ValueError):
-        LocalPythonRuntime(worker_launcher=worker_launcher)
+def test_python_runtime_has_no_hosted_launcher_interface() -> None:
+    assert "worker_launcher" not in inspect.signature(
+        LocalPythonRuntime
+    ).parameters

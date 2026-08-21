@@ -1,90 +1,11 @@
 from __future__ import annotations
 
-import json
 import os
-import re
-import shlex
 import tempfile
-from collections.abc import Mapping
-from dataclasses import dataclass
 from pathlib import Path
 
 
 DEFAULT_CORS_ALLOW_ORIGIN_REGEX = r"^http://(127\.0\.0\.1|localhost):\d+$"
-_PYTHON_WORKER_PATH = "/usr/local/libexec/epi-agent-python-worker"
-_PYTHON_WORKER_LAUNCHER = ("/usr/bin/sudo", "-n", _PYTHON_WORKER_PATH)
-_RELEASE_ID_PATTERN = re.compile(r"^[0-9a-f]{40}$")
-_DEFAULT_RELEASE_MANIFEST = Path(__file__).resolve().parents[1] / "release.json"
-
-
-def release_id_from_manifest(path: Path) -> str:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return "development"
-    if not isinstance(payload, dict):
-        return "development"
-    release_id = payload.get("commit_sha")
-    if not isinstance(release_id, str) or not _RELEASE_ID_PATTERN.fullmatch(
-        release_id
-    ):
-        return "development"
-    return release_id
-
-
-def python_worker_launcher(environ: Mapping[str, str]) -> tuple[str, ...] | None:
-    configured = str(environ.get("REPORT_AGENT_PYTHON_WORKER_LAUNCHER", ""))
-    if not configured.strip():
-        return None
-    if "\x00" in configured or "\n" in configured or "\r" in configured:
-        raise ValueError("REPORT_AGENT_PYTHON_WORKER_LAUNCHER contains unsafe characters")
-    try:
-        launcher = tuple(shlex.split(configured))
-    except ValueError as exc:
-        raise ValueError("REPORT_AGENT_PYTHON_WORKER_LAUNCHER is invalid") from exc
-    if launcher not in {(_PYTHON_WORKER_PATH,), _PYTHON_WORKER_LAUNCHER}:
-        raise ValueError(
-            "REPORT_AGENT_PYTHON_WORKER_LAUNCHER must be the fixed worker path"
-        )
-    return _PYTHON_WORKER_LAUNCHER
-
-
-@dataclass(frozen=True)
-class DeploymentState:
-    maintenance_file: Path | None
-    release_id: str
-
-    @classmethod
-    def from_environ(
-        cls,
-        environ: Mapping[str, str],
-        *,
-        release_manifest_path: Path | None = None,
-    ) -> "DeploymentState":
-        configured = str(environ.get("REPORT_AGENT_MAINTENANCE_FILE", "")).strip()
-        release_id = str(environ.get("REPORT_AGENT_RELEASE_ID", "")).strip()
-        if not release_id:
-            release_id = release_id_from_manifest(
-                release_manifest_path or _DEFAULT_RELEASE_MANIFEST
-            )
-        return cls(
-            maintenance_file=Path(configured) if configured else None,
-            release_id=release_id,
-        )
-
-    def maintenance_enabled(self) -> bool:
-        return self.maintenance_file is not None and self.maintenance_file.is_file()
-
-
-def required_secret_names(auth_mode: str = "local") -> tuple[str, ...]:
-    normalized = str(auth_mode or "").strip().lower()
-    if normalized == "local":
-        return ("OPENAI_API_KEY",)
-    if normalized == "cognito":
-        return ()
-    raise ValueError("auth_mode must be 'local' or 'cognito'")
-
-
 def native_static_dir(project_root: str | Path) -> Path:
     return Path(project_root).resolve() / "frontend" / "dist"
 

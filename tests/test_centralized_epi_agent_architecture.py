@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from api.schemas import RuntimeOptions, RuntimeSettings
-from api.deployment import required_secret_names
 from epi_agent.agent import build_general_epi_agent_registry
 from utils.attachment_artifacts import LocalAttachmentStore
 from utils.attachment_readers import AttachmentReaderService
@@ -168,30 +167,3 @@ def test_native_demo_runtime_is_openai_only() -> None:
     assert "provider" not in RuntimeSettings.model_fields
     assert "providers" not in RuntimeOptions.model_fields
     assert "models" in RuntimeOptions.model_fields
-    assert required_secret_names("local") == ("OPENAI_API_KEY",)
-    assert required_secret_names("cognito") == ()
-
-
-def test_active_application_has_no_alternate_llm_provider_imports() -> None:
-    forbidden = (
-        "langchain_anthropic",
-        "langchain_google_genai",
-        "voyageai",
-    )
-    offenders: list[str] = []
-    roots = [
-        REPO_ROOT / "api",
-        REPO_ROOT / "db_rag",
-        REPO_ROOT / "epi_agent",
-        REPO_ROOT / "graph",
-        REPO_ROOT / "utils",
-        REPO_ROOT / "llm_vllm.py",
-    ]
-    for root in roots:
-        paths = [root] if root.is_file() else root.rglob("*.py")
-        for path in paths:
-            source = path.read_text(encoding="utf-8")
-            if any(token in source for token in forbidden):
-                offenders.append(str(path.relative_to(REPO_ROOT)))
-
-    assert offenders == []

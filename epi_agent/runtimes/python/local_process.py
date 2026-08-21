@@ -9,7 +9,6 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Sequence
 from typing import Any, Mapping
 
 import pandas as pd
@@ -30,13 +29,6 @@ MAX_FIGURE_BYTES = 10_000_000
 _DEFAULT_TIMEOUT_SECONDS = 60.0
 _DEFAULT_MEMORY_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
 _ALLOWED_ENVIRONMENT = ("PATH", "LANG", "LC_ALL", "PYTHONUTF8")
-_HOSTED_WORKER_LAUNCHER = (
-    "/usr/bin/sudo",
-    "-n",
-    "/usr/local/libexec/epi-agent-python-worker",
-)
-
-
 def _failure(
     code: str,
     message: str,
@@ -231,7 +223,6 @@ class LocalPythonRuntime:
         runtime_root: str | Path | None = None,
         timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
         memory_limit_bytes: int | None = _DEFAULT_MEMORY_LIMIT_BYTES,
-        worker_launcher: Sequence[str] | None = None,
     ) -> None:
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
@@ -244,19 +235,6 @@ class LocalPythonRuntime:
         )
         self._timeout_seconds = float(timeout_seconds)
         self._memory_limit_bytes = memory_limit_bytes
-        if worker_launcher is None:
-            self._worker_launcher = None
-        else:
-            launcher = tuple(worker_launcher)
-            if not launcher:
-                raise ValueError("worker_launcher must not be empty")
-            if not all(isinstance(part, str) and part for part in launcher):
-                raise ValueError("worker_launcher must contain non-empty strings")
-            if "\x00" in "".join(launcher):
-                raise ValueError("worker_launcher must not contain NUL characters")
-            if launcher != _HOSTED_WORKER_LAUNCHER:
-                raise ValueError("worker_launcher must be the fixed hosted launcher")
-            self._worker_launcher = launcher
 
     def execute(
         self,
@@ -334,13 +312,10 @@ class LocalPythonRuntime:
                     "MPLCONFIGDIR": str(run_dir / "matplotlib"),
                 }
             )
-            if self._worker_launcher is None:
-                command = [
-                    sys.executable,
-                    str(Path(__file__).with_name("worker.py")),
-                ]
-            else:
-                command = list(self._worker_launcher)
+            command = [
+                sys.executable,
+                str(Path(__file__).with_name("worker.py")),
+            ]
             command.extend(
                 [
                     "--input-dir",
