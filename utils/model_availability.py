@@ -103,11 +103,36 @@ def build_model_availability(
     )
 
 
+def model_availability_from_configured_credentials(
+    environ: Mapping[str, str],
+) -> ModelAvailability:
+    """Build the non-native fallback catalog without performing network I/O."""
+    profiles = registered_model_profiles(environ)
+    configured: set[ProviderEndpoint] = set()
+    for endpoint in configured_provider_endpoints(environ):
+        endpoint_profiles = [
+            profile
+            for profile in profiles.values()
+            if profile_endpoint(profile) == endpoint
+        ]
+        requires_key = any(profile.api_key_required for profile in endpoint_profiles)
+        key = (
+            str(environ.get(endpoint.api_key_env, "") or "").strip()
+            if endpoint.api_key_env
+            else ""
+        )
+        if requires_key and not key:
+            continue
+        configured.add(endpoint)
+    return build_model_availability(environ, configured)
+
+
 __all__ = [
     "ModelAvailability",
     "ProviderEndpoint",
     "build_model_availability",
     "configured_provider_endpoints",
+    "model_availability_from_configured_credentials",
     "profile_endpoint",
     "registered_model_profiles",
 ]

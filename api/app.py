@@ -34,15 +34,16 @@ from graph.builder import build_graph
 from llm_vllm import build_chat_llm, build_openai_llm, resolve_provider_api_key
 from study_package.registry import discover_studies
 from utils.env_loader import load_app_environment
-from utils.model_runtime_profiles import ModelRuntimeProfile, model_runtime_profile
+from utils.model_availability import (
+    ModelAvailability,
+    model_availability_from_configured_credentials,
+)
+from utils.model_runtime_profiles import ModelRuntimeProfile
 from utils.runtime_defaults import (
     DEFAULT_MAX_AUTO_STEPS,
     DEFAULT_TEMPERATURE,
     DEFAULT_TOP_P,
-    configured_default_model,
     configured_epi_agent_max_iterations,
-    configured_models,
-    configured_title_model,
 )
 
 
@@ -145,19 +146,26 @@ def _capability(
     )
 
 
-def build_application(*, environ: Mapping[str, str] | None = None) -> FastAPI:
+def build_application(
+    *,
+    environ: Mapping[str, str] | None = None,
+    model_availability: ModelAvailability | None = None,
+) -> FastAPI:
     """Build one fully configured application from startup-time settings."""
     if environ is None:
         load_app_environment()
         environ = os.environ
 
-    model_name = configured_default_model(environ)
-    allowed_models = configured_models(environ)
-    title_model = configured_title_model(environ)
+    catalog = model_availability or model_availability_from_configured_credentials(
+        environ
+    )
+    model_name = catalog.default_model_id
+    allowed_models = catalog.available_model_ids
+    title_model = catalog.title_model_id
     max_iterations = configured_epi_agent_max_iterations(environ)
-    default_profile = model_runtime_profile(model_name)
+    default_profile = catalog.registered_profiles[model_name]
     _provider_key(default_profile, environ)
-    title_profile = model_runtime_profile(title_model)
+    title_profile = catalog.registered_profiles[title_model]
     _provider_key(title_profile, environ)
     embedding_api_key = str(environ.get("OPENAI_API_KEY", "") or "").strip()
 
@@ -204,7 +212,7 @@ def build_application(*, environ: Mapping[str, str] | None = None) -> FastAPI:
             api_key=embedding_api_key,
             expected_embedding_model=db_rag_embedding_model,
         )
-        profile = model_runtime_profile(settings.model_name)
+        profile = catalog.registered_profiles[settings.model_name]
         llm_builder = (
             build_openai_llm
             if profile.provider == "openai"
@@ -237,9 +245,7 @@ def build_application(*, environ: Mapping[str, str] | None = None) -> FastAPI:
         "temperature": DEFAULT_TEMPERATURE,
         "top_p": DEFAULT_TOP_P,
         "max_steps": DEFAULT_MAX_AUTO_STEPS,
-        "timeout_seconds": model_runtime_profile(
-            model_name
-        ).workflow_timeout_seconds,
+        "timeout_seconds": default_profile.workflow_timeout_seconds,
         "db_rag_embedding_model": db_rag_embedding_model,
         "db_rag_reranker_model": resolve_db_rag_reranker_model() or "disabled",
     }

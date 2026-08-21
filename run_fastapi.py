@@ -7,7 +7,6 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, MutableMapping, Sequence
-from dataclasses import dataclass
 from pathlib import Path
 
 from api.deployment import (
@@ -16,38 +15,41 @@ from api.deployment import (
     native_static_dir,
     native_study_root,
 )
-from utils.env_loader import load_app_environment, persist_local_env_values
-from utils.model_runtime_profiles import (
-    ModelRuntimeProfile,
-    PROVIDER_OPENAI_COMPATIBLE,
-    configured_model_profiles,
-    load_custom_model_profiles,
-    model_runtime_profile,
+from utils.env_loader import (
+    load_app_environment,
+    persist_local_env_values,
+    remove_local_env_values,
 )
+from utils.model_availability import (
+    ModelAvailability,
+    ProviderEndpoint,
+    build_model_availability,
+    configured_provider_endpoints,
+    model_availability_from_configured_credentials,
+    profile_endpoint,
+    registered_model_profiles,
+)
+from utils.model_runtime_profiles import PROVIDER_OPENAI_COMPATIBLE
 from utils.provider_startup import (
     ProviderCredentialError,
     verify_active_provider,
     verify_provider_credential,
 )
-from utils.runtime_defaults import configured_models, configured_title_model
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
+_DEPRECATED_LOCAL_ENV_KEYS = {
+    "REPORT_AGENT_MODEL",
+    "REPORT_AGENT_ALLOWED_MODELS",
+    "OPENAI_MODEL",
+    "REPORT_AGENT_TITLE_MODEL",
+    "REPORT_AGENT_CHECKPOINT_DB_PATH",
+}
+
 
 class StartupConfigurationError(RuntimeError):
     """A startup problem the participant can correct without a traceback."""
-
-
-def required_secret_names(
-    profiles: Sequence[ModelRuntimeProfile],
-) -> tuple[str, ...]:
-    """Return required local environment keys for configured model profiles."""
-    names: dict[str, None] = {}
-    for profile in profiles:
-        if profile.api_key_required and profile.api_key_env:
-            names.setdefault(profile.api_key_env)
-    return tuple(names)
 
 
 def normalize_secret_input(value: str) -> str:
@@ -61,251 +63,238 @@ def normalize_secret_input(value: str) -> str:
     return normalized
 
 
-@dataclass(frozen=True)
-class ProviderCredentialRequirement:
-    provider: str
-    label: str
-    api_key_env: str
-    key_required: bool
-    base_url: str | None = None
+def _provider_label(provider: str) -> str:
+    return {
+        "openai": "OpenAI",
+        "anthropic": "Anthropic",
+        PROVIDER_OPENAI_COMPATIBLE: "Compatible endpoint",
+    }.get(provider, provider)
 
 
-def _configured_profiles(
-    environ: MutableMapping[str, str],
-) -> tuple[ModelRuntimeProfile, ...]:
-    # Raises ValueError early when the default model is not allowlisted,
-    # inside main()'s guarded startup phase instead of at api.app import.
-    configured_models(environ)
-    profiles = [model_runtime_profile(model) for model in configured_models(environ)]
-    profiles.append(model_runtime_profile(configured_title_model(environ)))
-    return tuple(profiles)
-
-
-def provider_credential_requirements(
-    environ: MutableMapping[str, str] = os.environ,
-) -> tuple[ProviderCredentialRequirement, ...]:
-    """One credential requirement per provider/endpoint backing configured models."""
-    requirements: dict[tuple[str, str, str | None], ProviderCredentialRequirement] = {}
-    for profile in _configured_profiles(environ):
-        key = (profile.provider, profile.api_key_env, profile.base_url)
-        if key in requirements:
-            continue
-        requirements[key] = ProviderCredentialRequirement(
-            provider=profile.provider,
-            label=profile.provider_label,
-            api_key_env=profile.api_key_env,
-            key_required=profile.api_key_required,
-            base_url=profile.base_url,
-        )
-    return tuple(requirements.values())
-
-
-def _verify_requirement(
-    requirement: ProviderCredentialRequirement,
-    api_key: str,
-    verifier: Callable[..., None],
-) -> None:
-    verifier(
-        requirement.provider,
-        api_key,
-        base_url=requirement.base_url,
+def _builtin_endpoint(provider: str) -> ProviderEndpoint:
+    return ProviderEndpoint(
+        provider=provider,
+        api_key_env=(
+            "OPENAI_API_KEY" if provider == "openai" else "ANTHROPIC_API_KEY"
+        ),
     )
 
 
-_PROVIDER_PRESETS: tuple[tuple[str, str, str], ...] = (
-    (
-        "OpenAI",
-        "gpt-5.6-terra",
-        "gpt-5.4,gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol",
-    ),
-    (
-        "Anthropic Claude",
-        "claude-opus-5",
-        "claude-opus-5,claude-sonnet-5,claude-haiku-4-5",
-    ),
-)
+def _verify_endpoint(
+    endpoint: ProviderEndpoint,
+    key: str,
+    verifier: Callable[..., None],
+) -> None:
+    verifier(endpoint.provider, key, base_url=endpoint.base_url)
 
 
-def configure_model_provider(
+def _prompt_verified_builtin_key(
+    endpoint: ProviderEndpoint,
+    *,
+    project_root: str | Path,
+    environ: MutableMapping[str, str],
+    getpass_fn: Callable[[str], str],
+    verifier: Callable[..., None],
+    persist: Callable[[str | Path, dict[str, str]], None],
+    output_fn: Callable[[str], None],
+) -> bool:
+    label = _provider_label(endpoint.provider)
+    while True:
+        try:
+            candidate = normalize_secret_input(
+                getpass_fn(
+                    f"Paste your {label} API key "
+                    "(press Enter to choose another provider): "
+                )
+            )
+        except (EOFError, KeyboardInterrupt) as error:
+            raise StartupConfigurationError(
+                f"{label} API key setup was cancelled."
+            ) from error
+        if not candidate:
+            return False
+        try:
+            _verify_endpoint(endpoint, candidate, verifier)
+        except ProviderCredentialError as error:
+            output_fn(f"{label} API key validation failed: {error}")
+            continue
+        environ[endpoint.api_key_env] = candidate
+        persist(project_root, {endpoint.api_key_env: candidate})
+        output_fn(f"{label} API key verified and saved to .env.")
+        return True
+
+
+def _configure_provider_menu(
+    *,
+    project_root: str | Path,
+    environ: MutableMapping[str, str],
+    input_fn: Callable[[str], str],
+    getpass_fn: Callable[[str], str],
+    verifier: Callable[..., None],
+    persist: Callable[[str | Path, dict[str, str]], None],
+    output_fn: Callable[[str], None],
+    force: bool,
+) -> None:
+    while True:
+        profiles = registered_model_profiles(environ)
+        has_custom = any(
+            profile.provider == PROVIDER_OPENAI_COMPATIBLE
+            for profile in profiles.values()
+        )
+        if force:
+            prompt = (
+                "Configure AI providers. Existing providers are retained.\n\n"
+                "1. Configure or replace OpenAI\n"
+                "2. Configure or replace Anthropic\n"
+                "3. Configure or replace both\n"
+                "4. Connect to a compatible endpoint\n"
+                "5. Remove OpenAI\n"
+                "6. Remove Anthropic\n"
+                "7. Keep current providers\n"
+                "Selection [7]: "
+            )
+            default = "7"
+        else:
+            prompt = (
+                "No AI provider is configured.\n\n"
+                "1. Configure OpenAI\n"
+                "2. Configure Anthropic\n"
+                "3. Configure both\n"
+                "4. Connect to a compatible endpoint\n"
+                "Selection: "
+            )
+            default = ""
+        try:
+            selection = input_fn(prompt).strip() or default
+        except (EOFError, KeyboardInterrupt) as error:
+            raise StartupConfigurationError(
+                "AI provider setup was cancelled."
+            ) from error
+
+        providers = {
+            "1": ("openai",),
+            "2": ("anthropic",),
+            "3": ("openai", "anthropic"),
+        }.get(selection)
+        if providers is not None:
+            configured_any = False
+            for provider in providers:
+                configured_any = (
+                    _prompt_verified_builtin_key(
+                        _builtin_endpoint(provider),
+                        project_root=project_root,
+                        environ=environ,
+                        getpass_fn=getpass_fn,
+                        verifier=verifier,
+                        persist=persist,
+                        output_fn=output_fn,
+                    )
+                    or configured_any
+                )
+            if configured_any:
+                return
+            continue
+        if selection == "4":
+            if has_custom:
+                return
+            output_fn(
+                "No compatible models are registered. Copy "
+                "config/custom_models.example.json to "
+                "config/custom_models.json, edit the endpoint, and retry."
+            )
+            continue
+        if force and selection in {"5", "6"}:
+            key = "OPENAI_API_KEY" if selection == "5" else "ANTHROPIC_API_KEY"
+            environ.pop(key, None)
+            remove_local_env_values(project_root, {key})
+            return
+        if force and selection == "7":
+            return
+        output_fn("Select one of the listed provider options.")
+
+
+def configure_and_verify_providers(
     *,
     project_root: str | Path = PROJECT_ROOT,
     environ: MutableMapping[str, str] = os.environ,
     input_fn: Callable[[str], str] = input,
-    output_fn: Callable[[str], None] = print,
-    persist: bool = True,
-    force: bool = False,
-) -> None:
-    """First-run (or --reconfigure) interactive provider/model selection.
-
-    Persists REPORT_AGENT_MODEL and REPORT_AGENT_ALLOWED_MODELS to .env so
-    later starts skip the menu. Mixed-provider allowlists can still be
-    hand-edited in .env or config/app.env.
-    """
-    configured_model = str(environ.get("REPORT_AGENT_MODEL", "") or "").strip()
-    if configured_model and not force:
-        return
-
-    custom_profiles = load_custom_model_profiles(environ=environ)
-    while True:
-        lines = ["Choose the AI model provider:"]
-        for index, (label, default_model, _models) in enumerate(
-            _PROVIDER_PRESETS, start=1
-        ):
-            lines.append(f"{index}. {label} (default model: {default_model})")
-        if custom_profiles:
-            default_custom = next(iter(custom_profiles))
-            lines.append(
-                "3. Custom OpenAI-compatible endpoint "
-                f"({len(custom_profiles)} registered, e.g. {default_custom})"
-            )
-        else:
-            lines.append(
-                "3. Custom OpenAI-compatible endpoint "
-                "(none registered; see config/custom_models.example.json)"
-            )
-        if force and configured_model:
-            lines.append(
-                f"Press Enter to keep the current model ({configured_model})."
-            )
-            prompt_suffix = "Selection [keep current]: "
-        else:
-            prompt_suffix = "Selection [1]: "
-        try:
-            selection = input_fn("\n".join(lines) + "\n" + prompt_suffix).strip()
-        except EOFError:
-            # Non-interactive native start: keep configured defaults.
-            return
-        except KeyboardInterrupt as error:
-            raise StartupConfigurationError(
-                "Model provider selection was cancelled."
-            ) from error
-
-        if not selection:
-            if force and configured_model:
-                return
-            selection = "1"
-        if selection in {"1", "2"}:
-            _label, model, models = _PROVIDER_PRESETS[int(selection) - 1]
-        elif selection == "3":
-            if not custom_profiles:
-                output_fn(
-                    "No custom models are registered. Copy "
-                    "config/custom_models.example.json to "
-                    "config/custom_models.json, edit it for your endpoint, "
-                    "and restart."
-                )
-                continue
-            custom_ids = list(custom_profiles)
-            if len(custom_ids) == 1:
-                model = custom_ids[0]
-            else:
-                listing = "\n".join(
-                    f"{index}. {model_id}"
-                    for index, model_id in enumerate(custom_ids, start=1)
-                )
-                choice = input_fn(
-                    "Choose the default custom model:\n"
-                    f"{listing}\nSelection [1]: "
-                ).strip() or "1"
-                try:
-                    model = custom_ids[int(choice) - 1]
-                except (IndexError, ValueError):
-                    output_fn("Select one of the listed custom models.")
-                    continue
-            models = ",".join(custom_ids)
-        else:
-            output_fn("Select 1, 2, or 3.")
-            continue
-
-        environ["REPORT_AGENT_MODEL"] = model
-        environ["REPORT_AGENT_ALLOWED_MODELS"] = models
-        if persist:
-            persist_local_env_values(
-                project_root,
-                {
-                    "REPORT_AGENT_MODEL": model,
-                    "REPORT_AGENT_ALLOWED_MODELS": models,
-                },
-            )
-        output_fn(f"Default model set to {model} (saved to .env).")
-        return
-
-
-def ensure_provider_credentials(
-    *,
-    project_root: str | Path = PROJECT_ROOT,
-    environ: MutableMapping[str, str] = os.environ,
     getpass_fn: Callable[[str], str] = getpass.getpass,
+    output_fn: Callable[[str], None] = print,
     verifier: Callable[..., None] = verify_provider_credential,
     persist: Callable[[str | Path, dict[str, str]], None] = persist_local_env_values,
-    output_fn: Callable[[str], None] = print,
-) -> None:
-    for requirement in provider_credential_requirements(environ):
-        if requirement.provider == PROVIDER_OPENAI_COMPATIBLE:
-            saved_key = normalize_secret_input(
-                environ.get(requirement.api_key_env, "")
-                if requirement.api_key_env
-                else ""
-            )
-            try:
-                _verify_requirement(requirement, saved_key, verifier)
-            except ProviderCredentialError as error:
-                # A custom endpoint that is down or misconfigured should not
-                # block startup for the other providers; requests against it
-                # fail with a clear runtime error instead.
-                output_fn(
-                    "Warning: custom endpoint check failed for "
-                    f"{requirement.base_url}: {error}"
-                )
-            else:
-                output_fn(f"Custom endpoint verified: {requirement.base_url}")
-            continue
+    force: bool = False,
+) -> ModelAvailability:
+    """Configure providers, verify each one, and return usable model IDs."""
+    remove_local_env_values(project_root, _DEPRECATED_LOCAL_ENV_KEYS)
+    for key in _DEPRECATED_LOCAL_ENV_KEYS - {"REPORT_AGENT_CHECKPOINT_DB_PATH"}:
+        environ.pop(key, None)
 
-        saved_key = normalize_secret_input(environ.get(requirement.api_key_env, ""))
-        if saved_key:
-            try:
-                _verify_requirement(requirement, saved_key, verifier)
-            except ProviderCredentialError as error:
-                output_fn(
-                    f"Saved {requirement.label} credential check failed: {error}"
-                )
-            else:
-                environ[requirement.api_key_env] = saved_key
-                output_fn(f"{requirement.label} API key verified.")
-                continue
+    profiles = registered_model_profiles(environ)
+    custom_exists = any(
+        profile.provider == PROVIDER_OPENAI_COMPATIBLE
+        for profile in profiles.values()
+    )
+    has_builtin = any(
+        normalize_secret_input(environ.get(key, ""))
+        for key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY")
+    )
+    if force or (not has_builtin and not custom_exists):
+        _configure_provider_menu(
+            project_root=project_root,
+            environ=environ,
+            input_fn=input_fn,
+            getpass_fn=getpass_fn,
+            verifier=verifier,
+            persist=persist,
+            output_fn=output_fn,
+            force=force,
+        )
 
-        while True:
-            prompt = (
-                f"Paste your {requirement.label} API key (press Enter to continue): "
-                if requirement.api_key_env == "OPENAI_API_KEY"
-                else (
-                    f"Paste your {requirement.label} API key "
-                    f"({requirement.api_key_env}, press Enter to continue): "
-                )
-            )
-            try:
-                entered_key = normalize_secret_input(getpass_fn(prompt))
-            except (EOFError, KeyboardInterrupt) as error:
-                raise StartupConfigurationError(
-                    f"{requirement.label} API key setup was cancelled."
-                ) from error
-            if not entered_key:
-                raise StartupConfigurationError(
-                    f"{requirement.label} API key setup was cancelled."
-                )
-
-            try:
-                _verify_requirement(requirement, entered_key, verifier)
-            except ProviderCredentialError as error:
-                output_fn(f"{requirement.label} credential check failed: {error}")
-                continue
-
-            environ[requirement.api_key_env] = entered_key
-            persist(project_root, {requirement.api_key_env: entered_key})
+    verified: set[ProviderEndpoint] = set()
+    profiles = registered_model_profiles(environ)
+    for endpoint in configured_provider_endpoints(environ):
+        key = normalize_secret_input(
+            environ.get(endpoint.api_key_env, "") if endpoint.api_key_env else ""
+        )
+        endpoint_profiles = [
+            profile
+            for profile in profiles.values()
+            if profile_endpoint(profile) == endpoint
+        ]
+        key_required = any(profile.api_key_required for profile in endpoint_profiles)
+        if endpoint.api_key_env and key_required and not key:
             output_fn(
-                f"{requirement.label} API key verified and saved to .env."
+                f"Warning: {endpoint.api_key_env} is required by compatible "
+                f"endpoint {endpoint.base_url}; its models are unavailable."
             )
-            break
+            continue
+        try:
+            _verify_endpoint(endpoint, key, verifier)
+        except ProviderCredentialError as error:
+            label = _provider_label(endpoint.provider)
+            output_fn(f"{label} validation failed: {error}")
+            if endpoint.provider == PROVIDER_OPENAI_COMPATIBLE:
+                continue
+            if _prompt_verified_builtin_key(
+                endpoint,
+                project_root=project_root,
+                environ=environ,
+                getpass_fn=getpass_fn,
+                verifier=verifier,
+                persist=persist,
+                output_fn=output_fn,
+            ):
+                verified.add(endpoint)
+        else:
+            if endpoint.api_key_env:
+                environ[endpoint.api_key_env] = key
+            verified.add(endpoint)
+            output_fn(f"{_provider_label(endpoint.provider)} verified.")
+
+    try:
+        return build_model_availability(environ, verified)
+    except ValueError as error:
+        raise StartupConfigurationError(str(error)) from error
 
 
 def ensure_active_provider_credential(
@@ -454,7 +443,6 @@ def configure_native_runtime(
             root,
             {
                 "REPORT_AGENT_RUNTIME_ROOT": str(selected),
-                "REPORT_AGENT_CHECKPOINT_DB_PATH": str(checkpoint),
             },
         )
     return selected
@@ -491,20 +479,15 @@ def validate_startup(
     project_root: str | Path = PROJECT_ROOT,
     environ: MutableMapping[str, str] = os.environ,
     python_version: Sequence[int] = sys.version_info,
+    model_availability: ModelAvailability | None = None,
 ) -> None:
     validate_python_version(python_version)
 
-    for secret_name in required_secret_names(_configured_profiles(environ)):
-        if not environ.get(secret_name, "").strip():
-            if secret_name == "OPENAI_API_KEY":
-                raise StartupConfigurationError(
-                    "OPENAI_API_KEY is missing. Copy .env.example to .env and "
-                    "add your OpenAI API key."
-                )
-            raise StartupConfigurationError(
-                f"{secret_name} is missing. Copy .env.example to .env and add "
-                "the API key for the configured provider."
-            )
+    if model_availability is None:
+        try:
+            model_availability_from_configured_credentials(environ)
+        except ValueError as error:
+            raise StartupConfigurationError(str(error)) from error
 
     configured_static = environ.get("REPORT_AGENT_STATIC_DIR", "").strip()
     static_root = (
@@ -529,9 +512,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         load_app_environment(PROJECT_ROOT)
         configure_native_runtime()
         prepare_environment()
-        configure_model_provider(force=args.reconfigure)
-        ensure_provider_credentials()
-        validate_startup()
+        model_availability = configure_and_verify_providers(
+            force=args.reconfigure
+        )
+        validate_startup(model_availability=model_availability)
     except StartupConfigurationError as exc:
         print(f"Startup configuration error: {exc}", file=sys.stderr)
         return 2
@@ -543,10 +527,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     runtime.mkdir(parents=True, exist_ok=True)
 
     import uvicorn
+    from api.app import build_application
+
+    application = build_application(
+        environ=os.environ,
+        model_availability=model_availability,
+    )
 
     print(f"Epidemiology Research Agent: http://{args.host}:{args.port}")
     uvicorn.run(
-        "api.app:app",
+        application,
         host=args.host,
         port=args.port,
         log_level="info",

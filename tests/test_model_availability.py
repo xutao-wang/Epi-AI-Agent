@@ -7,6 +7,7 @@ import pytest
 from utils.model_availability import (
     ProviderEndpoint,
     build_model_availability,
+    model_availability_from_configured_credentials,
 )
 
 
@@ -141,3 +142,16 @@ def test_verified_compatible_model_is_available_without_builtin_provider(
     assert catalog.available_model_ids == ("cluster-model",)
     assert catalog.default_model_id == "cluster-model"
     assert catalog.title_model_id == "cluster-model"
+
+
+def test_credential_fallback_ignores_deprecated_model_allowlist() -> None:
+    catalog = model_availability_from_configured_credentials(
+        {
+            "OPENAI_API_KEY": "configured",
+            "REPORT_AGENT_MODEL": "claude-opus-5",
+            "REPORT_AGENT_ALLOWED_MODELS": "claude-opus-5",
+        }
+    )
+
+    assert catalog.default_model_id == "gpt-5.6-terra"
+    assert all(model.startswith("gpt-") for model in catalog.available_model_ids)
