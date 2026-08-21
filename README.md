@@ -41,9 +41,9 @@ python -m playwright install chromium
 If Chromium is not installed, browser smokes are unavailable and must not be
 reported as passing.
 
-On the first native start, choose where to keep local runtime data, then choose
-the AI model provider (OpenAI, Anthropic Claude, both, or a compatible
-endpoint). Re-open the provider menu any time with
+On the first native start, choose where to keep local runtime data, then
+configure OpenAI, Anthropic Claude, or a compatible endpoint. Re-open the
+provider menu any time with
 `python run_fastapi.py --reconfigure`. Set `REPORT_AGENT_STUDY_ROOT` and
 `REPORT_AGENT_RUNTIME_ROOT` to preselect the local folders. They hold
 conversations, uploads, generated datasets, and results and are intentionally
@@ -73,7 +73,8 @@ The available model list is derived from verified providers:
 
 - A verified `OPENAI_API_KEY` shows every registered GPT model.
 - A verified `ANTHROPIC_API_KEY` shows every registered Claude model.
-- When both keys verify, both model families appear.
+- Configure providers independently through `--reconfigure`; when both keys
+  verify, both model families appear.
 - `REPORT_AGENT_MODEL` and `REPORT_AGENT_ALLOWED_MODELS` are obsolete and are
   removed from `.env` during startup. The default is GPT-5.6 Terra when OpenAI
   is available, otherwise Claude Opus 5.
