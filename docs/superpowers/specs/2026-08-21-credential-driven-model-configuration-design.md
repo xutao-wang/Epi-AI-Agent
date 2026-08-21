@@ -5,8 +5,8 @@
 ## Purpose
 
 Replace the provider-specific model allowlist written by the native launcher
-with credential-driven model availability. Adding Anthropic or a compatible
-endpoint must expand the models that can be used without making existing
+with credential-driven OpenAI and Anthropic model availability. Adding
+Anthropic must expand the models that can be used without making existing
 OpenAI conversations unreadable.
 
 The design also makes first-run provider setup explicit, preserves local data
@@ -34,8 +34,7 @@ already has a specific public error.
 
 ## Goals
 
-- Derive model availability from verified provider credentials and configured
-  compatible endpoints.
+- Derive model availability from verified OpenAI and Anthropic credentials.
 - Keep all registered model profiles available for historical deserialization.
 - Let users read historical conversations whose original provider is no longer
   available.
@@ -51,8 +50,9 @@ already has a specific public error.
 - Do not migrate or rewrite historical messages or checkpoints.
 - Do not add remote authentication, AWS, Docker, or hosted secret storage.
 - Do not make a billable model-generation request during every startup.
-- Do not redesign the model profiles or custom-model file format beyond the
-  availability behavior required here.
+- Do not install, launch, configure, display, or test vLLM, Ray, or compatible
+  endpoints. Those require a separately designed deployment and verification
+  workflow.
 
 ## Model sets
 
@@ -62,9 +62,8 @@ The application will distinguish three model sets.
 
 Registered models are every model profile known to the application:
 
-- built-in OpenAI GPT profiles;
-- built-in Anthropic Claude profiles; and
-- profiles loaded from the compatible-endpoint configuration.
+- built-in OpenAI GPT profiles; and
+- built-in Anthropic Claude profiles.
 
 This complete registry is the authority for deciding whether a model can be
 executed. It is not filtered by current credentials. A historical record with
@@ -76,8 +75,6 @@ Available models are registered models whose provider can currently be used:
 
 - GPT models are available when `OPENAI_API_KEY` is present and verified.
 - Claude models are available when `ANTHROPIC_API_KEY` is present and verified.
-- A compatible-endpoint model is available when its endpoint is reachable and
-  its optional required key is present and accepted.
 
 Only available models appear in the new-conversation model selector.
 
@@ -94,9 +91,8 @@ Default selection is deterministic and is not stored in `.env`:
 
 1. If OpenAI is available, use `gpt-5.6-terra`.
 2. Otherwise, if Anthropic is available, use `claude-opus-5`.
-3. Otherwise, use the first available compatible-endpoint model.
-4. If no model is available, enter provider setup instead of starting the
-   application.
+3. If neither provider is available, enter provider setup instead of starting
+   the application.
 
 The user can select any other available model before the first turn of a new
 conversation.
@@ -110,7 +106,7 @@ Startup runs in this order:
 3. Resolve the study-package root.
 4. Resolve the runtime root.
 5. Derive the checkpoint database path from the runtime root.
-6. Discover and verify provider credentials and compatible endpoints.
+6. Discover and verify OpenAI and Anthropic credentials.
 7. Calculate available models and the default model.
 8. Validate the built frontend and start FastAPI.
 
@@ -151,7 +147,6 @@ No AI provider is configured.
 1. Configure OpenAI
 2. Configure Anthropic
 3. Configure both
-4. Configure a compatible endpoint
 ```
 
 Keys are entered through a non-echoing prompt. A key is persisted only after
@@ -253,7 +248,7 @@ When it is unavailable:
 6. Existing messages and artifacts remain unchanged.
 
 No provider change occurs solely because a conversation was opened. Unknown or
-removed compatible-endpoint models follow the same read-only behavior.
+deferred model IDs follow the same read-only behavior.
 
 ## Provider and capability behavior
 
@@ -264,12 +259,25 @@ startup.
 
 Title generation uses the provider-specific lightweight registered model when
 available: GPT-5.6 Luna for OpenAI and Claude Haiku 4.5 for Anthropic. A
-compatible-endpoint-only configuration uses its selected default model. Title
-generation failure remains non-fatal.
+title-generation failure remains non-fatal.
 
-Compatible endpoints use that user-facing name. Internal provider identifiers
-may retain `openai_compatible` because that describes the wire protocol rather
-than the model's identity.
+## Deferred compatible endpoints
+
+Compatible endpoints, including vLLM and Ray Serve LLM deployments, are not
+part of this setup. They do not appear as a provider option or in the model
+selector, and the main application requirements do not install vLLM or Ray.
+
+Such a deployment is externally managed: cluster operators install the serving
+stack, allocate GPUs, load the model, expose one secured HTTP ingress, and
+verify it independently. A future dedicated design may add the endpoint after
+covering installation, authentication, networking, multi-GPU behavior, and a
+real deployment smoke test.
+
+The existing `http://127.0.0.1:8001/v1` example means that the model ingress is
+reachable on the same machine as Epi-AI-Agent, including through an explicit
+local tunnel. It is not a valid address for a remote cluster unless such a
+tunnel exists. A remote deployment instead needs an address reachable from the
+application host, such as a private cluster DNS name or secured gateway URL.
 
 ## Error handling
 
@@ -313,8 +321,7 @@ Automated coverage must include:
 - OpenAI only exposes GPT models and defaults to GPT-5.6 Terra;
 - Anthropic only exposes Claude models and defaults to Claude Opus 5;
 - both keys expose both model families and default to GPT-5.6 Terra;
-- a reachable configured compatible endpoint exposes its models;
-- an unreachable endpoint is omitted with a warning;
+- compatible endpoints are absent from setup and ordinary model selection;
 - invalid, cancelled, and failed replacement credentials are not persisted;
 - partial success while configuring both providers can continue;
 - shell credentials are not copied into `.env`;
