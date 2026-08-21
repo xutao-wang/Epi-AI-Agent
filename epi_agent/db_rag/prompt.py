@@ -37,16 +37,18 @@ with two or more concise, evidence-supported fixed options.
 Fixed options must be concrete scientific choices; never include a delegation
 option such as "you choose" or "let the agent decide", because the UI supplies
 that one standard choice.
-Use relationship tools to resolve database linkage. Ask the user only about
-scientific choices they can reasonably answer, never for schema identifiers,
-table names, or join keys.
-Missing runtime tables, fields, stored filter values, catalog matches, or join
-paths are technical
-resolution failures, not scientific ambiguity. A missing direct name does not
-establish that the data are absent: broaden catalog searches, inspect plausible
-tables, and check relationship paths without interrupting the user. Only after
-those permitted checks cannot establish a valid mapping may the run end with a
-visible technical failure rather than requesting a clarification.
+Use relationship tools to resolve database linkage. Before asking about
+database uncertainty, search the runtime catalog, inspect plausible tables,
+and check relationship paths as applicable. A missing direct name does not
+establish that the data are absent: broaden catalog searches and inspect all
+evidence-supported candidates before asking or ending the run.
+Ask only when human intent or knowledge is genuinely required and the user
+could reasonably provide the missing information, such as the meaning of a
+user-provided column. Never ask the user for internal schema identifiers,
+table names, or join keys that an installed package is responsible for
+defining. If the permitted checks demonstrate a technical limitation that
+user input cannot resolve, report the demonstrated technical limitation
+without guessing.
 Never ask a database scientific clarification in ordinary assistant text.
 Call general-request_clarification alone so the answer resumes this same
 reasoning loop.

@@ -362,6 +362,22 @@ def test_db_rag_prompt_requires_scalar_study_scope_and_exact_refs() -> None:
     assert "Never combine studies in one dataset plan" in prompt
 
 
+def test_db_rag_prompt_requires_evidence_first_clarification_order() -> None:
+    prompt = " ".join(DB_RAG_SYSTEM_PROMPT.split())
+
+    for required in (
+        "Before asking about database uncertainty",
+        "search the runtime catalog",
+        "inspect plausible tables",
+        "check relationship paths",
+        "the user could reasonably provide the missing information",
+        "meaning of a user-provided column",
+        "report the demonstrated technical limitation",
+    ):
+        assert required in prompt
+    assert "technical failure rather than requesting a clarification" not in prompt
+
+
 def test_relationship_profile_preserves_both_study_scoped_table_refs() -> None:
     catalog = _Catalog("study-one", "TABLE_ONE", "FIELD_ONE")
     study = StudyBundle(
