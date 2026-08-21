@@ -61,7 +61,7 @@ Run:
   tests/test_api_activity_timeline.py
 ```
 
-Then run all frontend tests from a temporary copy using the main checkout's installed `node_modules`, build that temporary frontend, compare its generated assets with tracked `frontend/dist`, and build the immutable AWS release.
+Then run all frontend tests from a temporary copy using the main checkout's installed `node_modules`, build that temporary frontend, and compare its generated assets with tracked `frontend/dist`.
 
 Expected: all Python and frontend tests pass, generated frontend assets match tracked assets, and the release build succeeds from a clean worktree.
 

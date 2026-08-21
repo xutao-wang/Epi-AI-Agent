@@ -54,4 +54,4 @@ diagnostics are preserved.
 - Reimplementing the cancellation smoke.
 - Copying `.env`, study data, or virtual environments into the worktree.
 - Automatically rerunning a failed real-browser smoke.
-- Adding Docker, cloud, or CI orchestration.
+- Adding external deployment or CI orchestration.

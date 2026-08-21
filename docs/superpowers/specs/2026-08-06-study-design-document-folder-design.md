@@ -147,7 +147,7 @@ failed archive never becomes active.
 Validation is performed twice by design:
 
 - Database build/release validation prevents publishing an invalid artifact.
-- Agent installation validation protects local and AWS deployments from a
+- Agent installation validation protects installations from a
   malformed, incomplete, or incorrectly transferred artifact.
 
 Failures state the exact reason and provide actionable repair choices. For a
@@ -171,8 +171,7 @@ consumed.
 
 Non-Markdown files are not validation failures. The lower-level installer
 returns structured warnings and the top-level CLI prints their relative paths
-as `not consumed by study-design indexing`. The same messages appear in AWS
-startup logs when deployment installs the package.
+as `not consumed by study-design indexing`.
 
 ## Runtime And Agent Consumption
 

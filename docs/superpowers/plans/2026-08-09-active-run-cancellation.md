@@ -17,7 +17,7 @@
 - Treat remote provider cancellation as best effort: a late response may complete and incur cost, but it must never be checkpointed.
 - Keep cancellation-scoped tools read-only or staged. A tool's unreachable temporary files may be cleaned up after restoration, but irreversible external side effects require a separate compensation design and are not added here.
 - Do not change Cancel actions inside existing clarification, dataset-review, analysis-review, or model-output-limit panels.
-- Do not add a new authentication system in this feature. The cancel endpoint must live beside the existing thread endpoints so the AWS/auth branch applies the same owner dependency and `provider_key_for_work` boundary during integration.
+- Do not add a new authentication system in this feature. The cancel endpoint must live beside the existing thread endpoints and use the same identity boundary.
 - Preserve the current meaning of New conversation: it opens a separate thread and never aliases cancellation.
 
 ---
@@ -858,9 +858,7 @@ def cancel_run(thread_id: str) -> ApiThreadState:
         ) from exc
 ```
 
-Import `CancellationRestoreError`. On the AWS/auth branch, define this route on the authenticated router and call the identity-aware `runtime.cancel_run(identity, thread_id)` exactly as peer thread routes do; do not make the route public.
-
-During integration into that branch, extend its existing two-identity thread-ownership test: create the conversation as owner A, call this endpoint as owner B and expect the branch's existing not-found response, then call as owner A and expect success. This supplies the cross-owner regression without introducing auth code on the present branch.
+Import `CancellationRestoreError`, define this route on the thread router, and call the identity-aware `runtime.cancel_run(identity, thread_id)` exactly as peer thread routes do.
 
 - [ ] **Step 5: Type the cancelled-turn state and add bounded model context**
 
@@ -1029,8 +1027,6 @@ cancelRun(threadId: string) {
   return cancelRun(fetchImpl, apiBase, threadId);
 },
 ```
-
-When this change is integrated into the AWS/auth branch, use that branch's `authenticatedFetch` variable here, matching every other protected thread method.
 
 - [ ] **Step 4: Write failing App behavior tests**
 

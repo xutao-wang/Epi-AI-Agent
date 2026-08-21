@@ -51,10 +51,9 @@ is verified, the app prints the following local address:
 
 <http://127.0.0.1:8000/>
 
-This remains a native Python startup: Docker is not required. Local mode uses
-the fixed local browser identity and session so conversations created by prior
-local versions remain available. The verified key stays in the local `.env`
-file and is never returned by an API response.
+This is a native Python startup. The application uses a fixed local identity so
+conversations created by prior local versions remain available. The verified
+key stays in the local `.env` file and is never returned by an API response.
 
 While the agent is working, **Cancel** stops the active request and returns the
 conversation to its latest completed or approved save point. The cancelled

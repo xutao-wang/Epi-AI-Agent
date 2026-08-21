@@ -191,17 +191,9 @@ remain unreachable from conversation state.
 After a successful cancellation, restart recovery treats the cancelled
 checkpoint as terminal and never automatically resumes the discarded work.
 
-## AWS Boundary
-
-The first AWS deployment retains one application process and one Uvicorn worker,
-so its cancellation signal and active-job record may stay in memory. The
-cancelled conversation state and retained attachments use the same persistent
-checkpoint and runtime storage already required by the migration.
-
 Before introducing multiple application instances or workers, active-run
 ownership and cancellation signals must move to shared coordination. That later
-scaling change is not part of this design and does not block the initial AWS
-deployment.
+scaling change is not part of this design.
 
 ## Testing
 

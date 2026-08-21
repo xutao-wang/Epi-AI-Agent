@@ -16,7 +16,7 @@ from utils.user_storage import UserStorageLayout
 
 
 def test_sql_subset_persistence_uses_authorized_thread_dataset_root(tmp_path) -> None:
-    scope = UserStorageLayout(tmp_path).thread("cognito-user-a", "thread-1")
+    scope = UserStorageLayout(tmp_path).thread("external-user-a", "thread-1")
     candidate = SimpleNamespace(
         sql='SELECT "age" FROM cohort',
         tables=["cohort"],
@@ -58,7 +58,7 @@ def test_extraction_wrapper_forwards_authorized_scope_to_sql_persistence(
     tmp_path,
     monkeypatch,
 ) -> None:
-    scope = UserStorageLayout(tmp_path).thread("cognito-user-a", "thread-1")
+    scope = UserStorageLayout(tmp_path).thread("external-user-a", "thread-1")
     artifact_store = StateArtifactStore.from_state({"artifacts": {}})
     context = ToolContext(
         studies=StudyRegistry(

@@ -243,7 +243,7 @@ Conversation lifecycle follows the existing ownership boundaries:
 
 The first version continues to require one application process and one Uvicorn
 worker. Shared activity coordination for multiple processes or instances is a
-future AWS scaling concern.
+future multi-instance scaling concern.
 
 ## UI Placement and Accessibility
 

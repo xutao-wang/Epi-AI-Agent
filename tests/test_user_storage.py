@@ -13,13 +13,13 @@ from utils.dataset_artifacts import generated_dataset_artifact_paths
 
 
 def test_user_storage_hashes_owner_and_keeps_safe_thread_id(tmp_path: Path) -> None:
-    scope = UserStorageLayout(tmp_path).thread("cognito/sub@example", "thread-123")
-    owner_hash = hashlib.sha256(b"cognito/sub@example").hexdigest()
+    scope = UserStorageLayout(tmp_path).thread("external/sub@example", "thread-123")
+    owner_hash = hashlib.sha256(b"external/sub@example").hexdigest()
 
     assert scope.root == (
         tmp_path.resolve() / "users" / owner_hash / "threads" / "thread-123"
     )
-    assert "cognito/sub@example" not in str(scope.root)
+    assert "external/sub@example" not in str(scope.root)
     assert scope.datasets == scope.root / "datasets"
 
 

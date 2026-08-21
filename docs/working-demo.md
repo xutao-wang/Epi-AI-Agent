@@ -2,83 +2,55 @@
 
 ## Local native operation
 
-The supported researcher workflow remains:
+The supported researcher workflow is:
 
 ```bash
 source .venv/bin/activate
 python run_fastapi.py
 ```
 
-Python 3.12 is required. Docker is not required. Unless explicitly overridden,
-the launcher sets `REPORT_AGENT_AUTH_MODE=local`, verifies the OpenAI key from
-`.env` (or prompts for and saves a verified key), prepares the selected runtime
-directory, and serves the committed browser build. Local requests use the fixed
-`local-user` principal and fixed local session UUID. Legacy unowned local
-conversation rows are claimed only for that principal, preserving prior local
-work without exposing them in hosted mode.
+Python 3.12 and `OPENAI_API_KEY` are required. The launcher verifies the key
+from `.env` (or prompts for and saves a verified key), prepares the selected
+runtime directory, and serves the committed browser build.
 
-## Cognito and per-user provider keys
+Requests use the fixed `local-user` identity internally. Legacy unowned local
+conversation rows are claimed for that identity so prior local work remains
+available. Conversations, checkpoints, attachments, datasets, and exports stay
+under the configured local runtime root.
 
-Hosted/native startup uses `REPORT_AGENT_AUTH_MODE=cognito` and requires all of
-the following:
+## Local paths
 
-- `REPORT_AGENT_AWS_REGION`
-- `REPORT_AGENT_COGNITO_USER_POOL_ID`
-- `REPORT_AGENT_COGNITO_APP_CLIENT_ID`
-- `REPORT_AGENT_COGNITO_LOGOUT_ENDPOINT`
-- `REPORT_AGENT_AUTH_REDIRECT_URI`
-- `REPORT_AGENT_AUTH_POST_LOGOUT_REDIRECT_URI`
+The defaults are project-local and can be overridden in `.env`:
 
-Set `REPORT_AGENT_RUNTIME_ROOT`, `REPORT_AGENT_CHECKPOINT_DB_PATH`, and
-`REPORT_AGENT_STUDY_ROOT` to private writable locations. Set
-`REPORT_AGENT_WEB_CONCURRENCY=1` (and `WEB_CONCURRENCY=1` if the hosting platform
-uses it). This release rejects any other worker count because provider
-credentials and active job registries remain in process memory.
+- `REPORT_AGENT_RUNTIME_ROOT` stores conversations, uploads, generated data,
+  and execution artifacts.
+- `REPORT_AGENT_CHECKPOINT_DB_PATH` selects the SQLite checkpoint/history
+  database.
+- `REPORT_AGENT_STUDY_ROOT` contains installed study packages.
+- `REPORT_AGENT_STATIC_DIR` selects the compiled frontend bundle.
 
-Do not configure a server-owned `OPENAI_API_KEY` for Cognito mode. After browser
-login, each user supplies their own key through the provider-key screen. The
-backend validates it against the real OpenAI service and stores it only under
-that Cognito subject and canonical browser-session UUID. The key is not written
-to SQLite, runtime artifacts, logs, browser storage, or API responses.
+The study installer and application launcher prompt for local directories when
+needed. Persistent data formats and ownership layout remain stable across
+restarts.
 
-Provider-key state is intentionally temporary. A key is removed on logout,
-server restart, access-token expiry, or 12 hours of inactivity. Re-entering a
-key restores provider-backed work for that browser session. Conversations,
-LangGraph checkpoints, attachments, datasets, and exports persist across
-restart under owner-specific runtime paths and remain inaccessible to other
-subjects even when an identifier is guessed.
+## Data policy
 
-## Data and access policy
+Use synthetic data or data that has been fully de-identified before upload. Do
+not upload direct identifiers, protected health information, confidential
+source records, or provider credentials as data. The included RePORT India
+study assets and example CSVs are synthetic.
 
-The hosted working demo is invitation-only. Use synthetic data or data that has
-been fully de-identified before upload. Do not upload direct identifiers,
-protected health information, confidential source records, or provider keys as
-data. The included RePORT India study assets and example CSVs are synthetic.
+## Verification
 
-## Acceptance smoke
-
-Run the bounded real acceptance smoke only with an existing OpenAI credential:
+Run the retained Python and frontend suites locally:
 
 ```bash
-OPENAI_API_KEY=... .venv/bin/python scripts/smoke_multi_user_isolation_real.py
+python -m pytest -q
+npm --prefix frontend test -- --run
+npm --prefix frontend run build
 ```
 
-The smoke creates temporary runtime and SQLite paths, an ephemeral RSA key, and
-a local protocol-real JWKS endpoint. It starts the production FastAPI app in
-Cognito mode with one worker; mints two RS256 access tokens with distinct
-subjects and canonical session UUIDs; validates each user's real provider key;
-creates a conversation and synthetic CSV; restarts FastAPI; and verifies owner
-persistence, provider-key loss, cross-owner denials, and exact key absence from
-SQLite, runtime files, captured response bodies, and logs. Every subprocess is
-stopped in `finally`, and the run is capped at five minutes.
-
-Missing `OPENAI_API_KEY` is a failed prerequisite and exits nonzero; it is never
-reported as a skip or pass. The smoke uses a local issuer because this project
-intentionally provisions no AWS resources. It does not replace the future
-launch smoke against the real Cognito pool and deployed browser UI.
-
-## Phase 2A AWS delivery
-
-See the [Phase 2A runbook](aws/phase2a-runbook.md). Repository support does not
-mean a live stack exists until Task 11; local startup instructions above remain
-unchanged.
+Local Python execution runs in a bounded subprocess and strips provider and
+cloud credentials from the child environment. It protects against accidental
+or model-generated mistakes, but it is not a security boundary for hostile
+code.
