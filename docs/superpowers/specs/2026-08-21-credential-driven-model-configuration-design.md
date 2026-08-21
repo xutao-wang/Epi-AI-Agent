@@ -5,9 +5,9 @@
 ## Purpose
 
 Replace the provider-specific model allowlist written by the native launcher
-with credential-driven OpenAI and Anthropic model availability. Adding
-Anthropic must expand the models that can be used without making existing
-OpenAI conversations unreadable.
+with provider-driven model availability. Adding Anthropic or a registered
+compatible endpoint must expand the models that can be used without making
+existing conversations unreadable.
 
 The design also makes first-run provider setup explicit, preserves local data
 locations, and reports provider failures such as exhausted Anthropic credits
@@ -35,6 +35,8 @@ already has a specific public error.
 ## Goals
 
 - Derive model availability from verified OpenAI and Anthropic credentials.
+- Show every model from each successfully verified configured provider,
+  including models registered for a compatible endpoint.
 - Keep all registered model profiles available for historical deserialization.
 - Let users read historical conversations whose original provider is no longer
   available.
@@ -50,9 +52,11 @@ already has a specific public error.
 - Do not migrate or rewrite historical messages or checkpoints.
 - Do not add remote authentication, AWS, Docker, or hosted secret storage.
 - Do not make a billable model-generation request during every startup.
-- Do not install, launch, configure, display, or test vLLM, Ray, or compatible
-  endpoints. Those require a separately designed deployment and verification
-  workflow.
+- Do not install or launch vLLM, Ray, or another model server. Compatible
+  endpoint support is limited to loading an existing registration and checking
+  that its externally managed endpoint is reachable.
+- Do not require a real multi-GPU compatible deployment in this change's test
+  suite; use a mock endpoint for connection and catalog behavior.
 
 ## Model sets
 
@@ -63,7 +67,9 @@ The application will distinguish three model sets.
 Registered models are every model profile known to the application:
 
 - built-in OpenAI GPT profiles; and
-- built-in Anthropic Claude profiles.
+- built-in Anthropic Claude profiles; and
+- profiles explicitly registered in `config/custom_models.json` for compatible
+  endpoints.
 
 This complete registry is the authority for deciding whether a model can be
 executed. It is not filtered by current credentials. A historical record with
@@ -75,8 +81,12 @@ Available models are registered models whose provider can currently be used:
 
 - GPT models are available when `OPENAI_API_KEY` is present and verified.
 - Claude models are available when `ANTHROPIC_API_KEY` is present and verified.
+- Registered compatible models are available when their endpoint responds to
+  verification and any `api_key_env` named by the registration is present. A
+  blank `api_key_env` explicitly denotes a keyless endpoint.
 
-Only available models appear in the new-conversation model selector.
+Every available model appears in the new-conversation model selector. Models
+from a missing or failed provider are omitted rather than left selectable.
 
 ### Historical model
 
@@ -91,8 +101,9 @@ Default selection is deterministic and is not stored in `.env`:
 
 1. If OpenAI is available, use `gpt-5.6-terra`.
 2. Otherwise, if Anthropic is available, use `claude-opus-5`.
-3. If neither provider is available, enter provider setup instead of starting
-   the application.
+3. Otherwise, use the first available registered compatible model.
+4. If no model is available, enter provider setup instead of starting the
+   application.
 
 The user can select any other available model before the first turn of a new
 conversation.
@@ -106,7 +117,8 @@ Startup runs in this order:
 3. Resolve the study-package root.
 4. Resolve the runtime root.
 5. Derive the checkpoint database path from the runtime root.
-6. Discover and verify OpenAI and Anthropic credentials.
+6. Discover and verify OpenAI and Anthropic credentials and any registered
+   compatible endpoints.
 7. Calculate available models and the default model.
 8. Validate the built frontend and start FastAPI.
 
@@ -147,6 +159,7 @@ No AI provider is configured.
 1. Configure OpenAI
 2. Configure Anthropic
 3. Configure both
+4. Connect to a compatible endpoint
 ```
 
 Keys are entered through a non-echoing prompt. A key is persisted only after
@@ -170,6 +183,13 @@ configuring both providers, one successful provider is retained if the other
 fails, and the user may retry the failure or continue with the working
 provider.
 
+The compatible-endpoint option does not install a serving stack. It directs
+the user to prepare `config/custom_models.json`, then verifies the registered
+endpoint and required key, if any. If no registration exists, setup explains
+how to copy and edit the example and returns to the provider menu. A failed
+endpoint is not persisted as available and its models do not appear in the
+selector.
+
 ### Reconfiguration
 
 `python run_fastapi.py --reconfigure` displays provider status without exposing
@@ -180,6 +200,10 @@ remove or rewrite historical conversations.
 
 For inherited shell credentials, setup reports that the key is supplied by the
 process environment and cannot be removed by editing `.env`.
+
+Compatible endpoint registrations remain file-managed in this initial scope.
+Reconfiguration rechecks them but does not provide an interactive endpoint
+editor.
 
 ## Local environment contents
 
@@ -228,6 +252,37 @@ model is currently available. This status is metadata, not an error.
 The backend remains the authority for provider availability. The frontend does
 not inspect environment variables or infer availability from model names.
 
+### Persisted settings versus executable settings
+
+The current failure occurs because `_require_owned_thread()` calls
+`_normalize_settings()`, which rejects any model absent from the currently
+available catalog. That check is valid for a new run but invalid for reading a
+checkpoint.
+
+The implementation must replace this shared path with two explicit operations:
+
+- persisted-settings normalization validates the stored shape, numeric ranges,
+  and other provider-independent values, but does not require the stored model
+  to be currently available; and
+- executable-settings normalization first performs persisted normalization and
+  then requires the chosen model to be in the available catalog.
+
+`_require_owned_thread()` and read-only state/review projections use persisted
+normalization. New-conversation selection, model replacement, and run startup
+use executable normalization. This distinction should be expressed with
+separate named functions rather than a permissive boolean flag.
+
+For a registered but unavailable model, persisted normalization may use its
+registered profile for defaults. For an unknown historical model ID, it keeps
+the ID as unavailable legacy metadata and uses provider-independent safe
+defaults; it must not call `model_runtime_profile()` in a way that prevents the
+conversation from loading.
+
+Conversation state reports the stored model ID and an explicit availability
+status. Opening state must not build a provider-bound graph. If the user tries
+to submit while the stored model is unavailable, the API returns a structured
+409 or 422 response requiring an available replacement, never HTTP 500.
+
 ## Continuing a historical conversation
 
 When the historical model is available, the conversation remains locked to
@@ -261,17 +316,19 @@ Title generation uses the provider-specific lightweight registered model when
 available: GPT-5.6 Luna for OpenAI and Claude Haiku 4.5 for Anthropic. A
 title-generation failure remains non-fatal.
 
-## Deferred compatible endpoints
+## Minimal compatible endpoint support
 
-Compatible endpoints, including vLLM and Ray Serve LLM deployments, are not
-part of this setup. They do not appear as a provider option or in the model
-selector, and the main application requirements do not install vLLM or Ray.
+Compatible endpoints, including externally managed vLLM and Ray Serve LLM
+deployments, remain a setup option and their successfully verified registered
+models appear in the selector. The main application does not install or launch
+vLLM or Ray.
 
-Such a deployment is externally managed: cluster operators install the serving
-stack, allocate GPUs, load the model, expose one secured HTTP ingress, and
-verify it independently. A future dedicated design may add the endpoint after
-covering installation, authentication, networking, multi-GPU behavior, and a
-real deployment smoke test.
+Cluster operators install the serving stack, allocate GPUs, load the model, and
+expose one HTTP ingress. Epi-AI-Agent only reads the registration, supplies the
+configured key when required, verifies the endpoint on every startup, and adds
+the endpoint's registered models to the available catalog after verification.
+Failure produces a warning with retry, choose-another-provider, or continue
+options; continuing omits those models for that process.
 
 The existing `http://127.0.0.1:8001/v1` example means that the model ingress is
 reachable on the same machine as Epi-AI-Agent, including through an explicit
@@ -321,7 +378,10 @@ Automated coverage must include:
 - OpenAI only exposes GPT models and defaults to GPT-5.6 Terra;
 - Anthropic only exposes Claude models and defaults to Claude Opus 5;
 - both keys expose both model families and default to GPT-5.6 Terra;
-- compatible endpoints are absent from setup and ordinary model selection;
+- every successfully verified configured provider contributes all of its
+  registered models to ordinary model selection;
+- compatible endpoint success and failure are tested with a mock server, while
+  no vLLM or Ray installation is required;
 - invalid, cancelled, and failed replacement credentials are not persisted;
 - partial success while configuring both providers can continue;
 - shell credentials are not copied into `.env`;
@@ -330,7 +390,11 @@ Automated coverage must include:
 - historical GPT conversations load under Anthropic-only availability;
 - historical Claude conversations load under OpenAI-only availability;
 - historical conversations can explicitly continue with an available model;
+- unknown historical custom-model IDs remain readable and require explicit
+  replacement before execution;
 - opening history never silently changes its model;
+- conversation listing, review-status projection, and state retrieval do not
+  apply the executable-model allowlist and do not emit projection failures;
 - Anthropic low-credit HTTP 400 maps to `PROVIDER_CREDITS_EXHAUSTED`;
 - provider keys are absent from serialized responses and diagnostic output;
 - full backend and frontend suites pass; and
@@ -339,8 +403,9 @@ Automated coverage must include:
 
 ## Acceptance criteria
 
-The design is complete when a fresh user can configure one or both providers
-without model variables in `.env`, sees exactly the usable registered models,
-can still open every prior conversation after provider changes, can explicitly
-continue history with an available model, and receives an actionable Anthropic
-credit error instead of `RUN_FAILED`.
+The design is complete when a fresh user can configure OpenAI, Anthropic, both,
+or an existing compatible endpoint without model variables in `.env`, sees all
+and only models from successfully verified configured providers, can still open
+every prior conversation after provider changes, can explicitly continue
+history with an available model, and receives an actionable Anthropic credit
+error instead of `RUN_FAILED`.
