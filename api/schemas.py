@@ -16,40 +16,6 @@ RunState = Literal[
 ]
 
 
-class CognitoPublicConfig(BaseModel):
-    authority: str
-    client_id: str
-    logout_endpoint: str
-    redirect_uri: str
-    post_logout_redirect_uri: str
-
-
-class PublicAppConfig(BaseModel):
-    auth_mode: Literal["local", "cognito"]
-    provider_key_required: bool
-    cognito: CognitoPublicConfig | None = None
-
-
-class ProviderKeyRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    api_key: str = Field(min_length=1, max_length=4096)
-
-
-class ProviderKeyStatus(BaseModel):
-    configured: bool
-
-
-class ReadinessStatus(BaseModel):
-    status: Literal["ready", "maintenance"]
-    release_id: str
-
-
-class DeploymentStatus(ReadinessStatus):
-    maintenance: bool
-    active_runs: int
-
-
 class RunStatus(BaseModel):
     state: RunState
     steps: int = 0

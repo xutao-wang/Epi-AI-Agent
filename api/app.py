@@ -8,26 +8,16 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from api.activity_store import SqliteActivityStore
-from api.auth import (
-    AuthenticatedUser,
-    CognitoTokenVerifier,
-    LOCAL_SESSION_ID,
-    LocalTokenVerifier,
-    RequestIdentity,
-)
 from api.conversation_history import (
     ConversationHistoryStore,
     OpenAIConversationTitleGenerator,
 )
 from api.deployment import (
     checkpoint_db_path,
-    python_worker_launcher,
     runtime_root,
     static_dir,
     study_root,
 )
-from api.provider_credentials import ProviderCredentialStore
-from api.public_config import application_auth_config, public_app_config
 from api.runtime import GraphBuildContext, ReportAgentApiRuntime, RuntimeSettings
 from api.schemas import RuntimeCapabilities, RuntimeCapability
 from api.server import create_app
@@ -60,15 +50,12 @@ _NO_STUDY_MESSAGE = "No study package is installed."
 _LOGGER = logging.getLogger(__name__)
 
 
-def _history_store_for_auth_mode(
+def _history_store(
     db_path: str | os.PathLike[str],
-    *,
-    auth_mode: str,
 ) -> ConversationHistoryStore:
-    """Open history and claim legacy rows only for the fixed local principal."""
+    """Open history and claim legacy rows for the fixed local principal."""
     store = ConversationHistoryStore(db_path)
-    if auth_mode == "local":
-        store.claim_unowned("local-user")
+    store.claim_unowned("local-user")
     return store
 
 
@@ -140,12 +127,13 @@ def build_application(*, environ: Mapping[str, str] | None = None) -> FastAPI:
         load_app_environment()
         environ = os.environ
 
-    auth_config = application_auth_config(environ)
+    provider_api_key = str(environ.get("OPENAI_API_KEY", "") or "").strip()
+    if not provider_api_key:
+        raise ValueError("OPENAI_API_KEY is required.")
     model_name = environ.get("OPENAI_MODEL", DEFAULT_OPENAI_MODEL)
     allowed_models = configured_openai_models(environ)
     title_model = configured_title_model(environ)
     max_iterations = configured_epi_agent_max_iterations(environ)
-    worker_launcher = python_worker_launcher(environ)
 
     runtime_root_path = (
         Path(environ["REPORT_AGENT_RUNTIME_ROOT"])
@@ -208,7 +196,6 @@ def build_application(*, environ: Mapping[str, str] | None = None) -> FastAPI:
             max_iterations=max_iterations,
             python_runtime=LocalPythonRuntime(
                 runtime_root=context.storage.execution,
-                worker_launcher=worker_launcher,
             ),
             activity_sink=activity_store or NULL_ACTIVITY_SINK,
         )
@@ -224,10 +211,7 @@ def build_application(*, environ: Mapping[str, str] | None = None) -> FastAPI:
         "db_rag_embedding_model": db_rag_embedding_model,
         "db_rag_reranker_model": resolve_db_rag_reranker_model() or "disabled",
     }
-    history_store = _history_store_for_auth_mode(
-        db_path,
-        auth_mode=auth_config.mode,
-    )
+    history_store = _history_store(db_path)
     report_runtime = ReportAgentApiRuntime(
         graph_factory=graph_factory,
         default_runtime_settings=runtime_settings,
@@ -260,39 +244,12 @@ def build_application(*, environ: Mapping[str, str] | None = None) -> FastAPI:
         activity_store=activity_store,
     )
 
-    credential_store = ProviderCredentialStore(
-        on_expire=report_runtime.release_session,
-    )
-    if auth_config.mode == "local":
-        token_verifier = LocalTokenVerifier()
-        local_api_key = str(environ.get("OPENAI_API_KEY", "") or "").strip()
-        if not local_api_key:
-            raise ValueError("OPENAI_API_KEY is required.")
-        credential_store.put(
-            RequestIdentity(
-                user=AuthenticatedUser(owner_user_id="local-user"),
-                session_id=LOCAL_SESSION_ID,
-            ),
-            local_api_key,
-        )
-    else:
-        assert auth_config.cognito_issuer is not None
-        assert auth_config.cognito_app_client_id is not None
-        token_verifier = CognitoTokenVerifier(
-            issuer=auth_config.cognito_issuer,
-            app_client_id=auth_config.cognito_app_client_id,
-        )
-
     application = create_app(
         runtime=report_runtime,
+        provider_api_key=provider_api_key,
         static_dir=selected_static_dir,
-        public_config=public_app_config(auth_config),
-        token_verifier=token_verifier,
-        credential_store=credential_store,
     )
     application.state.report_agent_runtime = report_runtime
-    application.state.provider_credential_store = credential_store
-    application.state.token_verifier = token_verifier
     return application
 
 app = build_application()

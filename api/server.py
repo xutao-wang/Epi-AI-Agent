@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import inspect
-import os
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -17,24 +16,12 @@ from fastapi import (
     Response,
     UploadFile,
 )
-from fastapi.exception_handlers import request_validation_exception_handler
-from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from api.deployment import DeploymentState, cors_allow_origin_regex
-from api.auth import (
-    LocalTokenVerifier,
-    RequestIdentity,
-    TokenVerifier,
-    request_identity_dependency,
-)
-from api.provider_credentials import (
-    OpenAIProviderKeyValidator,
-    ProviderCredentialStore,
-    ProviderKeyValidator,
-)
+from api.deployment import cors_allow_origin_regex
+from api.auth import RequestIdentity, local_request_identity
 from api.runtime import (
     CancellationRestoreError,
     ReportAgentApiRuntime,
@@ -52,13 +39,8 @@ from api.schemas import (
     DatasetPreview,
     DatasetProvenance,
     DatasetSchemaResponse,
-    DeploymentStatus,
-    PublicAppConfig,
-    ProviderKeyRequest,
-    ProviderKeyStatus,
     ResetThreadResponse,
     RenameConversationRequest,
-    ReadinessStatus,
     ResumeInterruptRequest,
     RuntimeInfo,
     RuntimeOptions,
@@ -66,16 +48,11 @@ from api.schemas import (
     TablePreview,
 )
 from utils.attachment_artifacts import AttachmentError, AttachmentLimits
-from utils.provider_startup import ProviderCredentialError
 from utils.review_interrupts import InvalidInterruptDecisionError
 
 
 _UPLOAD_READ_CHUNK_BYTES = 1024 * 1024
 _MULTIPART_OVERHEAD_BYTES = 1024 * 1024
-_PROVIDER_KEY_INVALID_KIND = "PROVIDER_KEY_INVALID"
-_PROVIDER_KEY_REQUIRED_CODE = "PROVIDER_KEY_REQUIRED"
-
-
 def _content_disposition(disposition: str, filename: str) -> str:
     clean = "".join(
         character
@@ -142,72 +119,12 @@ async def _read_bounded_attachment_uploads(
 def create_app(
     runtime: ReportAgentApiRuntime,
     *,
+    provider_api_key: str,
     static_dir: Path | None = None,
     cors_origin_regex: str | None = None,
-    public_config: PublicAppConfig | None = None,
-    token_verifier: TokenVerifier | None = None,
-    credential_store: ProviderCredentialStore | None = None,
-    provider_key_validator: ProviderKeyValidator | None = None,
-    deployment_state: DeploymentState | None = None,
 ) -> FastAPI:
     app = FastAPI(title="RePORT Agent API")
-
-    @app.exception_handler(RequestValidationError)
-    async def redact_provider_key_validation_error(
-        request: Request,
-        exc: RequestValidationError,
-    ) -> JSONResponse:
-        if request.url.path != "/api/session/provider-key":
-            return await request_validation_exception_handler(request, exc)
-        return JSONResponse(
-            status_code=422,
-            content={
-                "detail": [
-                    {
-                        key: value
-                        for key, value in error.items()
-                        if key != "input"
-                    }
-                    for error in exc.errors()
-                ]
-            },
-        )
-
-    public_config = public_config or PublicAppConfig(
-        auth_mode="local",
-        provider_key_required=False,
-    )
-    require_identity = request_identity_dependency(
-        token_verifier or LocalTokenVerifier()
-    )
-    credential_store = credential_store or ProviderCredentialStore()
-    provider_key_validator = provider_key_validator or OpenAIProviderKeyValidator()
-    deployment_state = deployment_state or DeploymentState.from_environ(os.environ)
     attachment_limits = runtime.attachment_limits
-
-    @app.middleware("http")
-    async def prune_expired_provider_credentials(
-        request: Request,
-        call_next,
-    ) -> Response:
-        credential_store.prune_expired()
-        return await call_next(request)
-
-    @app.middleware("http")
-    async def reject_unsafe_requests_during_maintenance(
-        request: Request,
-        call_next,
-    ) -> Response:
-        if (
-            deployment_state.maintenance_enabled()
-            and request.method not in {"GET", "HEAD", "OPTIONS"}
-        ):
-            return JSONResponse(
-                status_code=503,
-                headers={"Retry-After": "30"},
-                content={"detail": {"code": "DEPLOYMENT_MAINTENANCE"}},
-            )
-        return await call_next(request)
 
     def provider_key_for_work(
         identity: RequestIdentity,
@@ -220,13 +137,7 @@ def create_app(
                 status_code=404,
                 detail="Conversation not found",
             ) from exc
-        provider_key = credential_store.get(identity)
-        if provider_key is None:
-            raise HTTPException(
-                status_code=428,
-                detail={"code": _PROVIDER_KEY_REQUIRED_CODE},
-            )
-        return provider_key
+        return provider_api_key
 
     app.add_middleware(
         CORSMiddleware,
@@ -240,100 +151,11 @@ def create_app(
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.get("/api/readiness", response_model=ReadinessStatus)
-    def readiness() -> ReadinessStatus | JSONResponse:
-        maintenance = deployment_state.maintenance_enabled()
-        status = ReadinessStatus(
-            status="maintenance" if maintenance else "ready",
-            release_id=deployment_state.release_id,
-        )
-        if maintenance:
-            return JSONResponse(status_code=503, content=status.model_dump())
-        return status
-
-    @app.get("/api/ops/deployment-status", response_model=DeploymentStatus)
-    def deployment_status() -> DeploymentStatus:
-        maintenance = deployment_state.maintenance_enabled()
-        return DeploymentStatus(
-            status="maintenance" if maintenance else "ready",
-            release_id=deployment_state.release_id,
-            maintenance=maintenance,
-            active_runs=runtime.active_run_count(),
-        )
-
-    @app.get("/api/public-config", response_model=PublicAppConfig)
-    def get_public_config() -> PublicAppConfig:
-        return public_config
-
-    if token_verifier is None:
-        @app.post("/api/threads/{thread_id}/cancel", response_model=ApiThreadState)
-        def cancel_local_compatibility_run(thread_id: str) -> ApiThreadState:
-            try:
-                return runtime.cancel_run(thread_id)
-            except KeyError as exc:
-                raise HTTPException(
-                    status_code=404,
-                    detail="Conversation not found",
-                ) from exc
-            except CancellationRestoreError as exc:
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "code": "CANCELLATION_RESTORE_FAILED",
-                        "message": str(exc),
-                    },
-                ) from exc
-
-    api = APIRouter(dependencies=[Depends(require_identity)])
-
-    @api.get(
-        "/api/session/provider-key",
-        response_model=ProviderKeyStatus,
-    )
-    def provider_key_status(
-        identity: RequestIdentity = Depends(require_identity),
-    ) -> ProviderKeyStatus:
-        return ProviderKeyStatus(configured=credential_store.has(identity))
-
-    @api.put(
-        "/api/session/provider-key",
-        response_model=ProviderKeyStatus,
-    )
-    def configure_provider_key(
-        request: ProviderKeyRequest,
-        identity: RequestIdentity = Depends(require_identity),
-    ) -> ProviderKeyStatus:
-        api_key = request.api_key.strip()
-        try:
-            provider_key_validator.validate("openai", api_key)
-            credential_store.put(identity, api_key)
-            runtime.release_session(identity.owner_user_id, identity.session_id)
-        except ProviderCredentialError as exc:
-            message = str(exc)
-            if api_key:
-                message = message.replace(api_key, "<redacted>")
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "kind": _PROVIDER_KEY_INVALID_KIND,
-                    "message": message,
-                },
-            ) from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return ProviderKeyStatus(configured=True)
-
-    @api.delete("/api/session/provider-key", status_code=204)
-    def clear_provider_key(
-        identity: RequestIdentity = Depends(require_identity),
-    ) -> Response:
-        credential_store.delete(identity)
-        runtime.release_session(identity.owner_user_id, identity.session_id)
-        return Response(status_code=204)
+    api = APIRouter(dependencies=[Depends(local_request_identity)])
 
     @api.get("/api/conversations", response_model=ConversationHistoryResponse)
     def list_conversations(
-        identity: RequestIdentity = Depends(require_identity),
+        identity: RequestIdentity = Depends(local_request_identity),
     ) -> ConversationHistoryResponse:
         return ConversationHistoryResponse(
             items=[item.__dict__ for item in runtime.list_conversations(identity)]
@@ -343,7 +165,7 @@ def create_app(
     def rename_conversation(
         thread_id: str,
         request: RenameConversationRequest,
-        identity: RequestIdentity = Depends(require_identity),
+        identity: RequestIdentity = Depends(local_request_identity),
     ):
         record = runtime.rename_conversation(identity, thread_id, request.title)
         if record is None:
@@ -353,7 +175,7 @@ def create_app(
     @api.post("/api/conversations/{thread_id}/open")
     def open_conversation(
         thread_id: str,
-        identity: RequestIdentity = Depends(require_identity),
+        identity: RequestIdentity = Depends(local_request_identity),
     ):
         record = runtime.open_conversation(identity, thread_id)
         if record is None:
@@ -363,7 +185,7 @@ def create_app(
     @api.post("/api/conversations/{thread_id}/archive")
     def archive_conversation(
         thread_id: str,
-        identity: RequestIdentity = Depends(require_identity),
+        identity: RequestIdentity = Depends(local_request_identity),
     ):
         try:
             record = runtime.archive_conversation(identity, thread_id)
@@ -376,7 +198,7 @@ def create_app(
     @api.post("/api/conversations/{thread_id}/restore")
     def restore_conversation(
         thread_id: str,
-        identity: RequestIdentity = Depends(require_identity),
+        identity: RequestIdentity = Depends(local_request_identity),
     ):
         try:
             record = runtime.restore_conversation(identity, thread_id)
@@ -389,7 +211,7 @@ def create_app(
     @api.delete("/api/conversations/{thread_id}", status_code=204)
     def delete_conversation(
         thread_id: str,
-        identity: RequestIdentity = Depends(require_identity),
+        identity: RequestIdentity = Depends(local_request_identity),
     ) -> Response:
         try:
             deleted = runtime.delete_conversation(identity, thread_id)
@@ -402,7 +224,7 @@ def create_app(
     @api.post("/api/threads")
     def create_thread(
         request: CreateThreadRequest | None = None,
-        identity: RequestIdentity = Depends(require_identity),
+        identity: RequestIdentity = Depends(local_request_identity),
     ) -> CreateThreadResponse:
         settings = {"model_name": request.model_name} if request and request.model_name else None
         try:
@@ -412,26 +234,26 @@ def create_app(
 
     @api.get("/api/runtime")
     def runtime_info(
-        _identity: RequestIdentity = Depends(require_identity),
+        _identity: RequestIdentity = Depends(local_request_identity),
     ) -> RuntimeInfo:
         return runtime.runtime_info()
 
     @api.get("/api/runtime/options")
     def runtime_options(
-        _identity: RequestIdentity = Depends(require_identity),
+        _identity: RequestIdentity = Depends(local_request_identity),
     ) -> RuntimeOptions:
         return runtime.runtime_options()
 
     @api.get("/api/threads/{thread_id}/state")
     def get_thread_state(
         thread_id: str,
-        identity: RequestIdentity = Depends(require_identity),
+        identity: RequestIdentity = Depends(local_request_identity),
     ) -> ApiThreadState:
         try:
             return runtime.state(
                 identity,
                 thread_id,
-                provider_api_key=credential_store.get(identity),
+                provider_api_key=provider_api_key,
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Conversation not found") from exc
@@ -444,7 +266,7 @@ def create_app(
         thread_id: str,
         http_request: Request,
         files: list[UploadFile] = File(...),
-        identity: RequestIdentity = Depends(require_identity),
+        identity: RequestIdentity = Depends(local_request_identity),
     ) -> AttachmentUploadResult:
         try:
             runtime.authorize_thread(identity, thread_id)
@@ -483,7 +305,7 @@ def create_app(
     def discard_staged_attachment(
         thread_id: str,
         attachment_id: str,
-        identity: RequestIdentity = Depends(require_identity),
+        identity: RequestIdentity = Depends(local_request_identity),
     ) -> Response:
         try:
             runtime.discard_staged_attachment(identity, thread_id, attachment_id)
@@ -498,7 +320,7 @@ def create_app(
     def get_conversation_attachment(
         thread_id: str,
         attachment_id: str,
-        identity: RequestIdentity = Depends(require_identity),
+        identity: RequestIdentity = Depends(local_request_identity),
     ) -> Response:
         try:
             artifact = runtime.conversation_attachment_bytes(
@@ -527,7 +349,7 @@ def create_app(
         thread_id: str,
         dataset_id: str,
         limit: int = 100,
-        identity: RequestIdentity = Depends(require_identity),
+        identity: RequestIdentity = Depends(local_request_identity),
     ) -> DatasetPreview:
         try:
             return runtime.dataset_preview(identity, thread_id, dataset_id, limit=limit)
@@ -546,7 +368,7 @@ def create_app(
     def dataset_schema(
         thread_id: str,
         dataset_id: str,
-        identity: RequestIdentity = Depends(require_identity),
+        identity: RequestIdentity = Depends(local_request_identity),
     ) -> DatasetSchemaResponse:
         try:
             return runtime.dataset_schema(identity, thread_id, dataset_id)
@@ -565,7 +387,7 @@ def create_app(
     def dataset_provenance(
         thread_id: str,
         dataset_id: str,
-        identity: RequestIdentity = Depends(require_identity),
+        identity: RequestIdentity = Depends(local_request_identity),
     ) -> DatasetProvenance:
         try:
             return runtime.dataset_provenance(identity, thread_id, dataset_id)
@@ -581,7 +403,7 @@ def create_app(
     def analysis_result(
         thread_id: str,
         analysis_id: str,
-        identity: RequestIdentity = Depends(require_identity),
+        identity: RequestIdentity = Depends(local_request_identity),
     ) -> CompletedAnalysisResult:
         try:
             return runtime.analysis_result(identity, thread_id, analysis_id)
@@ -594,7 +416,7 @@ def create_app(
     def dataset_download(
         thread_id: str,
         dataset_id: str,
-        identity: RequestIdentity = Depends(require_identity),
+        identity: RequestIdentity = Depends(local_request_identity),
     ) -> Response:
         try:
             content = runtime.dataset_csv_bytes(identity, thread_id, dataset_id)
@@ -617,7 +439,7 @@ def create_app(
     def file_artifact(
         thread_id: str,
         artifact_id: str,
-        identity: RequestIdentity = Depends(require_identity),
+        identity: RequestIdentity = Depends(local_request_identity),
     ) -> Response:
         try:
             artifact = runtime.file_artifact_bytes(identity, thread_id, artifact_id)
@@ -647,7 +469,7 @@ def create_app(
         thread_id: str,
         artifact_id: str,
         limit: int = 100,
-        identity: RequestIdentity = Depends(require_identity),
+        identity: RequestIdentity = Depends(local_request_identity),
     ) -> TablePreview:
         try:
             return runtime.table_preview(identity, thread_id, artifact_id, limit=limit)
@@ -660,7 +482,7 @@ def create_app(
     def submit_message(
         thread_id: str,
         request: SubmitMessageRequest,
-        identity: RequestIdentity = Depends(require_identity),
+        identity: RequestIdentity = Depends(local_request_identity),
     ) -> ApiThreadState:
         provider_key = provider_key_for_work(identity, thread_id)
         try:
@@ -686,7 +508,7 @@ def create_app(
     @api.post("/api/threads/{thread_id}/cancel")
     def cancel_run(
         thread_id: str,
-        identity: RequestIdentity = Depends(require_identity),
+        identity: RequestIdentity = Depends(local_request_identity),
     ) -> ApiThreadState:
         try:
             cancel_run_parameters = inspect.signature(runtime.cancel_run).parameters
@@ -709,7 +531,7 @@ def create_app(
         thread_id: str,
         interrupt_id: str,
         request: ResumeInterruptRequest,
-        identity: RequestIdentity = Depends(require_identity),
+        identity: RequestIdentity = Depends(local_request_identity),
     ) -> ApiThreadState:
         provider_key = provider_key_for_work(identity, thread_id)
         try:
@@ -733,7 +555,7 @@ def create_app(
     @api.post("/api/threads/{thread_id}/reset")
     def reset_thread(
         thread_id: str,
-        identity: RequestIdentity = Depends(require_identity),
+        identity: RequestIdentity = Depends(local_request_identity),
     ) -> ResetThreadResponse:
         try:
             return ResetThreadResponse(thread_id=runtime.reset(identity, thread_id))
@@ -743,7 +565,7 @@ def create_app(
     @api.get("/api/threads/{thread_id}/export")
     def export_thread(
         thread_id: str,
-        identity: RequestIdentity = Depends(require_identity),
+        identity: RequestIdentity = Depends(local_request_identity),
     ) -> Response:
         try:
             content = json.dumps(runtime.export_thread(identity, thread_id), indent=2).encode("utf-8")
@@ -760,7 +582,7 @@ def create_app(
     @api.get("/api/threads/{thread_id}/export.zip")
     def export_thread_archive(
         thread_id: str,
-        identity: RequestIdentity = Depends(require_identity),
+        identity: RequestIdentity = Depends(local_request_identity),
     ) -> Response:
         try:
             content = runtime.export_thread_archive(identity, thread_id)

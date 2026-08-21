@@ -751,7 +751,9 @@ class CancelApiRuntime:
 
 def test_cancel_endpoint_returns_the_cancelled_thread_state() -> None:
     runtime = CancelApiRuntime()
-    client = TestClient(create_app(runtime=runtime))
+    client = TestClient(
+        create_app(runtime=runtime, provider_api_key="test-provider-key")
+    )
 
     response = client.post("/api/threads/thread-1/cancel")
 
@@ -761,7 +763,12 @@ def test_cancel_endpoint_returns_the_cancelled_thread_state() -> None:
 
 
 def test_cancel_endpoint_returns_not_found_for_unknown_thread() -> None:
-    client = TestClient(create_app(runtime=CancelApiRuntime(missing=True)))
+    client = TestClient(
+        create_app(
+            runtime=CancelApiRuntime(missing=True),
+            provider_api_key="test-provider-key",
+        )
+    )
 
     response = client.post("/api/threads/missing/cancel")
 
@@ -770,7 +777,10 @@ def test_cancel_endpoint_returns_not_found_for_unknown_thread() -> None:
 
 def test_cancel_endpoint_returns_structured_restore_failure() -> None:
     client = TestClient(
-        create_app(runtime=CancelApiRuntime(restore_failure=True))
+        create_app(
+            runtime=CancelApiRuntime(restore_failure=True),
+            provider_api_key="test-provider-key",
+        )
     )
 
     response = client.post("/api/threads/thread-1/cancel")

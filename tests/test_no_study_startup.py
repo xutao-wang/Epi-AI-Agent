@@ -17,126 +17,13 @@ from epi_agent.protocol import ToolContext, ToolExecutionError
 from epi_agent.studies import StudyBundle, StudyRegistry
 from epi_agent.tool_packs.publication import build_publication_tool_registry
 from graph.state import MetaKeys
-from api.auth import (
-    AuthenticatedUser,
-    CognitoTokenVerifier,
-    LOCAL_SESSION_ID,
-    LocalTokenVerifier,
-    RequestIdentity,
-)
-from api.deployment import python_worker_launcher
+from api.auth import LOCAL_REQUEST_IDENTITY
 from utils.attachment_artifacts import LocalAttachmentStore
 from utils.attachment_readers import AttachmentReaderService
 from utils.model_runtime_profiles import model_runtime_profile
 
 
-@pytest.mark.parametrize(
-    ("configured", "expected"),
-    [
-        ("", None),
-        (
-            "/usr/local/libexec/epi-agent-python-worker",
-            (
-                "/usr/bin/sudo",
-                "-n",
-                "/usr/local/libexec/epi-agent-python-worker",
-            ),
-        ),
-        (
-            "/usr/bin/sudo -n /usr/local/libexec/epi-agent-python-worker",
-            (
-                "/usr/bin/sudo",
-                "-n",
-                "/usr/local/libexec/epi-agent-python-worker",
-            ),
-        ),
-    ],
-)
-def test_python_worker_launcher_reads_the_hosted_launcher_setting(
-    configured: str,
-    expected: tuple[str, ...] | None,
-) -> None:
-    assert python_worker_launcher(
-        {"REPORT_AGENT_PYTHON_WORKER_LAUNCHER": configured}
-    ) == expected
-
-
-@pytest.mark.parametrize(
-    "configured",
-    [
-        "relative-launcher",
-        "/usr/local/worker\n",
-        "/usr/local/worker\x00",
-        "/usr/local/libexec/alternate-worker",
-        "/usr/local/libexec/epi-agent-python-worker --fixed-option",
-    ],
-)
-def test_python_worker_launcher_rejects_unsafe_hosted_configuration(
-    configured: str,
-) -> None:
-    with pytest.raises(ValueError):
-        python_worker_launcher(
-            {"REPORT_AGENT_PYTHON_WORKER_LAUNCHER": configured}
-        )
-
-
-def test_application_routes_hosted_python_through_the_fixed_launcher(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import api.app as app_module
-    from api.runtime import GraphBuildContext
-    from utils.user_storage import UserStorageLayout
-
-    captured: dict[str, Any] = {}
-    monkeypatch.setattr(app_module, "build_openai_llm", lambda **_kwargs: "llm")
-    monkeypatch.setattr(
-        app_module,
-        "build_graph",
-        lambda _llm, **kwargs: captured.update(kwargs) or "graph",
-    )
-    application = app_module.build_application(
-        environ={
-            "REPORT_AGENT_AUTH_MODE": "cognito",
-            "REPORT_AGENT_AWS_REGION": "us-east-1",
-            "REPORT_AGENT_COGNITO_USER_POOL_ID": "us-east-1_example",
-            "REPORT_AGENT_COGNITO_APP_CLIENT_ID": "client-123",
-            "REPORT_AGENT_COGNITO_LOGOUT_ENDPOINT": "https://auth.example.test/logout",
-            "REPORT_AGENT_AUTH_REDIRECT_URI": "https://example.test/callback",
-            "REPORT_AGENT_AUTH_POST_LOGOUT_REDIRECT_URI": "https://example.test/",
-            "REPORT_AGENT_RUNTIME_ROOT": str(tmp_path / "runtime"),
-            "REPORT_AGENT_STUDY_ROOT": str(tmp_path / "studies"),
-            "REPORT_AGENT_ALLOWED_MODELS": "gpt-5.4",
-            "OPENAI_MODEL": "gpt-5.4",
-            "REPORT_AGENT_TITLE_MODEL": "gpt-5.4",
-            "REPORT_AGENT_PYTHON_WORKER_LAUNCHER": (
-                "/usr/local/libexec/epi-agent-python-worker"
-            ),
-        }
-    )
-    storage = UserStorageLayout(tmp_path / "runtime").thread("user-a", "thread-a")
-
-    application.state.report_agent_runtime.graph_factory(
-        SimpleNamespace(model_name="gpt-5.4", temperature=None, top_p=None),
-        GraphBuildContext(
-            owner_user_id="user-a",
-            session_id="11111111-1111-4111-8111-111111111111",
-            thread_id="thread-a",
-            provider_api_key="session-key",
-            storage=storage,
-        ),
-    )
-
-    python_runtime = captured["python_runtime"]
-    assert python_runtime._runtime_root == storage.execution.resolve()
-    assert python_runtime._worker_launcher == (
-        "/usr/bin/sudo",
-        "-n",
-        "/usr/local/libexec/epi-agent-python-worker",
-    )
-
-
-def test_graph_factory_binds_all_studies_with_the_session_key(
+def test_graph_factory_binds_all_studies_with_the_provider_key(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -207,13 +94,7 @@ def test_graph_factory_binds_all_studies_with_the_session_key(
     )
     application = app_module.build_application(
         environ={
-            "REPORT_AGENT_AUTH_MODE": "cognito",
-            "REPORT_AGENT_AWS_REGION": "us-east-1",
-            "REPORT_AGENT_COGNITO_USER_POOL_ID": "us-east-1_example",
-            "REPORT_AGENT_COGNITO_APP_CLIENT_ID": "client-123",
-            "REPORT_AGENT_COGNITO_LOGOUT_ENDPOINT": "https://auth.example.test/logout",
-            "REPORT_AGENT_AUTH_REDIRECT_URI": "https://example.test/callback",
-            "REPORT_AGENT_AUTH_POST_LOGOUT_REDIRECT_URI": "https://example.test/",
+            "OPENAI_API_KEY": "startup-provider-key",
             "REPORT_AGENT_RUNTIME_ROOT": str(tmp_path / "runtime"),
             "REPORT_AGENT_STUDY_ROOT": str(tmp_path / "studies"),
             "REPORT_AGENT_ALLOWED_MODELS": "gpt-5.4",
@@ -246,148 +127,74 @@ def test_graph_factory_binds_all_studies_with_the_session_key(
     assert "session-key" not in repr(graph_kwargs)
 
 
-def test_startup_claims_legacy_history_only_in_local_mode(tmp_path: Path) -> None:
-    from api.app import _history_store_for_auth_mode
+def test_startup_claims_legacy_history_for_local_user(tmp_path: Path) -> None:
+    from api.app import _history_store
 
-    def create_legacy_history(db_path: Path) -> None:
-        with sqlite3.connect(db_path) as connection:
-            connection.execute(
-                """
-                CREATE TABLE conversation_history (
-                    thread_id TEXT PRIMARY KEY,
-                    title TEXT NOT NULL,
-                    title_source TEXT NOT NULL,
-                    model_name TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    last_opened_at TEXT,
-                    archived_at TEXT
-                )
-                """
+    with sqlite3.connect(tmp_path / "history.db") as connection:
+        connection.execute(
+            """
+            CREATE TABLE conversation_history (
+                thread_id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                title_source TEXT NOT NULL,
+                model_name TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_opened_at TEXT,
+                archived_at TEXT
             )
-            connection.execute(
-                """
-                INSERT INTO conversation_history
-                VALUES ('legacy-thread', 'Legacy', 'automatic', 'gpt-5.4',
-                        '2026-08-06T00:00:00+00:00',
-                        '2026-08-06T00:00:00+00:00', NULL, NULL)
-                """
-            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO conversation_history
+            VALUES ('legacy-thread', 'Legacy', 'automatic', 'gpt-5.4',
+                    '2026-08-06T00:00:00+00:00',
+                    '2026-08-06T00:00:00+00:00', NULL, NULL)
+            """
+        )
 
-    local_path = tmp_path / "local.db"
-    create_legacy_history(local_path)
-    local_store = _history_store_for_auth_mode(local_path, auth_mode="local")
-    assert [item.thread_id for item in local_store.list("local-user")] == ["legacy-thread"]
+    store = _history_store(tmp_path / "history.db")
 
-    cognito_path = tmp_path / "cognito.db"
-    create_legacy_history(cognito_path)
-    cognito_store = _history_store_for_auth_mode(cognito_path, auth_mode="cognito")
-    assert cognito_store.list("local-user") == []
-    assert cognito_store.claim_unowned("other-user") == 1
+    assert [item.thread_id for item in store.list("local-user")] == ["legacy-thread"]
 
 
-def test_application_factory_seeds_only_the_fixed_local_session(
+def test_application_factory_uses_fixed_local_identity(
     tmp_path: Path,
 ) -> None:
     from api.app import build_application
 
     application = build_application(
         environ={
-            "REPORT_AGENT_AUTH_MODE": "local",
             "REPORT_AGENT_RUNTIME_ROOT": str(tmp_path / "runtime"),
             "REPORT_AGENT_STUDY_ROOT": str(tmp_path / "studies"),
             "REPORT_AGENT_ALLOWED_MODELS": "gpt-5.4",
             "OPENAI_MODEL": "gpt-5.4",
             "REPORT_AGENT_TITLE_MODEL": "gpt-5.4",
-            "OPENAI_API_KEY": "local-session-key",
+            "OPENAI_API_KEY": "local-environment-key",
         }
     )
-    identity = RequestIdentity(
-        user=AuthenticatedUser(owner_user_id="local-user"),
-        session_id=LOCAL_SESSION_ID,
-    )
 
-    assert isinstance(application.state.token_verifier, LocalTokenVerifier)
-    assert application.state.provider_credential_store.get(identity) == (
-        "local-session-key"
+    assert not hasattr(application.state, "token_verifier")
+    assert not hasattr(application.state, "provider_credential_store")
+    thread_id = application.state.report_agent_runtime.create_thread(
+        LOCAL_REQUEST_IDENTITY
     )
-    thread_id = application.state.report_agent_runtime.create_thread(identity)
     assert application.state.report_agent_runtime._threads[
         ("local-user", thread_id)
     ].app is None
 
 
-def test_application_factory_cognito_mode_starts_without_credentials(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
+def test_application_factory_requires_local_openai_key(tmp_path: Path) -> None:
     from api.app import build_application
 
-    monkeypatch.setenv("OPENAI_API_KEY", "must-not-seed-cognito")
-    application = build_application(
-        environ={
-            "REPORT_AGENT_AUTH_MODE": "cognito",
-            "REPORT_AGENT_AWS_REGION": "us-east-1",
-            "REPORT_AGENT_COGNITO_USER_POOL_ID": "us-east-1_example",
-            "REPORT_AGENT_COGNITO_APP_CLIENT_ID": "client-123",
-            "REPORT_AGENT_COGNITO_LOGOUT_ENDPOINT": "https://auth.example.test/logout",
-            "REPORT_AGENT_AUTH_REDIRECT_URI": "https://example.test/callback",
-            "REPORT_AGENT_AUTH_POST_LOGOUT_REDIRECT_URI": "https://example.test/",
-            "REPORT_AGENT_RUNTIME_ROOT": str(tmp_path / "runtime"),
-            "REPORT_AGENT_STUDY_ROOT": str(tmp_path / "studies"),
-            "REPORT_AGENT_ALLOWED_MODELS": "gpt-5.4",
-            "OPENAI_MODEL": "gpt-5.4",
-            "REPORT_AGENT_TITLE_MODEL": "gpt-5.4",
-        }
-    )
-    identity = RequestIdentity(
-        user=AuthenticatedUser(owner_user_id="user-a"),
-        session_id="11111111-1111-4111-8111-111111111111",
-    )
-
-    assert isinstance(application.state.token_verifier, CognitoTokenVerifier)
-    assert application.state.provider_credential_store.get(identity) is None
-    assert application.state.report_agent_runtime.runtime_root == tmp_path / "runtime"
-
-
-def test_application_factory_binds_credential_expiry_to_runtime_release(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import api.app as app_module
-    from api.provider_credentials import ProviderCredentialStore
-
-    configured: dict[str, Any] = {}
-
-    def credential_store_factory(**kwargs: Any) -> ProviderCredentialStore:
-        configured.update(kwargs)
-        return ProviderCredentialStore(**kwargs)
-
-    monkeypatch.setattr(
-        app_module,
-        "ProviderCredentialStore",
-        credential_store_factory,
-    )
-    application = app_module.build_application(
-        environ={
-            "REPORT_AGENT_AUTH_MODE": "cognito",
-            "REPORT_AGENT_AWS_REGION": "us-east-1",
-            "REPORT_AGENT_COGNITO_USER_POOL_ID": "us-east-1_example",
-            "REPORT_AGENT_COGNITO_APP_CLIENT_ID": "client-123",
-            "REPORT_AGENT_COGNITO_LOGOUT_ENDPOINT": "https://auth.example.test/logout",
-            "REPORT_AGENT_AUTH_REDIRECT_URI": "https://example.test/callback",
-            "REPORT_AGENT_AUTH_POST_LOGOUT_REDIRECT_URI": "https://example.test/",
-            "REPORT_AGENT_RUNTIME_ROOT": str(tmp_path / "runtime"),
-            "REPORT_AGENT_STUDY_ROOT": str(tmp_path / "studies"),
-            "REPORT_AGENT_ALLOWED_MODELS": "gpt-5.4",
-            "OPENAI_MODEL": "gpt-5.4",
-            "REPORT_AGENT_TITLE_MODEL": "gpt-5.4",
-        }
-    )
-
-    callback = configured["on_expire"]
-    assert callback.__self__ is application.state.report_agent_runtime
-    assert callback.__func__ is type(application.state.report_agent_runtime).release_session
+    with pytest.raises(ValueError, match="OPENAI_API_KEY is required"):
+        build_application(
+            environ={
+                "REPORT_AGENT_RUNTIME_ROOT": str(tmp_path / "runtime"),
+                "REPORT_AGENT_STUDY_ROOT": str(tmp_path / "studies"),
+            }
+        )
 
 
 class _FinalModel:
@@ -737,3 +544,4 @@ def test_optional_tool_context_has_no_unguarded_study_dereferences() -> None:
                 unsafe.append(f"{path}:{line_number}")
 
     assert unsafe == []
+

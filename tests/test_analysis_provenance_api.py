@@ -154,7 +154,7 @@ def test_provenance_routes_expose_lineage_contracts(tmp_path) -> None:
     runtime = _runtime(store, runtime_root=str(tmp_path))
     analysis_id = _analysis_id(store)
     client = TestClient(
-        create_app(runtime=runtime),
+        create_app(runtime=runtime, provider_api_key="test-provider-key"),
         headers={"X-Epi-Session-Id": LOCAL_SESSION_ID},
     )
 
@@ -178,7 +178,7 @@ def test_provenance_routes_do_not_expose_cancelled_analysis(tmp_path) -> None:
     runtime = _runtime(store, runtime_root=str(tmp_path))
     analysis_id = _analysis_id(store)
     client = TestClient(
-        create_app(runtime=runtime),
+        create_app(runtime=runtime, provider_api_key="test-provider-key"),
         headers={"X-Epi-Session-Id": LOCAL_SESSION_ID},
     )
 

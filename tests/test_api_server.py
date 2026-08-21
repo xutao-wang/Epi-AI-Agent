@@ -5,11 +5,6 @@ from pathlib import Path
 import zipfile
 
 from fastapi.testclient import TestClient
-from jwt.exceptions import InvalidTokenError
-
-from api.auth import AuthenticatedUser, LOCAL_SESSION_ID, RequestIdentity
-from api.deployment import DeploymentState
-from api.provider_credentials import ProviderCredentialStore
 from api.runtime import ThreadAlreadyRunningError, ThreadAwaitingReviewError
 from api.schemas import (
     ApiThreadState,
@@ -28,7 +23,6 @@ from api.conversation_history import ConversationSummary
 from api.server import create_app
 from utils.attachment_artifacts import AttachmentLimits
 from utils.model_runtime_profiles import model_runtime_profile
-from utils.provider_startup import ProviderCredentialError
 
 
 class _FakeRuntime:
@@ -332,212 +326,10 @@ class _FakeRuntime:
         }
 
 
-def _client(
-    runtime: _FakeRuntime,
-    *,
-    with_provider_key: bool = True,
-) -> TestClient:
-    credential_store = ProviderCredentialStore()
-    if with_provider_key:
-        credential_store.put(
-            RequestIdentity(
-                user=AuthenticatedUser(owner_user_id="local-user"),
-                session_id=LOCAL_SESSION_ID,
-            ),
-            "session-provider-key",
-        )
+def _client(runtime: _FakeRuntime) -> TestClient:
     return TestClient(
-        create_app(runtime=runtime, credential_store=credential_store),
-        headers={"X-Epi-Session-ID": LOCAL_SESSION_ID},
+        create_app(runtime=runtime, provider_api_key="test-provider-key"),
     )
-
-
-class _RecordingProviderKeyValidator:
-    def __init__(self, error: ProviderCredentialError | None = None) -> None:
-        self.error = error
-        self.calls: list[tuple[str, str]] = []
-
-    def validate(self, provider: str, api_key: str) -> None:
-        self.calls.append((provider, api_key))
-        if self.error is not None:
-            raise self.error
-
-
-class _RejectingTokenVerifier:
-    def verify(self, _authorization: str | None) -> AuthenticatedUser:
-        raise InvalidTokenError("expired access token")
-
-
-def test_request_prunes_expired_credentials_before_authentication() -> None:
-    runtime = _FakeRuntime()
-    clocks = {"monotonic": 10.0, "wall": 100.0}
-    identity = RequestIdentity(
-        user=AuthenticatedUser(
-            owner_user_id="user-a",
-            token_expires_at_epoch=101,
-        ),
-        session_id="11111111-1111-4111-8111-111111111111",
-    )
-    store = ProviderCredentialStore(
-        monotonic_clock=lambda: clocks["monotonic"],
-        wall_clock=lambda: clocks["wall"],
-        on_expire=runtime.release_session,
-    )
-    store.put(identity, "expired-session-key")
-    clocks["wall"] = 101.0
-    client = TestClient(
-        create_app(
-            runtime=runtime,
-            credential_store=store,
-            token_verifier=_RejectingTokenVerifier(),
-        ),
-        headers={
-            "Authorization": "Bearer expired-token",
-            "X-Epi-Session-ID": identity.session_id,
-        },
-    )
-
-    response = client.get("/api/session/provider-key")
-
-    assert response.status_code == 401
-    assert runtime.released_sessions == [("user-a", identity.session_id)]
-    assert store.prune_expired() == 0
-
-
-def test_provider_key_routes_report_status_store_after_validation_and_clear_session() -> None:
-    runtime = _FakeRuntime()
-    store = ProviderCredentialStore()
-    validator = _RecordingProviderKeyValidator()
-    client = TestClient(
-        create_app(
-            runtime=runtime,
-            credential_store=store,
-            provider_key_validator=validator,
-        ),
-        headers={"X-Epi-Session-ID": LOCAL_SESSION_ID},
-    )
-
-    before = client.get("/api/session/provider-key")
-    configured = client.put(
-        "/api/session/provider-key",
-        json={"api_key": "  example-user-key  "},
-    )
-    after = client.get("/api/session/provider-key")
-
-    assert before.status_code == 200
-    assert before.json() == {"configured": False}
-    assert configured.status_code == 200
-    assert configured.json() == {"configured": True}
-    assert "example-user-key" not in configured.text
-    assert validator.calls == [("openai", "example-user-key")]
-    assert runtime.released_sessions == [("local-user", LOCAL_SESSION_ID)]
-    assert after.json() == {"configured": True}
-
-    cleared = client.delete("/api/session/provider-key")
-
-    assert cleared.status_code == 204
-    assert client.get("/api/session/provider-key").json() == {"configured": False}
-    assert runtime.released_sessions == [
-        ("local-user", LOCAL_SESSION_ID),
-        ("local-user", LOCAL_SESSION_ID),
-    ]
-
-
-def test_replacing_provider_key_releases_session_after_each_success() -> None:
-    runtime = _FakeRuntime()
-    store = ProviderCredentialStore()
-    validator = _RecordingProviderKeyValidator()
-    client = TestClient(
-        create_app(
-            runtime=runtime,
-            credential_store=store,
-            provider_key_validator=validator,
-        ),
-        headers={"X-Epi-Session-ID": LOCAL_SESSION_ID},
-    )
-
-    first = client.put(
-        "/api/session/provider-key",
-        json={"api_key": "first-user-key"},
-    )
-    replacement = client.put(
-        "/api/session/provider-key",
-        json={"api_key": "replacement-user-key"},
-    )
-
-    assert first.status_code == 200
-    assert replacement.status_code == 200
-    assert runtime.released_sessions == [
-        ("local-user", LOCAL_SESSION_ID),
-        ("local-user", LOCAL_SESSION_ID),
-    ]
-    assert validator.calls == [
-        ("openai", "first-user-key"),
-        ("openai", "replacement-user-key"),
-    ]
-
-
-def test_provider_key_validation_failure_does_not_store_or_echo_submitted_key() -> None:
-    runtime = _FakeRuntime()
-    rejected_key = "submitted-secret"
-    raw_kind = f"validator-kind-{rejected_key}"
-    store = ProviderCredentialStore()
-    validator = _RecordingProviderKeyValidator(
-        ProviderCredentialError(raw_kind, "The provider rejected this key.")
-    )
-    client = TestClient(
-        create_app(
-            runtime=runtime,
-            credential_store=store,
-            provider_key_validator=validator,
-        ),
-        headers={"X-Epi-Session-ID": LOCAL_SESSION_ID},
-    )
-
-    response = client.put(
-        "/api/session/provider-key",
-        json={"api_key": rejected_key},
-    )
-
-    assert response.status_code == 400
-    assert response.json() == {
-        "detail": {
-            "kind": "PROVIDER_KEY_INVALID",
-            "message": "The provider rejected this key.",
-        }
-    }
-    assert rejected_key not in response.text
-    assert raw_kind not in response.text
-    assert store.has(
-        type("Identity", (), {"owner_user_id": "local-user", "session_id": LOCAL_SESSION_ID})()
-    ) is False
-
-
-def test_provider_key_schema_rejection_never_echoes_submitted_key() -> None:
-    submitted_key = "very-long-submitted-secret-" * 200
-    client = TestClient(
-        create_app(runtime=_FakeRuntime()),
-        headers={"X-Epi-Session-ID": LOCAL_SESSION_ID},
-    )
-
-    response = client.put(
-        "/api/session/provider-key",
-        json={"api_key": submitted_key},
-    )
-
-    assert response.status_code == 422
-    assert submitted_key not in response.text
-
-
-def test_provider_key_routes_require_a_valid_request_identity() -> None:
-    client = TestClient(create_app(runtime=_FakeRuntime()))
-
-    assert client.get("/api/session/provider-key").status_code == 400
-    assert client.put(
-        "/api/session/provider-key",
-        json={"api_key": "example-user-key"},
-    ).status_code == 400
-    assert client.delete("/api/session/provider-key").status_code == 400
 
 
 def test_health_route_returns_ok_without_touching_runtime() -> None:
@@ -551,82 +343,6 @@ def test_health_route_returns_ok_without_touching_runtime() -> None:
     assert runtime.created_threads == 0
 
 
-def test_deployment_status_routes_and_maintenance_drain(tmp_path: Path) -> None:
-    sentinel = tmp_path / "maintenance"
-    deployment_state = DeploymentState(
-        maintenance_file=sentinel,
-        release_id="release-1",
-    )
-    runtime = _FakeRuntime()
-    anonymous_client = TestClient(
-        create_app(runtime=runtime, deployment_state=deployment_state),
-    )
-    client = TestClient(
-        create_app(runtime=runtime, deployment_state=deployment_state),
-        headers={"X-Epi-Session-ID": LOCAL_SESSION_ID},
-    )
-
-    assert anonymous_client.get("/api/health").json() == {"status": "ok"}
-    assert anonymous_client.get("/api/readiness").json() == {
-        "status": "ready",
-        "release_id": "release-1",
-    }
-    assert anonymous_client.get("/api/ops/deployment-status").json() == {
-        "status": "ready",
-        "release_id": "release-1",
-        "maintenance": False,
-        "active_runs": 0,
-    }
-
-    sentinel.touch()
-
-    readiness = anonymous_client.get("/api/readiness")
-    operations = anonymous_client.get("/api/ops/deployment-status")
-    history = client.get("/api/conversations")
-    created = client.post("/api/threads")
-
-    assert readiness.status_code == 503
-    assert readiness.json() == {"status": "maintenance", "release_id": "release-1"}
-    assert operations.status_code == 200
-    assert operations.json() == {
-        "status": "maintenance",
-        "release_id": "release-1",
-        "maintenance": True,
-        "active_runs": 0,
-    }
-    assert history.status_code == 200
-    assert created.status_code == 503
-    assert created.json() == {"detail": {"code": "DEPLOYMENT_MAINTENANCE"}}
-    assert created.headers["Retry-After"] == "30"
-
-
-def test_maintenance_rejects_unsafe_requests_before_credential_pruning(
-    tmp_path: Path,
-) -> None:
-    class _FailingPruneCredentialStore(ProviderCredentialStore):
-        def prune_expired(self) -> int:
-            raise AssertionError("credential pruning should not run")
-
-    sentinel = tmp_path / "maintenance"
-    sentinel.touch()
-    client = TestClient(
-        create_app(
-            runtime=_FakeRuntime(),
-            credential_store=_FailingPruneCredentialStore(),
-            deployment_state=DeploymentState(
-                maintenance_file=sentinel,
-                release_id="release-1",
-            ),
-        ),
-        headers={"X-Epi-Session-ID": LOCAL_SESSION_ID},
-        raise_server_exceptions=False,
-    )
-
-    response = client.post("/api/threads")
-
-    assert response.status_code == 503
-
-
 def test_static_frontend_serves_index_and_assets(tmp_path: Path) -> None:
     static_dir = tmp_path / "dist"
     assets_dir = static_dir / "assets"
@@ -637,8 +353,11 @@ def test_static_frontend_serves_index_and_assets(tmp_path: Path) -> None:
     )
     (assets_dir / "app.js").write_text("console.log('report-agent')", encoding="utf-8")
     client = TestClient(
-        create_app(runtime=_FakeRuntime(), static_dir=static_dir),
-        headers={"X-Epi-Session-ID": LOCAL_SESSION_ID},
+        create_app(
+            runtime=_FakeRuntime(),
+            static_dir=static_dir,
+            provider_api_key="test-provider-key",
+        ),
     )
 
     index_response = client.get("/")
@@ -1022,30 +741,7 @@ def test_attachment_upload_rejects_oversized_file_before_runtime_staging() -> No
     assert not hasattr(runtime, "uploaded")
 
 
-def test_provider_triggering_routes_require_the_exact_session_key() -> None:
-    runtime = _FakeRuntime()
-    client = _client(runtime, with_provider_key=False)
-
-    submit = client.post(
-        "/api/threads/thread-1/messages",
-        json={"text": "Create a cohort"},
-    )
-    resume = client.post(
-        "/api/threads/thread-1/interrupts/interrupt-1/resume",
-        json={"action": "approve", "selected_column_keys": ["age"]},
-    )
-
-    expected = {"detail": {"code": "PROVIDER_KEY_REQUIRED"}}
-    assert submit.status_code == 428
-    assert submit.json() == expected
-    assert resume.status_code == 428
-    assert resume.json() == expected
-    assert runtime.authorized_threads == ["thread-1", "thread-1"]
-    assert runtime.submitted_messages == []
-    assert runtime.resumed_interrupts == []
-
-
-def test_provider_triggering_routes_forward_the_session_key_only_to_work() -> None:
+def test_provider_triggering_routes_forward_the_environment_key_to_work() -> None:
     runtime = _FakeRuntime()
     client = _client(runtime)
 
@@ -1058,13 +754,13 @@ def test_provider_triggering_routes_forward_the_session_key_only_to_work() -> No
         json={"action": "approve", "selected_column_keys": ["age"]},
     ).status_code == 200
 
-    assert runtime.submitted_provider_keys == ["session-provider-key"]
-    assert runtime.resumed_provider_keys == ["session-provider-key"]
+    assert runtime.submitted_provider_keys == ["test-provider-key"]
+    assert runtime.resumed_provider_keys == ["test-provider-key"]
 
 
-def test_read_only_and_empty_thread_routes_remain_usable_without_a_key() -> None:
+def test_read_only_and_empty_thread_routes_remain_usable_locally() -> None:
     runtime = _FakeRuntime()
-    client = _client(runtime, with_provider_key=False)
+    client = _client(runtime)
 
     responses = [
         client.get("/api/conversations"),
@@ -1084,16 +780,16 @@ def test_read_only_and_empty_thread_routes_remain_usable_without_a_key() -> None
     ]
 
     assert [response.status_code for response in responses] == [200] * len(responses)
-    assert runtime.state_provider_keys == [None]
+    assert runtime.state_provider_keys == ["test-provider-key"]
 
 
-def test_state_uses_an_available_key_for_owner_aware_checkpoint_recovery() -> None:
+def test_state_uses_the_environment_key_for_owner_aware_checkpoint_recovery() -> None:
     runtime = _FakeRuntime()
 
     response = _client(runtime).get("/api/threads/thread-1/state")
 
     assert response.status_code == 200
-    assert runtime.state_provider_keys == ["session-provider-key"]
+    assert runtime.state_provider_keys == ["test-provider-key"]
 
 
 def test_attachment_upload_rejects_aggregate_and_count_limits() -> None:
