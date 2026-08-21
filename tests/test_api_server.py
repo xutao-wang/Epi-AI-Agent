@@ -5,7 +5,11 @@ from pathlib import Path
 import zipfile
 
 from fastapi.testclient import TestClient
-from api.runtime import ThreadAlreadyRunningError, ThreadAwaitingReviewError
+from api.runtime import (
+    ModelReplacementRequiredError,
+    ThreadAlreadyRunningError,
+    ThreadAwaitingReviewError,
+)
 from api.schemas import (
     ApiThreadState,
     AttachmentUploadResult,
@@ -196,6 +200,8 @@ class _FakeRuntime:
             raise ThreadAlreadyRunningError(thread_id)
         if text == "awaiting-review":
             raise ThreadAwaitingReviewError(thread_id)
+        if text == "replacement-required":
+            raise ModelReplacementRequiredError("gpt-5.6-terra")
         self.submitted_messages.append((thread_id, text, attachment_ids))
         self.submitted_models.append(model_name)
         self.submitted_provider_keys.append(provider_api_key)
@@ -600,6 +606,20 @@ def test_duplicate_running_submit_returns_409_conflict() -> None:
 
     assert response.status_code == 409
     assert response.json() == {"detail": "Thread thread-1 is already running"}
+    assert runtime.submitted_messages == []
+
+
+def test_unavailable_historical_model_submit_returns_409_conflict() -> None:
+    runtime = _FakeRuntime()
+    client = _client(runtime)
+
+    response = client.post(
+        "/api/threads/thread-1/messages",
+        json={"text": "replacement-required"},
+    )
+
+    assert response.status_code == 409
+    assert "gpt-5.6-terra" in response.json()["detail"]
     assert runtime.submitted_messages == []
 
 

@@ -24,6 +24,7 @@ from api.deployment import cors_allow_origin_regex
 from api.auth import RequestIdentity, local_request_identity
 from api.runtime import (
     CancellationRestoreError,
+    ModelReplacementRequiredError,
     ReportAgentApiRuntime,
     StaleInterruptError,
     ThreadAlreadyRunningError,
@@ -189,7 +190,10 @@ def create_app(
     ):
         try:
             record = runtime.archive_conversation(identity, thread_id)
-        except (ThreadAlreadyRunningError, ThreadAwaitingReviewError) as exc:
+        except (
+            ThreadAlreadyRunningError,
+            ThreadAwaitingReviewError,
+        ) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         if record is None:
             raise HTTPException(status_code=404, detail="Conversation not found")
@@ -202,7 +206,10 @@ def create_app(
     ):
         try:
             record = runtime.restore_conversation(identity, thread_id)
-        except (ThreadAlreadyRunningError, ThreadAwaitingReviewError) as exc:
+        except (
+            ThreadAlreadyRunningError,
+            ThreadAwaitingReviewError,
+        ) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         if record is None:
             raise HTTPException(status_code=404, detail="Conversation not found")
@@ -496,7 +503,11 @@ def create_app(
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Conversation not found") from exc
-        except (ThreadAlreadyRunningError, ThreadAwaitingReviewError) as exc:
+        except (
+            ThreadAlreadyRunningError,
+            ThreadAwaitingReviewError,
+            ModelReplacementRequiredError,
+        ) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except AttachmentError as exc:
             status_code = 404 if exc.code == "ATTACHMENT_NOT_FOUND" else 400

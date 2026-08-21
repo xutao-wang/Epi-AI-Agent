@@ -254,6 +254,7 @@ def build_application(
         graph_factory=graph_factory,
         default_runtime_settings=runtime_settings,
         models=list(allowed_models),
+        registered_models=catalog.registered_profiles,
         runtime_root=runtime_root_path,
         checkpoint_path=db_path,
         history_store=history_store,
