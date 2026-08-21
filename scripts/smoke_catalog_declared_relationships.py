@@ -65,6 +65,8 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> None:
     context = ToolContext(
         studies=studies,
         artifact_store=StateArtifactStore(),
+        thread_id="catalog-relationships-smoke",
+        policy=object(),
     )
     tools = build_db_rag_tool_registry()
     tool_messages: list[dict[str, Any]] = []
