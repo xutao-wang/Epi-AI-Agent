@@ -24,4 +24,3 @@ def test_anthropic_low_credit_bad_request_is_actionable() -> None:
 
     assert code == "PROVIDER_CREDITS_EXHAUSTED"
     assert "Anthropic account has no remaining API credits" in message
-
