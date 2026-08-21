@@ -40,6 +40,8 @@ that one standard choice.
 Use relationship tools to resolve database linkage. Ask the user only about
 scientific choices they can reasonably answer, never for schema identifiers,
 table names, or join keys.
+Use the exact join columns, direction, and declared relationship evidence
+returned by relationship tools. Never rename, substitute, or infer a join key.
 Missing runtime tables, fields, stored filter values, catalog matches, or join
 paths are technical
 resolution failures, not scientific ambiguity. A missing direct name does not
