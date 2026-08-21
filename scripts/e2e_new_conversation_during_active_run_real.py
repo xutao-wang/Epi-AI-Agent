@@ -7,9 +7,7 @@ import argparse
 import json
 import os
 from pathlib import Path
-import socket
 import subprocess
-import sys
 import tempfile
 import time
 import traceback
@@ -17,60 +15,15 @@ from typing import Any
 
 import requests
 
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
-from api.auth import LOCAL_SESSION_ID
-
-
-LOCAL_API_HEADERS = {"X-Epi-Session-ID": LOCAL_SESSION_ID}
-MESSAGE_LABEL = "Ask a question about your dataset!"
-
-
-def _launch_browser(playwright: Any) -> Any:
-    try:
-        return playwright.chromium.launch()
-    except Exception as error:
-        if "Executable doesn't exist" not in str(error):
-            raise
-        return playwright.chromium.launch(channel="chrome")
-
-
-def _find_port(host: str, preferred: int) -> int:
-    for port in range(preferred, preferred + 100):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as candidate:
-            try:
-                candidate.bind((host, port))
-                return port
-            except OSError:
-                continue
-    raise RuntimeError("Could not find an available local port.")
-
-
-def _remaining_ms(deadline: float) -> int:
-    return max(1, int((deadline - time.monotonic()) * 1000))
-
-
-def _wait_for_health(
-    api_url: str,
-    deadline: float,
-    process: subprocess.Popen[Any],
-) -> None:
-    while time.monotonic() < deadline:
-        if process.poll() is not None:
-            raise RuntimeError(
-                f"FastAPI exited early with code {process.returncode}."
-            )
-        try:
-            response = requests.get(f"{api_url}/api/health", timeout=2)
-            if response.status_code == 200:
-                return
-        except requests.RequestException:
-            pass
-        time.sleep(0.25)
-    raise TimeoutError("FastAPI did not become ready.")
+from e2e_active_run_cancellation_real import (
+    LOCAL_API_HEADERS,
+    MESSAGE_LABEL,
+    REPO_ROOT,
+    _find_port,
+    _launch_browser,
+    _remaining_ms,
+    _wait_for_health,
+)
 
 
 def _conversations(api_url: str) -> list[dict[str, Any]]:

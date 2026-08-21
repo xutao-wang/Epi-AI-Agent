@@ -254,7 +254,7 @@ def run(args: argparse.Namespace) -> int:
 
                 page.get_by_role(
                     "button",
-                    name="Start new conversation from saved conversations",
+                    name="New conversation",
                     exact=True,
                 ).click()
                 field.fill(THREAD_B_MESSAGE)
