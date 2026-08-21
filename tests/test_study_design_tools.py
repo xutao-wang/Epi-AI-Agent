@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from db_rag.study_design_documents import StudyDesignHit
+from db_rag.retrieval_status import RetrievalOutcome, lexical_fallback_status
 from epi_agent.agent import build_general_epi_agent_registry
 from epi_agent.protocol import ArtifactRef, ToolContext, ToolExecutionError
 from epi_agent.studies import StudyBundle, StudyRegistry
@@ -44,6 +45,20 @@ class _SearchableDesign:
 class _LegacyDesign:
     def render_context(self) -> str:
         return "Legacy context."
+
+
+@dataclass
+class _FallbackDesign(_SearchableDesign):
+    embedding_model: str = "OpenAI/text-embedding-3-large"
+
+    def search_with_status(self, query: str, limit: int = 5):
+        return RetrievalOutcome(
+            value=self.search(query, limit=limit),
+            status=lexical_fallback_status(
+                self.embedding_model,
+                "EMBEDDING_CREDENTIALS_MISSING",
+            ),
+        )
 
 
 class _ArtifactStore:
@@ -100,6 +115,31 @@ def test_design_search_tool_returns_bounded_provenance_artifact() -> None:
     }
     assert store.saved[0]["kind"] == "study_design_evidence"
     assert store.saved[0]["content"]["hits"] == payload["hits"]
+
+
+def test_design_search_tool_persists_lexical_fallback_reason() -> None:
+    registry = build_study_design_tool_registry()
+    store = _ArtifactStore()
+    context = ToolContext(
+        studies=StudyRegistry([_study(_FallbackDesign())]),
+        artifact_store=store,
+        thread_id="thread-1",
+        policy=None,
+    )
+
+    result = registry.invoke(
+        "study-design-search",
+        {"study_id": "study-1", "query": "When are visits?", "limit": 3},
+        context=context,
+    )
+
+    payload = json.loads(result.message)
+    assert payload["retrieval_mode"] == "lexical_fallback"
+    assert payload["embedding"]["reason_code"] == (
+        "EMBEDDING_CREDENTIALS_MISSING"
+    )
+    assert "OPENAI_API_KEY is not configured" in payload["embedding"]["message"]
+    assert store.saved[0]["content"] == payload
 
 
 @pytest.mark.parametrize(

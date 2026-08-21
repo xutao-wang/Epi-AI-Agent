@@ -6,6 +6,9 @@ from typing import Any, Callable
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from db_rag.config import EMBEDDING_MODEL
+from db_rag.retrieval_status import RetrievalOutcome, hybrid_status
+
 from epi_agent.protocol import (
     ToolContext,
     ToolExecutionError,
@@ -67,12 +70,26 @@ def _search(arguments: dict[str, Any], context: ToolContext) -> ToolResult:
             "The requested study does not provide study-design document search.",
             recoverable=True,
         )
-    hits = [
-        _design_hit(hit, study_id=study.study_id)
-        for hit in provider.search(
+    search_with_status = getattr(provider, "search_with_status", None)
+    outcome = (
+        search_with_status(
             str(arguments["query"]),
             limit=int(arguments["limit"]),
         )
+        if callable(search_with_status)
+        else RetrievalOutcome(
+            value=provider.search(
+                str(arguments["query"]),
+                limit=int(arguments["limit"]),
+            ),
+            status=hybrid_status(
+                getattr(provider, "embedding_model", EMBEDDING_MODEL)
+            ),
+        )
+    )
+    hits = [
+        _design_hit(hit, study_id=study.study_id)
+        for hit in outcome.value
     ][:_MAX_HITS]
     save_artifact = getattr(context.artifact_store, "save_artifact", None)
     if not callable(save_artifact):
@@ -81,13 +98,16 @@ def _search(arguments: dict[str, Any], context: ToolContext) -> ToolResult:
             "The study-design artifact store is unavailable.",
             recoverable=False,
         )
+    content = {
+        "study_id": study.study_id,
+        "query": arguments["query"],
+        "retrieval_mode": outcome.status.mode,
+        "embedding": outcome.status.as_dict(),
+        "hits": hits,
+    }
     reference = save_artifact(
         kind="study_design_evidence",
-        content={
-            "study_id": study.study_id,
-            "query": arguments["query"],
-            "hits": hits,
-        },
+        content=content,
         provenance={
             "thread_id": context.thread_id,
             "producer": "study-design-search",
@@ -96,10 +116,7 @@ def _search(arguments: dict[str, Any], context: ToolContext) -> ToolResult:
         summary=f"{len(hits)} study-design hits",
     )
     return ToolResult(
-        message=json.dumps(
-            {"study_id": study.study_id, "hits": hits},
-            sort_keys=True,
-        ),
+        message=json.dumps(content, sort_keys=True),
         artifacts=(reference,),
     )
 

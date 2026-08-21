@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from db_rag.study_design_documents import MarkdownStudyDesign
@@ -90,3 +91,23 @@ def test_markdown_study_design_search_filters_and_maps_provenance(
     assert hits[0].section == "Visits"
     assert hits[0].text == "Retrieval-only schedule."
     assert hits[0].distance == 0.125
+
+
+def test_markdown_study_design_falls_back_to_ranked_lexical_sections(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    provider = _provider(tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+
+    outcome = provider.search_with_status("visit schedule", limit=3)
+
+    reference_path = provider.design_root / "reference/visits.md"
+    assert outcome.status.mode == "lexical_fallback"
+    assert outcome.status.reason_code == "EMBEDDING_CREDENTIALS_MISSING"
+    assert outcome.value[0].source_path == "reference/visits.md"
+    assert outcome.value[0].section == "Visits"
+    assert outcome.value[0].source_sha256 == hashlib.sha256(
+        reference_path.read_bytes()
+    ).hexdigest()
+    assert outcome.value[0].distance is None
