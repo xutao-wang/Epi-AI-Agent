@@ -103,8 +103,8 @@ def _prompt_verified_builtin_key(
         try:
             candidate = normalize_secret_input(
                 getpass_fn(
-                    f"Paste your {label} API key "
-                    "(press Enter to choose another provider): "
+                    f"Paste your {label} API key and press Enter to validate\n"
+                    "(empty + Enter returns to provider setup): "
                 )
             )
         except (EOFError, KeyboardInterrupt) as error:
@@ -146,21 +146,19 @@ def _configure_provider_menu(
                 "Configure AI providers. Existing providers are retained.\n\n"
                 "1. Configure or replace OpenAI\n"
                 "2. Configure or replace Anthropic\n"
-                "3. Configure or replace both\n"
-                "4. Connect to a compatible endpoint\n"
-                "5. Remove OpenAI\n"
-                "6. Remove Anthropic\n"
-                "7. Keep current providers\n"
-                "Selection [7]: "
+                "3. Connect to a compatible endpoint\n"
+                "4. Remove OpenAI\n"
+                "5. Remove Anthropic\n"
+                "6. Keep current providers\n"
+                "Selection [6]: "
             )
-            default = "7"
+            default = "6"
         else:
             prompt = (
                 "No AI provider is configured.\n\n"
                 "1. Configure OpenAI\n"
                 "2. Configure Anthropic\n"
-                "3. Configure both\n"
-                "4. Connect to a compatible endpoint\n"
+                "3. Connect to a compatible endpoint\n"
                 "Selection: "
             )
             default = ""
@@ -174,7 +172,6 @@ def _configure_provider_menu(
         providers = {
             "1": ("openai",),
             "2": ("anthropic",),
-            "3": ("openai", "anthropic"),
         }.get(selection)
         if providers is not None:
             configured_any = False
@@ -194,7 +191,7 @@ def _configure_provider_menu(
             if configured_any:
                 return
             continue
-        if selection == "4":
+        if selection == "3":
             if has_custom:
                 return
             output_fn(
@@ -203,12 +200,12 @@ def _configure_provider_menu(
                 "config/custom_models.json, edit the endpoint, and retry."
             )
             continue
-        if force and selection in {"5", "6"}:
-            key = "OPENAI_API_KEY" if selection == "5" else "ANTHROPIC_API_KEY"
+        if force and selection in {"4", "5"}:
+            key = "OPENAI_API_KEY" if selection == "4" else "ANTHROPIC_API_KEY"
             environ.pop(key, None)
             remove_local_env_values(project_root, {key})
             return
-        if force and selection == "7":
+        if force and selection == "6":
             return
         output_fn("Select one of the listed provider options.")
 

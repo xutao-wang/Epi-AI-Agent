@@ -10,12 +10,13 @@ python run_fastapi.py
 ```
 
 Python 3.12 and at least one usable model provider are required. On first run,
-the launcher offers OpenAI, Anthropic, both, or a registered compatible
-endpoint. It securely prompts for missing built-in provider keys, verifies all
+the launcher offers OpenAI, Anthropic, or a registered compatible endpoint.
+Providers are configured independently; use `python run_fastapi.py
+--reconfigure` to add a second provider or to replace or remove one. The
+launcher securely prompts for missing built-in provider keys, verifies all
 configured providers on every startup, saves only verified keys to `.env`,
 prepares the selected runtime directory, and serves the committed browser
-build. Run `python run_fastapi.py --reconfigure` to add, replace, or remove a
-provider.
+build.
 
 The model selector is derived from providers that passed startup verification:
 OpenAI enables registered GPT models, Anthropic enables registered Claude

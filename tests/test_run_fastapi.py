@@ -299,28 +299,125 @@ def test_existing_anthropic_key_exposes_only_registered_claude_models(
     )
 
 
-def test_no_keys_can_configure_both_and_persist_only_verified_keys(
-    tmp_path: Path,
-) -> None:
-    secrets = iter(["openai-key", "anthropic-key"])
-    saved: list[dict[str, str]] = []
+def test_first_run_menu_and_key_prompt_are_unambiguous(tmp_path: Path) -> None:
+    menu_prompts: list[str] = []
+    key_prompts: list[str] = []
 
     catalog = configure_and_verify_providers(
         project_root=tmp_path,
         environ={},
-        input_fn=lambda _prompt: "3",
-        getpass_fn=lambda _prompt: next(secrets),
+        input_fn=lambda prompt: menu_prompts.append(prompt) or "1",
+        getpass_fn=lambda prompt: key_prompts.append(prompt) or "openai-key",
+        verifier=lambda _provider, _key, **_kwargs: None,
+        persist=lambda _root, _values: None,
+        output_fn=lambda _message: None,
+    )
+
+    assert menu_prompts == [
+        "No AI provider is configured.\n\n"
+        "1. Configure OpenAI\n"
+        "2. Configure Anthropic\n"
+        "3. Connect to a compatible endpoint\n"
+        "Selection: "
+    ]
+    assert key_prompts == [
+        "Paste your OpenAI API key and press Enter to validate\n"
+        "(empty + Enter returns to provider setup): "
+    ]
+    assert "gpt-5.6-terra" in catalog.available_model_ids
+
+
+def test_reconfigure_menu_has_independent_provider_actions(tmp_path: Path) -> None:
+    prompts: list[str] = []
+
+    catalog = configure_and_verify_providers(
+        project_root=tmp_path,
+        environ={"OPENAI_API_KEY": "openai-key"},
+        input_fn=lambda prompt: prompts.append(prompt) or "6",
+        getpass_fn=lambda _prompt: pytest.fail("key prompt should not open"),
+        verifier=lambda _provider, _key, **_kwargs: None,
+        persist=lambda _root, _values: None,
+        output_fn=lambda _message: None,
+        force=True,
+    )
+
+    assert prompts == [
+        "Configure AI providers. Existing providers are retained.\n\n"
+        "1. Configure or replace OpenAI\n"
+        "2. Configure or replace Anthropic\n"
+        "3. Connect to a compatible endpoint\n"
+        "4. Remove OpenAI\n"
+        "5. Remove Anthropic\n"
+        "6. Keep current providers\n"
+        "Selection [6]: "
+    ]
+    assert "gpt-5.6-terra" in catalog.available_model_ids
+
+
+def test_empty_key_returns_to_provider_setup(tmp_path: Path) -> None:
+    menu_prompts: list[str] = []
+    keys = iter(["", "anthropic-key"])
+
+    catalog = configure_and_verify_providers(
+        project_root=tmp_path,
+        environ={},
+        input_fn=lambda prompt: menu_prompts.append(prompt) or "2",
+        getpass_fn=lambda _prompt: next(keys),
+        verifier=lambda _provider, _key, **_kwargs: None,
+        persist=lambda _root, _values: None,
+        output_fn=lambda _message: None,
+    )
+
+    assert len(menu_prompts) == 2
+    assert "claude-opus-5" in catalog.available_model_ids
+
+
+@pytest.mark.parametrize(
+    ("selection", "provider", "key", "expected_model", "expected_saved"),
+    [
+        (
+            "1",
+            "OpenAI",
+            "openai-key",
+            "gpt-5.6-terra",
+            {"OPENAI_API_KEY": "openai-key"},
+        ),
+        (
+            "2",
+            "Anthropic",
+            "anthropic-key",
+            "claude-opus-5",
+            {"ANTHROPIC_API_KEY": "anthropic-key"},
+        ),
+    ],
+)
+def test_no_keys_can_configure_one_provider_independently(
+    tmp_path: Path,
+    selection: str,
+    provider: str,
+    key: str,
+    expected_model: str,
+    expected_saved: dict[str, str],
+) -> None:
+    saved: list[dict[str, str]] = []
+    key_prompts: list[str] = []
+
+    catalog = configure_and_verify_providers(
+        project_root=tmp_path,
+        environ={},
+        input_fn=lambda _prompt: selection,
+        getpass_fn=lambda prompt: key_prompts.append(prompt) or key,
         verifier=lambda _provider, _key, **_kwargs: None,
         persist=lambda _root, values: saved.append(values),
         output_fn=lambda _message: None,
     )
 
-    assert saved == [
-        {"OPENAI_API_KEY": "openai-key"},
-        {"ANTHROPIC_API_KEY": "anthropic-key"},
+    assert saved == [expected_saved]
+    assert expected_model in catalog.available_model_ids
+    assert key_prompts == [
+        f"Paste your {provider} API key and press Enter to validate\n"
+        "(empty + Enter returns to provider setup): "
     ]
-    assert "gpt-5.6-terra" in catalog.available_model_ids
-    assert "claude-opus-5" in catalog.available_model_ids
 
 
 def test_failed_compatible_endpoint_is_omitted_when_builtin_provider_works(
