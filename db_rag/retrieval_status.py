@@ -8,13 +8,16 @@ T = TypeVar("T")
 RetrievalMode = Literal["hybrid_vector_lexical", "lexical_fallback"]
 EmbeddingReasonCode = Literal[
     "EMBEDDING_CREDENTIALS_MISSING",
+    "EMBEDDING_ROUTE_UNAVAILABLE",
     "EMBEDDING_CONFIGURATION_UNAVAILABLE",
     "EMBEDDING_INDEX_UNAVAILABLE",
     "EMBEDDING_PROVIDER_UNAVAILABLE",
 ]
 
 _REASONS: dict[EmbeddingReasonCode, str] = {
-    "EMBEDDING_CREDENTIALS_MISSING": "OPENAI_API_KEY is not configured",
+    "EMBEDDING_ROUTE_UNAVAILABLE": (
+        "no embedding adapter is available for this route"
+    ),
     "EMBEDDING_CONFIGURATION_UNAVAILABLE": (
         "its configuration is unavailable or incompatible"
     ),
@@ -30,23 +33,32 @@ class RetrievalStatus:
     mode: RetrievalMode
     model: str
     available: bool
+    provider: str
+    credential_env: str | None = None
     reason_code: EmbeddingReasonCode | None = None
 
     def as_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
             "available": self.available,
             "model": self.model,
+            "provider": self.provider,
         }
         if self.reason_code is not None:
             payload.update(
                 reason_code=self.reason_code,
                 message=(
-                    f"Embedding model {self.model} is unavailable because "
-                    f"{_REASONS[self.reason_code]}. Results use lexical string "
-                    "search only."
+                    f"Embedding model {self.model} via {self.provider} is "
+                    f"unavailable because {self._reason()}. Results use lexical "
+                    "string search only."
                 ),
             )
         return payload
+
+    def _reason(self) -> str:
+        if self.reason_code == "EMBEDDING_CREDENTIALS_MISSING":
+            credential = self.credential_env or "the embedding provider credential"
+            return f"{credential} is not configured"
+        return _REASONS[self.reason_code]
 
 
 @dataclass(frozen=True)
@@ -62,22 +74,49 @@ def _model(value: str) -> str:
     return normalized
 
 
-def hybrid_status(model: str) -> RetrievalStatus:
+def _provider(model: str, value: str | None) -> str:
+    normalized = str(value or "").strip().casefold()
+    if normalized:
+        return normalized
+    inferred = model.split("/", 1)[0].strip().casefold()
+    return inferred or "unknown"
+
+
+def _default_credential_env(provider: str) -> str | None:
+    return {
+        "openai": "OPENAI_API_KEY",
+        "openrouter": "OPENROUTER_API_KEY",
+    }.get(provider)
+
+
+def hybrid_status(model: str, *, provider: str | None = None) -> RetrievalStatus:
+    resolved_model = _model(model)
     return RetrievalStatus(
         mode="hybrid_vector_lexical",
-        model=_model(model),
+        model=resolved_model,
         available=True,
+        provider=_provider(resolved_model, provider),
     )
 
 
 def lexical_fallback_status(
     model: str,
     reason_code: EmbeddingReasonCode,
+    *,
+    provider: str | None = None,
+    credential_env: str | None = None,
 ) -> RetrievalStatus:
+    resolved_model = _model(model)
+    resolved_provider = _provider(resolved_model, provider)
     return RetrievalStatus(
         mode="lexical_fallback",
-        model=_model(model),
+        model=resolved_model,
         available=False,
+        provider=resolved_provider,
+        credential_env=(
+            str(credential_env or "").strip()
+            or _default_credential_env(resolved_provider)
+        ),
         reason_code=reason_code,
     )
 
