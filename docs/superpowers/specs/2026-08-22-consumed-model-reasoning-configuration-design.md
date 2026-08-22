@@ -123,11 +123,13 @@ profile derives its suffix directly from `reasoning`:
 def reasoning_display(config: ReasoningConfig | None) -> str:
     return "Standard" if config is None else config.effort.title()
 
-display_label = f"{base_label} ({reasoning_display(reasoning)})"
+label = f"{base_label} ({reasoning_display(reasoning)})"
 ```
 
-Profiles store only a base label such as `Claude Sonnet 5`; the public model
-descriptor exposes the derived display label. This produces the following
+Profiles store `base_label` such as `Claude Sonnet 5`; their existing `label`
+interface becomes a derived property. Consequently, model descriptors,
+conversation state, output-limit messages, locked-model controls, and model
+selectors all receive the same derived label. This produces the following
 built-in UI labels:
 
 ```text
@@ -237,8 +239,10 @@ it is not silently skipped, substituted, or reported as a passing check.
 ## Acceptance criteria
 
 - There is one reasoning declaration per built-in model profile.
-- No `reasoning_tier` reference remains in production code, schemas, examples,
-  frontend types, or maintained tests.
+- No operational `reasoning_tier` reference remains in production code,
+  schemas, examples, frontend types, or ordinary fixtures. The sole permitted
+  test reference is the legacy-input rejection case proving that operators get
+  an explicit validation failure for the removed custom-model property.
 - Every model label suffix is derived from the consumed `reasoning` field;
   absent reasoning displays as `Standard`.
 - Opus 5 and Sonnet 5 requests carry adaptive thinking and medium effort.
