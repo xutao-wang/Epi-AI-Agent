@@ -33,6 +33,15 @@ def _timeout(_signum, _frame) -> None:
     raise TimeoutError("model reasoning matrix exceeded five minutes")
 
 
+def _response_model(response: Any) -> str:
+    metadata = getattr(response, "response_metadata", {}) or {}
+    for key in ("model_name", "model", "model_id"):
+        value = metadata.get(key)
+        if value:
+            return str(value)
+    return "unknown"
+
+
 def run_smoke(
     environ: Mapping[str, str],
     *,
@@ -63,9 +72,17 @@ def run_smoke(
                 usage = dict(response.usage_metadata or {})
                 print(
                     f"PASS model={model_id} label={profile.label} "
+                    f"response_model={_response_model(response)} "
                     f"input_tokens={int(usage.get('input_tokens') or 0)} "
                     f"output_tokens={int(usage.get('output_tokens') or 0)}"
                 )
+            except TimeoutError as exc:
+                failures += 1
+                print(
+                    f"FAIL model={model_id} label={profile.label} "
+                    f"code=MODEL_MATRIX_TIMEOUT message={exc}"
+                )
+                break
             except Exception as exc:
                 failures += 1
                 code, message = classify_llm_error(exc)

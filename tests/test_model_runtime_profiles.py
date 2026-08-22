@@ -49,6 +49,11 @@ def test_openai_rejects_anthropic_reasoning_mode() -> None:
         )
 
 
+def test_reasoning_config_rejects_unknown_effort_at_runtime() -> None:
+    with pytest.raises(ValueError, match="reasoning effort"):
+        ReasoningConfig(effort="bogus")  # type: ignore[arg-type]
+
+
 def test_compatible_provider_rejects_reasoning() -> None:
     profile = model_runtime_profile("gpt-5.6-terra")
     with pytest.raises(ValueError, match="reasoning.*openai_compatible"):

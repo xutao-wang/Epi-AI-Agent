@@ -14,6 +14,7 @@ class _FakeModel:
         assert messages and kwargs
         return AIMessage(
             content=f"reasoning-matrix-ok:{self.model_id}",
+            response_metadata={"model": f"provider/{self.model_id}"},
             usage_metadata={
                 "input_tokens": 4,
                 "output_tokens": 2,
@@ -43,6 +44,7 @@ def test_checks_every_available_builtin_once_without_secrets(capsys) -> None:
     assert len(calls) == len(set(calls)) == 7
     assert "Claude Opus 5 (Medium)" in output
     assert "Claude Haiku 4.5 (Standard)" in output
+    assert "response_model=provider/claude-haiku-4-5" in output
     assert "secret" not in output
 
 
@@ -68,3 +70,24 @@ def test_records_failure_once_and_continues(capsys) -> None:
     ]
     assert calls.count("claude-sonnet-5") == 1
     assert "RUN_FAILED" in output
+
+
+def test_global_timeout_stops_before_invoking_another_model(capsys) -> None:
+    calls: list[str] = []
+
+    class _TimedOutModel:
+        def invoke(self, messages, **kwargs):
+            raise TimeoutError("matrix deadline reached")
+
+    def builder(*, model_name: str, api_key: str):
+        calls.append(model_name)
+        return _TimedOutModel()
+
+    result = run_smoke(
+        {"OPENAI_API_KEY": "openai-secret"},
+        llm_builder=builder,
+    )
+
+    assert result == 1
+    assert calls == ["gpt-5.4"]
+    assert "MODEL_MATRIX_TIMEOUT" in capsys.readouterr().out

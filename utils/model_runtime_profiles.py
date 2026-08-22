@@ -58,6 +58,12 @@ class ReasoningConfig:
     effort: ReasoningEffort
     mode: ReasoningMode | None = None
 
+    def __post_init__(self) -> None:
+        if self.effort not in {"low", "medium", "high", "xhigh", "max"}:
+            raise ValueError(f"Unsupported reasoning effort: {self.effort}")
+        if self.mode not in {None, "adaptive"}:
+            raise ValueError(f"Unsupported reasoning mode: {self.mode}")
+
 
 @dataclass(frozen=True)
 class ModelRuntimeProfile:
