@@ -17,8 +17,8 @@ from pydantic import BaseModel, ConfigDict, Field
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 Provider = Literal["openai", "anthropic", "openai_compatible"]
-ReasoningTier = Literal["standard", "low", "medium", "high"]
-ReasoningEffort = Literal["low", "medium", "high"]
+ReasoningMode = Literal["adaptive"]
+ReasoningEffort = Literal["low", "medium", "high", "xhigh", "max"]
 
 PROVIDER_OPENAI: Provider = "openai"
 PROVIDER_ANTHROPIC: Provider = "anthropic"
@@ -52,11 +52,18 @@ def _cost_display(tokens: int, usd_per_million: Decimal | None) -> str | None:
 
 
 @dataclass(frozen=True)
+class ReasoningConfig:
+    """Provider-consumed reasoning settings for one model."""
+
+    effort: ReasoningEffort
+    mode: ReasoningMode | None = None
+
+
+@dataclass(frozen=True)
 class ModelRuntimeProfile:
     model_id: str
-    label: str
-    reasoning_tier: ReasoningTier
-    reasoning_effort: ReasoningEffort | None
+    base_label: str
+    reasoning: ReasoningConfig | None
     supports_sampling_controls: bool
     summary: str
     initial_output_tokens: int
@@ -74,6 +81,38 @@ class ModelRuntimeProfile:
     remote_model_id: str | None = None
     supports_vision: bool = True
     supports_mid_conversation_system: bool = True
+
+    def __post_init__(self) -> None:
+        if self.provider == PROVIDER_OPENAI:
+            if self.reasoning is not None and self.reasoning.mode is not None:
+                raise ValueError(
+                    f"{self.model_id} reasoning mode is not supported by OpenAI"
+                )
+            if (
+                self.reasoning is not None
+                and self.reasoning.effort not in {"low", "medium", "high"}
+            ):
+                raise ValueError(
+                    f"{self.model_id} reasoning effort is not supported by OpenAI"
+                )
+        elif self.provider == PROVIDER_ANTHROPIC:
+            if self.reasoning is not None and self.reasoning.mode != "adaptive":
+                raise ValueError(
+                    f"{self.model_id} reasoning mode must be adaptive for Anthropic"
+                )
+        elif self.provider == PROVIDER_OPENAI_COMPATIBLE:
+            if self.reasoning is not None:
+                raise ValueError(
+                    "reasoning is not supported for openai_compatible models"
+                )
+
+    @property
+    def reasoning_display(self) -> str:
+        return "Standard" if self.reasoning is None else self.reasoning.effort.title()
+
+    @property
+    def label(self) -> str:
+        return f"{self.base_label} ({self.reasoning_display})"
 
     @property
     def served_model_id(self) -> str:
@@ -110,7 +149,6 @@ class ModelRuntimeProfile:
             "label": self.label,
             "provider": self.provider,
             "provider_label": self.provider_label,
-            "reasoning_tier": self.reasoning_tier,
             "supports_sampling_controls": self.supports_sampling_controls,
             "summary": self.summary,
             "initial_output_tokens": self.initial_output_tokens,
@@ -131,9 +169,8 @@ class ModelRuntimeProfile:
 MODEL_RUNTIME_PROFILES = {
     "gpt-5.4": ModelRuntimeProfile(
         model_id="gpt-5.4",
-        label="gpt-5.4 (Standard)",
-        reasoning_tier="standard",
-        reasoning_effort=None,
+        base_label="gpt-5.4",
+        reasoning=None,
         supports_sampling_controls=True,
         summary="Reliable general-purpose default.",
         initial_output_tokens=8_192,
@@ -147,9 +184,8 @@ MODEL_RUNTIME_PROFILES = {
     ),
     "gpt-5.6-luna": ModelRuntimeProfile(
         model_id="gpt-5.6-luna",
-        label="gpt-5.6-luna (Low)",
-        reasoning_tier="low",
-        reasoning_effort="low",
+        base_label="gpt-5.6-luna",
+        reasoning=ReasoningConfig(effort="low"),
         supports_sampling_controls=False,
         summary=(
             "Fastest and lowest-cost tier for straightforward work."
@@ -165,9 +201,8 @@ MODEL_RUNTIME_PROFILES = {
     ),
     "gpt-5.6-terra": ModelRuntimeProfile(
         model_id="gpt-5.6-terra",
-        label="gpt-5.6-terra (Medium)",
-        reasoning_tier="medium",
-        reasoning_effort="medium",
+        base_label="gpt-5.6-terra",
+        reasoning=ReasoningConfig(effort="medium"),
         supports_sampling_controls=False,
         summary="Balanced tier for moderately complex analysis.",
         initial_output_tokens=16_384,
@@ -181,9 +216,8 @@ MODEL_RUNTIME_PROFILES = {
     ),
     "gpt-5.6-sol": ModelRuntimeProfile(
         model_id="gpt-5.6-sol",
-        label="gpt-5.6-sol (Medium)",
-        reasoning_tier="medium",
-        reasoning_effort="medium",
+        base_label="gpt-5.6-sol",
+        reasoning=ReasoningConfig(effort="medium"),
         supports_sampling_controls=False,
         summary="Frontier-capability tier with balanced reasoning.",
         initial_output_tokens=25_000,
@@ -197,9 +231,8 @@ MODEL_RUNTIME_PROFILES = {
     ),
     "claude-opus-5": ModelRuntimeProfile(
         model_id="claude-opus-5",
-        label="Claude Opus 5",
-        reasoning_tier="high",
-        reasoning_effort=None,
+        base_label="Claude Opus 5",
+        reasoning=ReasoningConfig(mode="adaptive", effort="medium"),
         supports_sampling_controls=False,
         summary="Most capable Claude tier for complex agentic analysis.",
         initial_output_tokens=16_384,
@@ -216,9 +249,8 @@ MODEL_RUNTIME_PROFILES = {
     ),
     "claude-sonnet-5": ModelRuntimeProfile(
         model_id="claude-sonnet-5",
-        label="Claude Sonnet 5",
-        reasoning_tier="medium",
-        reasoning_effort=None,
+        base_label="Claude Sonnet 5",
+        reasoning=ReasoningConfig(mode="adaptive", effort="medium"),
         supports_sampling_controls=False,
         summary="Balanced Claude tier for most analysis workloads.",
         initial_output_tokens=16_384,
@@ -235,9 +267,8 @@ MODEL_RUNTIME_PROFILES = {
     ),
     "claude-haiku-4-5": ModelRuntimeProfile(
         model_id="claude-haiku-4-5",
-        label="Claude Haiku 4.5",
-        reasoning_tier="low",
-        reasoning_effort=None,
+        base_label="Claude Haiku 4.5",
+        reasoning=None,
         supports_sampling_controls=False,
         summary="Fast, low-cost Claude tier for straightforward work.",
         initial_output_tokens=8_192,
@@ -259,9 +290,8 @@ MODEL_RUNTIME_PROFILES = {
 INTERNAL_MODEL_RUNTIME_PROFILES = {
     "gpt5.6-Luna-Light": ModelRuntimeProfile(
         model_id="gpt5.6-Luna-Light",
-        label="gpt5.6-Luna-Light (Low)",
-        reasoning_tier="low",
-        reasoning_effort="low",
+        base_label="gpt5.6-Luna-Light",
+        reasoning=ReasoningConfig(effort="low"),
         supports_sampling_controls=False,
         summary="Lightweight model for automatic titles and dataset names.",
         initial_output_tokens=8_192,
@@ -287,7 +317,6 @@ class CustomModelEntry(BaseModel):
     model: str = ""
     api_key_env: str = ""
     summary: str = ""
-    reasoning_tier: ReasoningTier = "standard"
     initial_output_tokens: int = Field(default=8_192, gt=0)
     automatic_output_token_ceiling: int = Field(default=16_384, gt=0)
     user_output_token_increment: int = Field(default=8_192, gt=0)
@@ -312,9 +341,8 @@ class CustomModelEntry(BaseModel):
                 ) from exc
         return ModelRuntimeProfile(
             model_id=self.id,
-            label=self.label or self.id,
-            reasoning_tier=self.reasoning_tier,
-            reasoning_effort=None,
+            base_label=self.label or self.id,
+            reasoning=None,
             supports_sampling_controls=self.supports_sampling_controls,
             summary=self.summary or "Operator-registered custom endpoint model.",
             initial_output_tokens=self.initial_output_tokens,
@@ -439,6 +467,9 @@ __all__ = [
     "CustomModelEntry",
     "MODEL_RUNTIME_PROFILES",
     "ModelRuntimeProfile",
+    "ReasoningConfig",
+    "ReasoningEffort",
+    "ReasoningMode",
     "PROVIDER_ANTHROPIC",
     "PROVIDER_API_KEY_ENVS",
     "PROVIDER_LABELS",
