@@ -56,26 +56,32 @@ def _provider(tmp_path: Path) -> MarkdownStudyDesign:
 def _vector_result(
     provider: MarkdownStudyDesign,
     *,
+    hits: list[object] | None = None,
     ids: list[str] | None = None,
     metadata_updates: dict[str, object] | None = None,
     documents: list[str] | None = None,
 ) -> dict[str, object]:
-    visits = next(hit for hit in provider._local_sections() if hit.section == "Visits")
-    metadata = {
-        "source_kind": visits.source_kind,
-        "source_id": visits.source_id,
-        "source_path": visits.source_path,
-        "source_sha256": visits.source_sha256,
-        "section": visits.section,
-        "chunk_ordinal": 0,
-        "body_text": visits.text,
-    }
-    metadata.update(metadata_updates or {})
+    selected = hits or [
+        next(hit for hit in provider._local_sections() if hit.section == "Visits")
+    ]
+    metadata_rows = []
+    for hit in selected:
+        metadata = {
+            "source_kind": hit.source_kind,
+            "source_id": hit.source_id,
+            "source_path": hit.source_path,
+            "source_sha256": hit.source_sha256,
+            "section": hit.section,
+            "chunk_ordinal": 0,
+            "body_text": hit.text,
+        }
+        metadata.update(metadata_updates or {})
+        metadata_rows.append(metadata)
     return {
-        "ids": [ids or [visits.id]],
-        "documents": [documents or [visits.text]],
-        "metadatas": [[metadata]],
-        "distances": [[0.125]],
+        "ids": [ids or [hit.id for hit in selected]],
+        "documents": [documents or [hit.text for hit in selected]],
+        "metadatas": [metadata_rows],
+        "distances": [[0.125 for _hit in selected]],
     }
 
 
@@ -119,7 +125,7 @@ def test_markdown_study_design_search_filters_and_maps_provenance(
 
     assert collection.calls == [{
         "query_texts": ["When are visits?"],
-        "n_results": 3,
+        "n_results": 6,
         "where": {"source_kind": "study_design"},
         "include": ["documents", "metadatas", "distances"],
     }]
@@ -137,7 +143,7 @@ def test_markdown_study_design_search_filters_and_maps_provenance(
     assert hits[0].section == "Visits"
     assert hits[0].text == "Retrieval-only schedule."
     assert hits[0].distance == 0.125
-    assert hits[0].matched_by == ()
+    assert hits[0].matched_by == ("vector", "lexical")
 
 
 def test_markdown_study_design_builds_canonical_local_section_identity(
@@ -234,6 +240,58 @@ def test_markdown_study_design_rejects_empty_vector_partition(
 
     with pytest.raises(StudyDesignKnowledgeUnavailableError, match="empty"):
         provider.search_with_status("When are visits?", limit=3)
+
+
+def test_markdown_study_design_fuses_vector_and_lexical_sections(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    manifest_data = minimal_manifest(
+        format_version=3,
+        study_design_format="markdown",
+    )
+    root = create_package_root(
+        tmp_path,
+        manifest=manifest_data,
+        study_design_documents={
+            "overview.md": "# Overview\n\nAuthoritative.\n",
+            "reference/dual.md": "# Cohort\n\nCohort enrollment.\n",
+            "reference/vector.md": "# Renal outcomes\n\nKidney outcomes.\n",
+            "reference/lexical.md": (
+                "# Cohort eligibility\n\nCohort eligibility criteria.\n"
+            ),
+        },
+    )
+    provider = MarkdownStudyDesign.from_package(
+        root,
+        parse_study_package_manifest(manifest_data),
+    )
+    sections = provider._local_sections()
+    dual = next(hit for hit in sections if hit.section == "Cohort")
+    vector_only = next(hit for hit in sections if hit.section == "Renal outcomes")
+    lexical_only = next(
+        hit for hit in sections if hit.section == "Cohort eligibility"
+    )
+    provider, collection = _semantic_provider(
+        provider,
+        monkeypatch,
+        _vector_result(provider, hits=[dual, vector_only]),
+    )
+
+    outcome = provider.search_with_status("cohort eligibility", limit=3)
+
+    assert collection.calls[0]["n_results"] == 6
+    assert outcome.status.mode == "hybrid_vector_lexical"
+    assert [hit.id for hit in outcome.value] == [
+        dual.id,
+        lexical_only.id,
+        vector_only.id,
+    ]
+    assert [hit.matched_by for hit in outcome.value] == [
+        ("vector", "lexical"),
+        ("lexical",),
+        ("vector",),
+    ]
 
 
 def test_markdown_study_design_falls_back_to_ranked_lexical_sections(

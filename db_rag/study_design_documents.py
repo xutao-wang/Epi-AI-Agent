@@ -263,6 +263,69 @@ class MarkdownStudyDesign:
             hits.append(replace(local, distance=distance))
         return hits
 
+    def _rank_lexical_sections(
+        self,
+        query: str,
+        sections: tuple[StudyDesignHit, ...],
+        *,
+        limit: int,
+    ) -> list[StudyDesignHit]:
+        query_tokens = {
+            token
+            for token in _TOKEN.findall(query.casefold())
+            if token not in _STOPWORDS
+        }
+        ranked: list[tuple[tuple[int, int, int, str], StudyDesignHit]] = []
+        for hit in sections:
+            section_text = hit.section.casefold()
+            body_text = hit.text.casefold()
+            heading_overlap = sum(token in section_text for token in query_tokens)
+            body_overlap = sum(token in body_text for token in query_tokens)
+            phrase = int(query.casefold() in f"{section_text} {body_text}")
+            if not (phrase or heading_overlap or body_overlap):
+                continue
+            ranked.append(
+                ((phrase, heading_overlap, body_overlap, hit.source_path), hit)
+            )
+        ranked.sort(
+            key=lambda item: (
+                -item[0][0],
+                -item[0][1],
+                -item[0][2],
+                item[0][3],
+                item[1].id,
+            )
+        )
+        return [hit for _score, hit in ranked[:limit]]
+
+    @staticmethod
+    def _fuse_study_design_hits(
+        vector_hits: list[StudyDesignHit],
+        lexical_hits: list[StudyDesignHit],
+        *,
+        limit: int,
+    ) -> tuple[StudyDesignHit, ...]:
+        scores: dict[str, float] = {}
+        hits_by_id: dict[str, StudyDesignHit] = {}
+        matched_by: dict[str, list[Literal["vector", "lexical"]]] = {}
+        for mode, hits in (("vector", vector_hits), ("lexical", lexical_hits)):
+            seen: set[str] = set()
+            for rank, hit in enumerate(hits, start=1):
+                if hit.id in seen:
+                    continue
+                seen.add(hit.id)
+                hits_by_id.setdefault(hit.id, hit)
+                scores[hit.id] = scores.get(hit.id, 0.0) + 1.0 / (_RRF_K + rank)
+                matched_by.setdefault(hit.id, []).append(mode)
+        ordered_ids = sorted(
+            scores,
+            key=lambda evidence_id: (-scores[evidence_id], evidence_id),
+        )[:limit]
+        return tuple(
+            replace(hits_by_id[evidence_id], matched_by=tuple(matched_by[evidence_id]))
+            for evidence_id in ordered_ids
+        )
+
     def search(self, query: str, limit: int = 5) -> tuple[StudyDesignHit, ...]:
         return self.search_with_status(query, limit=limit).value
 
@@ -276,6 +339,7 @@ class MarkdownStudyDesign:
             raise ValueError("Study-design search query must not be blank.")
         if not 1 <= limit <= 10:
             raise ValueError("Study-design search limit must be between 1 and 10.")
+        local_sections = self._local_sections()
         route = self._resolved_embedding_route()
         if not route.available:
             return self._lexical_outcome(
@@ -302,7 +366,7 @@ class MarkdownStudyDesign:
         try:
             result = collection.query(
                 query_texts=[normalized_query],
-                n_results=limit,
+                n_results=limit * 2,
                 where={"source_kind": "study_design"},
                 include=["documents", "metadatas", "distances"],
             )
@@ -313,9 +377,18 @@ class MarkdownStudyDesign:
                 route=route,
                 reason_code="EMBEDDING_PROVIDER_UNAVAILABLE",
             )
-        hits = self._validated_vector_hits(result, self._local_sections())
+        vector_hits = self._validated_vector_hits(result, local_sections)
+        lexical_hits = self._rank_lexical_sections(
+            normalized_query,
+            local_sections,
+            limit=limit * 2,
+        )
         return RetrievalOutcome(
-            value=tuple(hits),
+            value=self._fuse_study_design_hits(
+                vector_hits,
+                lexical_hits,
+                limit=limit,
+            ),
             status=hybrid_status(route.model, provider=route.provider),
         )
 
@@ -327,34 +400,14 @@ class MarkdownStudyDesign:
         route: EmbeddingRoute,
         reason_code: EmbeddingReasonCode,
     ) -> RetrievalOutcome[tuple[StudyDesignHit, ...]]:
-        query_tokens = {
-            token
-            for token in _TOKEN.findall(query.casefold())
-            if token not in _STOPWORDS
-        }
-        ranked: list[tuple[tuple[int, int, int, str], StudyDesignHit]] = []
-        for hit in self._local_sections():
-            section_text = hit.section.casefold()
-            body_text = hit.text.casefold()
-            heading_overlap = sum(token in section_text for token in query_tokens)
-            body_overlap = sum(token in body_text for token in query_tokens)
-            phrase = int(query.casefold() in f"{section_text} {body_text}")
-            if not (phrase or heading_overlap or body_overlap):
-                continue
-            ranked.append(
-                ((phrase, heading_overlap, body_overlap, hit.source_path), hit)
-            )
-        ranked.sort(
-            key=lambda item: (
-                -item[0][0],
-                -item[0][1],
-                -item[0][2],
-                item[0][3],
-                item[1].id,
-            )
-        )
         return RetrievalOutcome(
-            value=tuple(hit for _score, hit in ranked[:limit]),
+            value=tuple(
+                self._rank_lexical_sections(
+                    query,
+                    self._local_sections(),
+                    limit=limit,
+                )
+            ),
             status=lexical_fallback_status(
                 route.model,
                 reason_code,

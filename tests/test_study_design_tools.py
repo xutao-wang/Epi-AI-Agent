@@ -6,7 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from db_rag.study_design_documents import StudyDesignHit
+from db_rag.study_design_documents import (
+    StudyDesignHit,
+    StudyDesignKnowledgeUnavailableError,
+)
 from db_rag.retrieval_status import RetrievalOutcome, lexical_fallback_status
 from epi_agent.agent import build_general_epi_agent_registry
 from epi_agent.protocol import ArtifactRef, ToolContext, ToolExecutionError
@@ -31,6 +34,7 @@ class _SearchableDesign:
         assert limit == 3
         return (
             StudyDesignHit(
+                id="study-design.fixture",
                 source_kind="study_design",
                 source_id="study-design-source.fixture",
                 source_path="reference/visits.md",
@@ -38,6 +42,7 @@ class _SearchableDesign:
                 section="Visits",
                 text=self.text,
                 distance=0.125,
+                matched_by=("vector", "lexical"),
             ),
         )
 
@@ -45,6 +50,11 @@ class _SearchableDesign:
 class _LegacyDesign:
     def render_context(self) -> str:
         return "Legacy context."
+
+
+class _InvalidSemanticDesign(_SearchableDesign):
+    def search_with_status(self, query: str, limit: int = 5):
+        raise StudyDesignKnowledgeUnavailableError("Invalid vector evidence.")
 
 
 @dataclass
@@ -106,12 +116,15 @@ def test_design_search_tool_returns_bounded_provenance_artifact() -> None:
     payload = json.loads(result.message)
     assert payload["hits"][0] == {
         "study_id": "study-1",
+        "evidence_id": "study-design.fixture",
         "source_kind": "study_design",
         "source_id": "study-design-source.fixture",
         "source_path": "reference/visits.md",
         "source_sha256": "a" * 64,
         "section": "Visits",
         "excerpt": "x" * 1_200,
+        "distance": 0.125,
+        "matched_by": ["vector", "lexical"],
     }
     assert store.saved[0]["kind"] == "study_design_evidence"
     assert store.saved[0]["content"]["hits"] == payload["hits"]
@@ -178,6 +191,23 @@ def test_design_search_tool_reports_unavailable_for_legacy_provider() -> None:
         )
 
     assert raised.value.code == "STUDY_DESIGN_SEARCH_UNAVAILABLE"
+
+
+def test_design_search_tool_translates_invalid_semantic_evidence() -> None:
+    with pytest.raises(ToolExecutionError) as raised:
+        build_study_design_tool_registry().invoke(
+            "study-design-search",
+            {"study_id": "study-1", "query": "When are visits?", "limit": 3},
+            context=ToolContext(
+                studies=StudyRegistry([_study(_InvalidSemanticDesign())]),
+                artifact_store=_ArtifactStore(),
+                thread_id="thread-1",
+                policy=None,
+            ),
+        )
+
+    assert raised.value.code == "STUDY_DESIGN_EVIDENCE_INVALID"
+    assert raised.value.recoverable is True
 
 
 @pytest.mark.parametrize("design", [None, _LegacyDesign()])
