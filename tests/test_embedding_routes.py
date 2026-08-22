@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from db_rag.config import EMBEDDING_MODEL
+from db_rag.config import EMBEDDING_MODEL, resolve_db_rag_embedding_model
 from db_rag.embedding_routes import resolve_embedding_route
 
 
@@ -37,3 +37,11 @@ def test_future_openrouter_qwen_route_degrades_when_adapter_is_unavailable() -> 
     assert route.available is False
     assert route.unavailable_reason_code == "EMBEDDING_ROUTE_UNAVAILABLE"
     assert "router-key" not in repr(route)
+
+
+def test_future_embedding_model_configuration_reaches_route_resolution() -> None:
+    model = "OpenRouter/Qwen/qwen3-embedding-8b"
+
+    assert resolve_db_rag_embedding_model(
+        {"DB_RAG_EMBEDDING_MODEL": model}
+    ) == model

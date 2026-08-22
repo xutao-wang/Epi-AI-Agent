@@ -90,7 +90,9 @@ def _db_rag_readiness(
     readiness = [
         resolve_db_rag_readiness(
             paths=paths,
-            expected_embedding_model=embedding_route.model,
+            expected_embedding_model=(
+                embedding_route.model if embedding_route.available else None
+            ),
         )
         for study in studies.values
         if (paths := getattr(study, "db_rag_paths", None)) is not None

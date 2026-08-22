@@ -301,7 +301,12 @@ def test_unavailable_openrouter_route_binds_provider_aware_lexical_fallback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    report = _bundle(tmp_path, "report-india-synthetic", "REPORT_TABLE")
+    report = _bundle(
+        tmp_path,
+        "report-india-synthetic",
+        "REPORT_TABLE",
+        knowledge=_publication_knowledge("report-india-synthetic"),
+    )
     monkeypatch.setattr(session_studies, "resolve_db_rag_readiness", _available)
     monkeypatch.setattr(
         session_studies.chromadb,
@@ -330,6 +335,13 @@ def test_unavailable_openrouter_route_binds_provider_aware_lexical_fallback(
     assert outcome.status.provider == "openrouter"
     assert outcome.status.reason_code == "EMBEDDING_ROUTE_UNAVAILABLE"
     assert outcome.value[0][0].table == "REPORT_TABLE"
+    publication_outcome = bound.studies.require(
+        "report-india-synthetic"
+    ).knowledge.search_with_status("eligibility", limit=3)
+    assert publication_outcome.value
+    assert publication_outcome.status.model == route.model
+    assert publication_outcome.status.provider == "openrouter"
+    assert publication_outcome.status.reason_code == "EMBEDDING_ROUTE_UNAVAILABLE"
 
 
 class _IsolatedEmbeddingFunction:

@@ -50,13 +50,19 @@ def test_missing_embedding_key_keeps_lexical_db_rag_available(monkeypatch) -> No
 def test_unavailable_future_embedding_route_keeps_db_rag_available(monkeypatch) -> None:
     import api.app as app_module
 
+    expected_models: list[str | None] = []
+
+    def readiness(**kwargs):
+        expected_models.append(kwargs["expected_embedding_model"])
+        return DbRagReadiness(
+            status="available",
+            message="DB-RAG dataset is available.",
+        )
+
     monkeypatch.setattr(
         app_module,
         "resolve_db_rag_readiness",
-        lambda **_kwargs: DbRagReadiness(
-            status="available",
-            message="DB-RAG dataset is available.",
-        ),
+        readiness,
     )
     studies = StudyRegistry(
         [
@@ -83,6 +89,7 @@ def test_unavailable_future_embedding_route_keeps_db_rag_available(monkeypatch) 
     assert "lexical fallback" in readiness.message
     assert "openrouter" in readiness.message
     assert "adapter" in readiness.message
+    assert expected_models == [None]
 
 
 def test_anthropic_only_application_binds_all_retrieval_as_lexical(
