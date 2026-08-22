@@ -88,13 +88,27 @@ Saved conversations remain readable if their original provider is unavailable.
 To send another message in such a conversation, select and confirm one of the
 currently available models; the conversation then continues with that model.
 
-Evidence retrieval uses the package's configured OpenAI embedding model when
-`OPENAI_API_KEY` is available, even when the chat model is Claude or a custom
-model. Catalog, reviewed-publication, and study-design searches then combine
-vector and lexical ranking. Without the key, those tools continue with
-lexical-only search and explicitly report the unavailable embedding model and
-reason without stopping the agent. Building or rebuilding a study package's
-embedding index still requires embedding credentials.
+Evidence retrieval routes embeddings independently from the selected chat
+model. The built-in `OpenAI/text-embedding-3-large` route uses
+`OPENAI_API_KEY`, even when the chat model is Claude or a custom model. Catalog,
+reviewed-publication, and study-design searches then combine vector and lexical
+ranking. If the configured embedding route, adapter, credentials, index, or
+provider is unavailable, those tools continue with lexical-only search and
+explicitly report the embedding model, provider, and reason without stopping
+the agent. A future model such as Qwen through OpenRouter therefore degrades to
+lexical search when its route is unavailable; this release does not yet include
+an OpenRouter embedding transport. Building or rebuilding a study package's
+embedding index still requires a compatible embedding route.
+
+To make one real chat-provider smoke request with OpenAI and OpenRouter keys
+removed for the duration of the request, run:
+
+```bash
+.venv/bin/python scripts/smoke_anthropic_only.py
+```
+
+The smoke prints only the selected model and response length, never credential
+values or response content.
 
 ## Included demo data
 
