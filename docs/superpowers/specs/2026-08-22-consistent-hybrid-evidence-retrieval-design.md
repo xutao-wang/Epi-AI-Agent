@@ -97,4 +97,3 @@ Focused tests will prove that each provider:
 The existing real DB-RAG smoke will be extended or accompanied by a dedicated
 production-entry-point smoke that exercises all three providers with a real
 embedding route and asserts auditable hybrid output.
-
