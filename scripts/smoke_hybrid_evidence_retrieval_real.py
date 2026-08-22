@@ -52,12 +52,32 @@ def _catalog_hits(content: dict[str, object]) -> list[dict[str, object]]:
     return hits
 
 
+def _matched_modes(value: object) -> tuple[str, ...]:
+    raw_modes = value.split(",") if isinstance(value, str) else value
+    if not isinstance(raw_modes, (list, tuple)):
+        return ()
+    modes: list[str] = []
+    for mode in raw_modes:
+        normalized = str(mode).strip()
+        if normalized in {"vector", "lexical"} and normalized not in modes:
+            modes.append(normalized)
+    return tuple(modes)
+
+
 def _verify_artifact(content: dict[str, object], *, catalog: bool) -> int:
-    _require(
-        content.get("retrieval_mode") == "hybrid_vector_lexical",
-        "A retrieval artifact did not use hybrid_vector_lexical mode.",
-    )
+    retrieval_mode = str(content.get("retrieval_mode") or "missing")
     embedding = content.get("embedding")
+    reason_code = (
+        str(embedding.get("reason_code") or "none")
+        if isinstance(embedding, dict)
+        else "missing"
+    )
+    _require(
+        retrieval_mode == "hybrid_vector_lexical",
+        "A retrieval artifact reported mode "
+        f"{retrieval_mode!r} with reason {reason_code!r}, "
+        "not hybrid_vector_lexical.",
+    )
     _require(
         isinstance(embedding, dict) and embedding.get("available") is True,
         "A retrieval artifact did not report an available embedding route.",
@@ -66,11 +86,9 @@ def _verify_artifact(content: dict[str, object], *, catalog: bool) -> int:
     _require(isinstance(hits, list) and hits, "A retrieval artifact had no evidence.")
     for hit in hits:
         _require(isinstance(hit, dict), "A retrieval artifact had malformed evidence.")
-        modes = hit.get("matched_by")
+        modes = _matched_modes(hit.get("matched_by"))
         _require(
-            isinstance(modes, list)
-            and modes
-            and all(mode in {"vector", "lexical"} for mode in modes),
+            bool(modes),
             "Evidence is missing auditable matched_by provenance.",
         )
     return len(hits)
@@ -131,15 +149,17 @@ def main(argv: list[str] | None = None) -> int:
             {"study_id": study_id, "query": "participant visits", "limit": 5},
             context=context,
         )
-        stage = "artifact validation"
+        stage = "catalog artifact validation"
         catalog_count = _verify_artifact(
             store.require(catalog_result.artifacts[0]).content,
             catalog=True,
         )
+        stage = "publication artifact validation"
         publication_count = _verify_artifact(
             store.require(publication_result.artifacts[0]).content,
             catalog=False,
         )
+        stage = "study-design artifact validation"
         design_count = _verify_artifact(
             store.require(design_result.artifacts[0]).content,
             catalog=False,
@@ -152,10 +172,9 @@ def main(argv: list[str] | None = None) -> int:
             f"study_design={design_count} elapsed_seconds={elapsed:.2f}"
         )
         return 0
-    except (RuntimeError, TimeoutError):
+    except (RuntimeError, TimeoutError) as error:
         print(
-            f"hybrid evidence smoke failed at {stage}; "
-            "inspect configured study assets and embedding readiness.",
+            f"hybrid evidence smoke failed at {stage}: {error}",
             file=sys.stderr,
         )
         return 1
