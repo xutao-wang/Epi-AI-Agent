@@ -68,15 +68,21 @@ for vector hits.
 Study-design search currently returns only Chroma vector hits while labelling
 the result hybrid. It will run the existing deterministic Markdown section
 scorer even when vector retrieval succeeds, then union and fuse both branches.
-Study-design evidence identity is the stable source ID derived from relative
-path and section ordinal. Returned evidence preserves path, file hash, section,
-text, distance when supplied by vector search, and `matched_by`.
+Study-design file identity remains
+`study-design-source.<sha256(relative_path)[:24]>`. Fusion uses the distinct
+section evidence ID already stored as the Chroma row ID:
+`study-design.<sha256(source_id:section:chunk_ordinal:body_text)[:24]>`.
+Lexical indexing reproduces both identities from the authoritative Markdown so
+the same section can be recognized across branches without merging unrelated
+sections from one file. Returned evidence preserves evidence ID, file-level
+source ID, path, file hash, section, text, distance when supplied by vector
+search, and `matched_by`.
 
 Before fusion, every vector study-design hit must match the authoritative local
-Markdown section inventory by source ID, relative path, file SHA-256, and
-section identity. Unknown, duplicated, inconsistent, or empty vector partitions
-remain explicit integrity failures rather than silently becoming lexical
-fallback.
+Markdown section inventory by Chroma evidence ID, file-level source ID,
+relative path, file SHA-256, heading, chunk ordinal, and exact body text.
+Unknown, duplicated, inconsistent, or empty vector partitions remain explicit
+integrity failures rather than silently becoming lexical fallback.
 
 ## Tool Output
 
