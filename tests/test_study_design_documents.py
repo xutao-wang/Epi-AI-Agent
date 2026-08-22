@@ -71,6 +71,12 @@ def test_markdown_study_design_search_filters_and_maps_provenance(
     monkeypatch,
 ) -> None:
     provider = _provider(tmp_path)
+    provider = provider.with_embedding_route(
+        resolve_embedding_route(
+            {"OPENAI_API_KEY": "test-key"},
+            provider.embedding_model,
+        )
+    )
     collection = _RecordingCollection()
     client = _RecordingClient(collection)
     monkeypatch.setattr(provider, "_open_client", lambda: client)
