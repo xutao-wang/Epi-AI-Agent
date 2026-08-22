@@ -25,8 +25,15 @@ or review behavior.
 An embedding-enabled search reports `hybrid_vector_lexical` only after both
 retrieval branches have run. Vector and lexical candidates are independently
 bounded, deduplicated by their authoritative evidence identity, and combined
-with deterministic reciprocal-rank fusion. A candidate may enter the final
-result through vector retrieval, lexical retrieval, or both.
+with deterministic reciprocal-rank fusion using `K=60` and equal branch
+weights of `1.0`. A candidate may enter the final result through vector
+retrieval, lexical retrieval, or both.
+
+For publication and study-design search, each branch retrieves at most twice
+the requested final limit before fusion. A request for five results therefore
+considers at most ten vector and ten lexical candidates, then returns at most
+five fused hits. Catalog retains its existing separately bounded table, column,
+and lexical candidate partitions.
 
 Every returned hit records `matched_by` in the stable order `vector`,
 `lexical`. Exact lexical catalog identifiers retain their existing priority.
@@ -52,8 +59,9 @@ Publication search currently uses vector hits as the candidate gate and lets
 lexical ranking boost only overlapping vector hits. It will instead union the
 verified vector and verified local lexical candidates before fusion. A
 lexical-only publication chunk can therefore appear in the final bounded
-result. Existing publication identity and metadata verification remain
-mandatory for vector hits.
+result. The existing lexical weight of `1.5` becomes the shared equal weight of
+`1.0`. Existing publication identity and metadata verification remain mandatory
+for vector hits.
 
 ### Study design
 
@@ -63,6 +71,12 @@ scorer even when vector retrieval succeeds, then union and fuse both branches.
 Study-design evidence identity is the stable source ID derived from relative
 path and section ordinal. Returned evidence preserves path, file hash, section,
 text, distance when supplied by vector search, and `matched_by`.
+
+Before fusion, every vector study-design hit must match the authoritative local
+Markdown section inventory by source ID, relative path, file SHA-256, and
+section identity. Unknown, duplicated, inconsistent, or empty vector partitions
+remain explicit integrity failures rather than silently becoming lexical
+fallback.
 
 ## Tool Output
 
