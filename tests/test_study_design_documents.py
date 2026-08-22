@@ -3,30 +3,25 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from db_rag.study_design_documents import MarkdownStudyDesign
+import pytest
+
+from db_rag.study_design_documents import (
+    MarkdownStudyDesign,
+    StudyDesignKnowledgeUnavailableError,
+)
 from db_rag.embedding_routes import resolve_embedding_route
 from study_package.manifest import parse_study_package_manifest
 from tests.study_package_fixtures import create_package_root, minimal_manifest
 
 
 class _RecordingCollection:
-    def __init__(self) -> None:
+    def __init__(self, result: dict[str, object]) -> None:
         self.calls: list[dict[str, object]] = []
+        self.result = result
 
     def query(self, **kwargs):
         self.calls.append(kwargs)
-        return {
-            "documents": [["stored embedding document"]],
-            "metadatas": [[{
-                "source_kind": "study_design",
-                "source_id": "study-design-source.fixture",
-                "source_path": "reference/visits.md",
-                "source_sha256": "a" * 64,
-                "section": "Visits",
-                "body_text": "Retrieval-only schedule.",
-            }]],
-            "distances": [[0.125]],
-        }
+        return self.result
 
 
 class _RecordingClient:
@@ -58,6 +53,49 @@ def _provider(tmp_path: Path) -> MarkdownStudyDesign:
     )
 
 
+def _vector_result(
+    provider: MarkdownStudyDesign,
+    *,
+    ids: list[str] | None = None,
+    metadata_updates: dict[str, object] | None = None,
+    documents: list[str] | None = None,
+) -> dict[str, object]:
+    visits = next(hit for hit in provider._local_sections() if hit.section == "Visits")
+    metadata = {
+        "source_kind": visits.source_kind,
+        "source_id": visits.source_id,
+        "source_path": visits.source_path,
+        "source_sha256": visits.source_sha256,
+        "section": visits.section,
+        "chunk_ordinal": 0,
+        "body_text": visits.text,
+    }
+    metadata.update(metadata_updates or {})
+    return {
+        "ids": [ids or [visits.id]],
+        "documents": [documents or [visits.text]],
+        "metadatas": [[metadata]],
+        "distances": [[0.125]],
+    }
+
+
+def _semantic_provider(
+    provider: MarkdownStudyDesign,
+    monkeypatch,
+    result: dict[str, object],
+) -> _RecordingCollection:
+    provider = provider.with_embedding_route(
+        resolve_embedding_route(
+            {"OPENAI_API_KEY": "test-key"},
+            provider.embedding_model,
+        )
+    )
+    collection = _RecordingCollection(result)
+    monkeypatch.setattr(provider, "_open_client", lambda: _RecordingClient(collection))
+    monkeypatch.setattr(provider, "_embedding_function", lambda: object())
+    return provider, collection
+
+
 def test_markdown_study_design_preserves_overview_markdown(tmp_path: Path) -> None:
     provider = _provider(tmp_path)
 
@@ -71,16 +109,11 @@ def test_markdown_study_design_search_filters_and_maps_provenance(
     monkeypatch,
 ) -> None:
     provider = _provider(tmp_path)
-    provider = provider.with_embedding_route(
-        resolve_embedding_route(
-            {"OPENAI_API_KEY": "test-key"},
-            provider.embedding_model,
-        )
+    provider, collection = _semantic_provider(
+        provider,
+        monkeypatch,
+        _vector_result(provider),
     )
-    collection = _RecordingCollection()
-    client = _RecordingClient(collection)
-    monkeypatch.setattr(provider, "_open_client", lambda: client)
-    monkeypatch.setattr(provider, "_embedding_function", lambda: object())
 
     hits = provider.search("When are visits?", limit=3)
 
@@ -91,13 +124,116 @@ def test_markdown_study_design_search_filters_and_maps_provenance(
         "include": ["documents", "metadatas", "distances"],
     }]
     assert len(hits) == 1
+    assert hits[0].id.startswith("study-design.")
     assert hits[0].source_kind == "study_design"
-    assert hits[0].source_id == "study-design-source.fixture"
+    assert hits[0].source_id == (
+        "study-design-source."
+        + hashlib.sha256(b"reference/visits.md").hexdigest()[:24]
+    )
     assert hits[0].source_path == "reference/visits.md"
-    assert hits[0].source_sha256 == "a" * 64
+    assert hits[0].source_sha256 == hashlib.sha256(
+        (provider.design_root / "reference/visits.md").read_bytes()
+    ).hexdigest()
     assert hits[0].section == "Visits"
     assert hits[0].text == "Retrieval-only schedule."
     assert hits[0].distance == 0.125
+    assert hits[0].matched_by == ()
+
+
+def test_markdown_study_design_builds_canonical_local_section_identity(
+    tmp_path: Path,
+) -> None:
+    provider = _provider(tmp_path)
+
+    visits = next(hit for hit in provider._local_sections() if hit.section == "Visits")
+
+    assert visits.source_id == (
+        "study-design-source."
+        + hashlib.sha256(b"reference/visits.md").hexdigest()[:24]
+    )
+    assert visits.id.startswith("study-design.")
+    assert visits.source_sha256 == hashlib.sha256(
+        (provider.design_root / "reference/visits.md").read_bytes()
+    ).hexdigest()
+    assert visits.matched_by == ()
+
+
+def test_markdown_study_design_rejects_unknown_vector_id(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    provider = _provider(tmp_path)
+    provider, _collection = _semantic_provider(
+        provider,
+        monkeypatch,
+        _vector_result(provider, ids=["study-design.unknown"]),
+    )
+
+    with pytest.raises(StudyDesignKnowledgeUnavailableError, match="unknown"):
+        provider.search_with_status("When are visits?", limit=3)
+
+
+def test_markdown_study_design_rejects_stale_vector_hash(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    provider = _provider(tmp_path)
+    provider, _collection = _semantic_provider(
+        provider,
+        monkeypatch,
+        _vector_result(provider, metadata_updates={"source_sha256": "b" * 64}),
+    )
+
+    with pytest.raises(StudyDesignKnowledgeUnavailableError, match="provenance"):
+        provider.search_with_status("When are visits?", limit=3)
+
+
+def test_markdown_study_design_rejects_inconsistent_vector_text(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    provider = _provider(tmp_path)
+    provider, _collection = _semantic_provider(
+        provider,
+        monkeypatch,
+        _vector_result(provider, metadata_updates={"body_text": "Stale text."}),
+    )
+
+    with pytest.raises(StudyDesignKnowledgeUnavailableError, match="provenance"):
+        provider.search_with_status("When are visits?", limit=3)
+
+
+def test_markdown_study_design_rejects_duplicate_vector_id(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    provider = _provider(tmp_path)
+    result = _vector_result(provider)
+    vector_id = result["ids"][0][0]
+    metadata = result["metadatas"][0][0]
+    result["ids"] = [[vector_id, vector_id]]
+    result["documents"] = [[metadata["body_text"], metadata["body_text"]]]
+    result["metadatas"] = [[metadata, metadata]]
+    result["distances"] = [[0.125, 0.25]]
+    provider, _collection = _semantic_provider(provider, monkeypatch, result)
+
+    with pytest.raises(StudyDesignKnowledgeUnavailableError, match="duplicate"):
+        provider.search_with_status("When are visits?", limit=3)
+
+
+def test_markdown_study_design_rejects_empty_vector_partition(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    provider = _provider(tmp_path)
+    provider, _collection = _semantic_provider(
+        provider,
+        monkeypatch,
+        {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]},
+    )
+
+    with pytest.raises(StudyDesignKnowledgeUnavailableError, match="empty"):
+        provider.search_with_status("When are visits?", limit=3)
 
 
 def test_markdown_study_design_falls_back_to_ranked_lexical_sections(
