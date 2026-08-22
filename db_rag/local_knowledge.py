@@ -253,15 +253,15 @@ def _fuse_hits(
     scores: dict[str, float] = {}
     hits_by_id: dict[str, PublicationEvidenceHit] = {}
     matched_by: dict[str, list[str]] = {}
-    for rank, hit in enumerate(vector_hits, start=1):
-        hits_by_id[hit.id] = hit
-        scores[hit.id] = 1.0 / (_RRF_K + rank)
-        matched_by[hit.id] = ["vector"]
-    for rank, hit in enumerate(lexical_hits, start=1):
-        if hit.id not in hits_by_id:
-            continue
-        scores[hit.id] += 1.5 / (_RRF_K + rank)
-        matched_by[hit.id].append("lexical")
+    for mode, hits in (("vector", vector_hits), ("lexical", lexical_hits)):
+        seen: set[str] = set()
+        for rank, hit in enumerate(hits, start=1):
+            if hit.id in seen:
+                continue
+            seen.add(hit.id)
+            hits_by_id.setdefault(hit.id, hit)
+            scores[hit.id] = scores.get(hit.id, 0.0) + 1.0 / (_RRF_K + rank)
+            matched_by.setdefault(hit.id, []).append(mode)
     ordered_ids = sorted(
         scores,
         key=lambda chunk_id: (-scores[chunk_id], chunk_id),

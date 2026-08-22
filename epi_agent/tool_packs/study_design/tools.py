@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import math
 from typing import Any, Callable
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from db_rag.config import EMBEDDING_MODEL
 from db_rag.retrieval_status import RetrievalOutcome, hybrid_status
+from db_rag.study_design_documents import StudyDesignKnowledgeUnavailableError
 
 from epi_agent.protocol import (
     ToolContext,
@@ -45,9 +47,10 @@ def _bounded(value: Any, limit: int) -> str:
     return str(value or "")[:limit]
 
 
-def _design_hit(value: Any, *, study_id: str) -> dict[str, str]:
-    row = {
+def _design_hit(value: Any, *, study_id: str) -> dict[str, object]:
+    row: dict[str, object] = {
         "study_id": study_id,
+        "evidence_id": _bounded(_field(value, "id"), _MAX_PROVENANCE_CHARS),
         "source_kind": _bounded(_field(value, "source_kind"), _MAX_PROVENANCE_CHARS),
         "source_id": _bounded(_field(value, "source_id"), _MAX_PROVENANCE_CHARS),
         "source_path": _bounded(_field(value, "source_path"), _MAX_PROVENANCE_CHARS),
@@ -58,7 +61,22 @@ def _design_hit(value: Any, *, study_id: str) -> dict[str, str]:
         "section": _bounded(_field(value, "section"), _MAX_PROVENANCE_CHARS),
         "excerpt": _bounded(_field(value, "text"), _MAX_EXCERPT_CHARS),
     }
-    return {key: item for key, item in row.items() if item}
+    distance = _field(value, "distance")
+    if (
+        isinstance(distance, (int, float))
+        and not isinstance(distance, bool)
+        and math.isfinite(float(distance))
+    ):
+        row["distance"] = float(distance)
+    matched_by = _field(value, "matched_by")
+    if isinstance(matched_by, (list, tuple)):
+        modes: list[str] = []
+        for mode in matched_by:
+            if mode in {"vector", "lexical"} and mode not in modes:
+                modes.append(mode)
+        if modes:
+            row["matched_by"] = modes
+    return {key: item for key, item in row.items() if item or item == 0.0}
 
 
 def _search(arguments: dict[str, Any], context: ToolContext) -> ToolResult:
@@ -71,22 +89,29 @@ def _search(arguments: dict[str, Any], context: ToolContext) -> ToolResult:
             recoverable=True,
         )
     search_with_status = getattr(provider, "search_with_status", None)
-    outcome = (
-        search_with_status(
-            str(arguments["query"]),
-            limit=int(arguments["limit"]),
-        )
-        if callable(search_with_status)
-        else RetrievalOutcome(
-            value=provider.search(
+    try:
+        outcome = (
+            search_with_status(
                 str(arguments["query"]),
                 limit=int(arguments["limit"]),
-            ),
-            status=hybrid_status(
-                getattr(provider, "embedding_model", EMBEDDING_MODEL)
-            ),
+            )
+            if callable(search_with_status)
+            else RetrievalOutcome(
+                value=provider.search(
+                    str(arguments["query"]),
+                    limit=int(arguments["limit"]),
+                ),
+                status=hybrid_status(
+                    getattr(provider, "embedding_model", EMBEDDING_MODEL)
+                ),
+            )
         )
-    )
+    except StudyDesignKnowledgeUnavailableError as error:
+        raise ToolExecutionError(
+            "STUDY_DESIGN_EVIDENCE_INVALID",
+            str(error),
+            recoverable=True,
+        ) from error
     hits = [
         _design_hit(hit, study_id=study.study_id)
         for hit in outcome.value

@@ -108,6 +108,7 @@ def test_semantic_publication_search_requires_vector_and_boosts_lexical() -> Non
 
     assert embedder.calls == [["cohort eligibility"]]
     assert collection.calls[0]["query_embeddings"] == [[0.25, 0.75]]
+    assert collection.calls[0]["n_results"] == 4
     assert collection.calls[0]["where"] == {"source_kind": "publication"}
     assert hits[0].id == "publication.lexical-first"
     assert {hit.id for hit in hits} == {
@@ -177,48 +178,45 @@ def test_semantic_publication_search_rejects_stale_vector_metadata() -> None:
         knowledge.search("cohort eligibility", limit=5)
 
 
-def test_semantic_publication_fusion_never_replaces_vector_candidates() -> None:
-    vector_chunks = (
+def test_publication_fusion_unions_vector_and_lexical_candidates() -> None:
+    dual = local_knowledge._hit(
         _chunk(
-            "publication.semantic-1",
-            title="Renal outcomes",
-            text="Kidney outcomes.",
-        ),
-        _chunk(
-            "publication.semantic-2",
-            title="Treatment outcomes",
-            text="Treatment outcomes.",
-        ),
-    )
-    lexical_chunks = (
-        _chunk(
-            "publication.lexical-1",
-            title="Cohort definition",
-            text="Cohort enrollment.",
-        ),
-        _chunk(
-            "publication.lexical-2",
+            "publication.dual",
             title="Cohort eligibility",
             text="Cohort eligibility.",
-        ),
+        )
     )
-    local = LocalPublicationKnowledge(
-        (*vector_chunks, *lexical_chunks),
-        {"cohort": 2},
+    vector_only = local_knowledge._hit(
+        _chunk(
+            "publication.vector-only",
+            title="Renal outcomes",
+            text="Kidney outcomes.",
+        )
     )
-    knowledge = local_knowledge.SemanticPublicationKnowledge(
-        local,
-        collection=_Collection(vector_chunks),
-        embedding_function=_EmbeddingFunction(),
+    lexical_only = local_knowledge._hit(
+        _chunk(
+            "publication.lexical-only",
+            title="Cohort definition",
+            text="Cohort enrollment.",
+        )
     )
 
-    hits = knowledge.search("cohort", limit=2)
+    hits = local_knowledge._fuse_hits(
+        [dual, vector_only],
+        [lexical_only, dual],
+        limit=3,
+    )
 
     assert [hit.id for hit in hits] == [
-        "publication.semantic-1",
-        "publication.semantic-2",
+        "publication.dual",
+        "publication.lexical-only",
+        "publication.vector-only",
     ]
-    assert all(hit.provenance["matched_by"] == "vector" for hit in hits)
+    assert [hit.provenance["matched_by"] for hit in hits] == [
+        "vector,lexical",
+        "lexical",
+        "vector",
+    ]
 
 
 def test_unavailable_semantic_publication_preserves_exact_source_opening() -> None:
