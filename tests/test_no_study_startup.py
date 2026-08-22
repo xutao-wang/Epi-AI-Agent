@@ -23,7 +23,7 @@ from utils.attachment_readers import AttachmentReaderService
 from utils.model_runtime_profiles import model_runtime_profile
 
 
-def test_graph_factory_binds_all_studies_with_the_provider_key(
+def test_graph_factory_binds_all_studies_with_the_embedding_route(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -62,12 +62,11 @@ def test_graph_factory_binds_all_studies_with_the_provider_key(
     bind_calls: list[dict[str, object]] = []
     graph_kwargs: dict[str, object] = {}
 
-    def bind_session_studies(studies, *, api_key, expected_embedding_model):
+    def bind_session_studies(studies, *, embedding_route):
         bind_calls.append(
             {
                 "studies": studies,
-                "api_key": api_key,
-                "expected_embedding_model": expected_embedding_model,
+                "embedding_route": embedding_route,
             }
         )
         return SimpleNamespace(
@@ -115,13 +114,12 @@ def test_graph_factory_binds_all_studies_with_the_provider_key(
         ),
     )
 
-    assert bind_calls == [
-        {
-            "studies": discovered_studies,
-            "api_key": "startup-provider-key",
-            "expected_embedding_model": EMBEDDING_MODEL,
-        }
-    ]
+    assert len(bind_calls) == 1
+    assert bind_calls[0]["studies"] is discovered_studies
+    route = bind_calls[0]["embedding_route"]
+    assert route.model == EMBEDDING_MODEL
+    assert route.provider == "openai"
+    assert route.available is True
     assert graph_kwargs["studies"] is bound_studies
     assert graph_kwargs["db_rag_readiness_by_study"] == readiness_by_study
     assert "startup-provider-key" not in repr(graph_kwargs)

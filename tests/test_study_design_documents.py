@@ -4,6 +4,7 @@ import hashlib
 from pathlib import Path
 
 from db_rag.study_design_documents import MarkdownStudyDesign
+from db_rag.embedding_routes import resolve_embedding_route
 from study_package.manifest import parse_study_package_manifest
 from tests.study_package_fixtures import create_package_root, minimal_manifest
 
@@ -111,3 +112,28 @@ def test_markdown_study_design_falls_back_to_ranked_lexical_sections(
         reference_path.read_bytes()
     ).hexdigest()
     assert outcome.value[0].distance is None
+
+
+def test_markdown_study_design_uses_bound_unavailable_route_without_chroma(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    provider = _provider(tmp_path).with_embedding_route(
+        resolve_embedding_route(
+            {"OPENROUTER_API_KEY": "router-key"},
+            "OpenRouter/Qwen/qwen3-embedding-8b",
+        )
+    )
+    monkeypatch.setattr(
+        provider,
+        "_open_client",
+        lambda: (_ for _ in ()).throw(AssertionError("Chroma must not open")),
+    )
+
+    outcome = provider.search_with_status("visit schedule", limit=3)
+
+    assert outcome.status.mode == "lexical_fallback"
+    assert outcome.status.model == "OpenRouter/Qwen/qwen3-embedding-8b"
+    assert outcome.status.provider == "openrouter"
+    assert outcome.status.reason_code == "EMBEDDING_ROUTE_UNAVAILABLE"
+    assert outcome.value[0].source_path == "reference/visits.md"

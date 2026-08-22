@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import os
 from pathlib import Path
@@ -17,13 +17,13 @@ from study_package.manifest import (
 from utils.env_loader import load_app_environment
 
 from .config import PROJECT_ROOT
+from .embedding_routes import EmbeddingRoute, resolve_embedding_route
 from .retrieval_status import (
     EmbeddingReasonCode,
     RetrievalOutcome,
     hybrid_status,
     lexical_fallback_status,
 )
-from .vectorstore import OpenAIEmbeddingFunction
 
 
 _TOKEN = re.compile(r"[a-z0-9]+")
@@ -53,6 +53,7 @@ class MarkdownStudyDesign:
     design_root: Path
     chroma_path: Path
     embedding_model: str
+    embedding_route: EmbeddingRoute | None = None
 
     @classmethod
     def from_package(
@@ -85,12 +86,17 @@ class MarkdownStudyDesign:
     def render_context(self) -> str:
         return self.overview_path.read_text(encoding="utf-8").strip()
 
-    def _embedding_function(self) -> OpenAIEmbeddingFunction:
+    def with_embedding_route(self, route: EmbeddingRoute) -> "MarkdownStudyDesign":
+        return replace(self, embedding_route=route)
+
+    def _resolved_embedding_route(self) -> EmbeddingRoute:
+        if self.embedding_route is not None:
+            return self.embedding_route
         load_app_environment(PROJECT_ROOT)
-        api_key = str(os.getenv("OPENAI_API_KEY", "") or "").strip()
-        if not api_key:
-            raise ValueError("OPENAI_API_KEY is required for study-design search.")
-        return OpenAIEmbeddingFunction(self.embedding_model, api_key=api_key)
+        return resolve_embedding_route(os.environ, self.embedding_model)
+
+    def _embedding_function(self):
+        return self._resolved_embedding_route().create_embedding_function()
 
     def _open_client(self):
         return chromadb.PersistentClient(path=str(self.chroma_path))
@@ -108,12 +114,16 @@ class MarkdownStudyDesign:
             raise ValueError("Study-design search query must not be blank.")
         if not 1 <= limit <= 10:
             raise ValueError("Study-design search limit must be between 1 and 10.")
-        load_app_environment(PROJECT_ROOT)
-        if not str(os.getenv("OPENAI_API_KEY", "") or "").strip():
+        route = self._resolved_embedding_route()
+        if not route.available:
             return self._lexical_outcome(
                 normalized_query,
                 limit=limit,
-                reason_code="EMBEDDING_CREDENTIALS_MISSING",
+                route=route,
+                reason_code=(
+                    route.unavailable_reason_code
+                    or "EMBEDDING_CONFIGURATION_UNAVAILABLE"
+                ),
             )
         try:
             collection = self._open_client().get_collection(
@@ -124,6 +134,7 @@ class MarkdownStudyDesign:
             return self._lexical_outcome(
                 normalized_query,
                 limit=limit,
+                route=route,
                 reason_code="EMBEDDING_INDEX_UNAVAILABLE",
             )
         try:
@@ -137,6 +148,7 @@ class MarkdownStudyDesign:
             return self._lexical_outcome(
                 normalized_query,
                 limit=limit,
+                route=route,
                 reason_code="EMBEDDING_PROVIDER_UNAVAILABLE",
             )
         metadatas = list((result.get("metadatas") or [[]])[0] or [])
@@ -167,7 +179,7 @@ class MarkdownStudyDesign:
             )
         return RetrievalOutcome(
             value=tuple(hits),
-            status=hybrid_status(self.embedding_model),
+            status=hybrid_status(route.model, provider=route.provider),
         )
 
     def _lexical_outcome(
@@ -175,6 +187,7 @@ class MarkdownStudyDesign:
         query: str,
         *,
         limit: int,
+        route: EmbeddingRoute,
         reason_code: EmbeddingReasonCode,
     ) -> RetrievalOutcome[tuple[StudyDesignHit, ...]]:
         query_tokens = {
@@ -241,5 +254,10 @@ class MarkdownStudyDesign:
         )
         return RetrievalOutcome(
             value=tuple(hit for _score, hit in ranked[:limit]),
-            status=lexical_fallback_status(self.embedding_model, reason_code),
+            status=lexical_fallback_status(
+                route.model,
+                reason_code,
+                provider=route.provider,
+                credential_env=route.credential_env,
+            ),
         )

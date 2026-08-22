@@ -25,7 +25,9 @@ from db_rag.config import (
     resolve_db_rag_embedding_model,
     resolve_db_rag_reranker_model,
 )
+from db_rag.embedding_routes import EmbeddingRoute, resolve_embedding_route
 from db_rag.readiness import DbRagReadiness, resolve_db_rag_readiness
+from db_rag.retrieval_status import lexical_fallback_status
 from db_rag.session_studies import bind_session_studies
 from epi_agent.activity import NULL_ACTIVITY_SINK
 from epi_agent.studies import StudyRegistry
@@ -78,8 +80,7 @@ def _provider_key(
 def _db_rag_readiness(
     studies: StudyRegistry,
     *,
-    embedding_model: str,
-    embedding_api_key: str,
+    embedding_route: EmbeddingRoute,
 ) -> DbRagReadiness:
     if not studies.values:
         return DbRagReadiness(
@@ -89,19 +90,26 @@ def _db_rag_readiness(
     readiness = [
         resolve_db_rag_readiness(
             paths=paths,
-            expected_embedding_model=embedding_model,
+            expected_embedding_model=embedding_route.model,
         )
         for study in studies.values
         if (paths := getattr(study, "db_rag_paths", None)) is not None
     ]
     available_count = sum(item.available for item in readiness)
     if available_count:
-        if not embedding_api_key:
+        if not embedding_route.available:
+            fallback_status = lexical_fallback_status(
+                embedding_route.model,
+                embedding_route.unavailable_reason_code
+                or "EMBEDDING_CONFIGURATION_UNAVAILABLE",
+                provider=embedding_route.provider,
+                credential_env=embedding_route.credential_env,
+            )
             return DbRagReadiness(
                 status="available",
                 message=(
                     "DB-RAG dataset retrieval is available with lexical fallback; "
-                    "OPENAI_API_KEY is not configured."
+                    f"{fallback_status.as_dict()['message']}"
                 ),
             )
         return DbRagReadiness(
@@ -167,7 +175,6 @@ def build_application(
     _provider_key(default_profile, environ)
     title_profile = catalog.registered_profiles[title_model]
     _provider_key(title_profile, environ)
-    embedding_api_key = str(environ.get("OPENAI_API_KEY", "") or "").strip()
 
     runtime_root_path = (
         Path(environ["REPORT_AGENT_RUNTIME_ROOT"])
@@ -196,11 +203,11 @@ def build_application(
     )
 
     studies = discover_studies(selected_study_root / "studies")
-    db_rag_embedding_model = resolve_db_rag_embedding_model()
+    db_rag_embedding_model = resolve_db_rag_embedding_model(environ)
+    embedding_route = resolve_embedding_route(environ, db_rag_embedding_model)
     db_rag_readiness = _db_rag_readiness(
         studies,
-        embedding_model=db_rag_embedding_model,
-        embedding_api_key=embedding_api_key,
+        embedding_route=embedding_route,
     )
 
     def graph_factory(
@@ -209,8 +216,7 @@ def build_application(
     ):
         bound_studies = bind_session_studies(
             studies,
-            api_key=embedding_api_key,
-            expected_embedding_model=db_rag_embedding_model,
+            embedding_route=embedding_route,
         )
         profile = catalog.registered_profiles[settings.model_name]
         llm_builder = (

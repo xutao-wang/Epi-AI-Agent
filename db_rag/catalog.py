@@ -48,6 +48,8 @@ class SchemaCatalog:
         *,
         default_source_id: str | None = None,
         embedding_model: str = EMBEDDING_MODEL,
+        embedding_provider: str | None = None,
+        embedding_credential_env: str | None = None,
         unavailable_reason_code: EmbeddingReasonCode = (
             "EMBEDDING_CONFIGURATION_UNAVAILABLE"
         ),
@@ -55,6 +57,8 @@ class SchemaCatalog:
         self._catalog = dict(catalog)
         self._default_source_id = _as_text(default_source_id)
         self.embedding_model = embedding_model
+        self.embedding_provider = embedding_provider
+        self.embedding_credential_env = embedding_credential_env
         self._unavailable_reason_code = unavailable_reason_code
 
     def field_exists(self, table: str, column: str) -> bool:
@@ -144,7 +148,12 @@ class SchemaCatalog:
             )
         return RetrievalOutcome(
             value=results,
-            status=lexical_fallback_status(self.embedding_model, reason_code),
+            status=lexical_fallback_status(
+                self.embedding_model,
+                reason_code,
+                provider=self.embedding_provider,
+                credential_env=self.embedding_credential_env,
+            ),
         )
 
 
@@ -171,11 +180,15 @@ class SemanticSchemaCatalog(SchemaCatalog):
         embedding_function: Any,
         default_source_id: str | None = None,
         embedding_model: str = EMBEDDING_MODEL,
+        embedding_provider: str | None = None,
+        embedding_credential_env: str | None = None,
     ) -> None:
         super().__init__(
             catalog,
             default_source_id=default_source_id,
             embedding_model=embedding_model,
+            embedding_provider=embedding_provider,
+            embedding_credential_env=embedding_credential_env,
         )
         self._table_collection = table_collection
         self._column_collection = column_collection
@@ -196,11 +209,20 @@ class SemanticSchemaCatalog(SchemaCatalog):
         limit: int = 5,
     ) -> RetrievalOutcome[list[list[SchemaEvidenceHit]]]:
         if not queries:
-            return RetrievalOutcome(value=[], status=hybrid_status(self.embedding_model))
+            return RetrievalOutcome(
+                value=[],
+                status=hybrid_status(
+                    self.embedding_model,
+                    provider=self.embedding_provider,
+                ),
+            )
         if limit < 1:
             return RetrievalOutcome(
                 value=[[] for _query in queries],
-                status=hybrid_status(self.embedding_model),
+                status=hybrid_status(
+                    self.embedding_model,
+                    provider=self.embedding_provider,
+                ),
             )
         try:
             with timing_stage(
@@ -258,7 +280,10 @@ class SemanticSchemaCatalog(SchemaCatalog):
                 )
         return RetrievalOutcome(
             value=results,
-            status=hybrid_status(self.embedding_model),
+            status=hybrid_status(
+                self.embedding_model,
+                provider=self.embedding_provider,
+            ),
         )
 
 

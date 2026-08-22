@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+from collections.abc import Mapping
 from pathlib import Path
 
 from study_package.manifest import StudyPackageManifest, resolve_package_path
@@ -60,14 +61,15 @@ def embedding_credentials_ready() -> bool:
     return bool(str(os.getenv("OPENAI_API_KEY", "") or "").strip())
 
 
-def resolve_db_rag_embedding_model() -> str:
-    load_app_environment(PROJECT_ROOT)
-    model = str(os.getenv("DB_RAG_EMBEDDING_MODEL", "") or "").strip()
+def resolve_db_rag_embedding_model(
+    environ: Mapping[str, str] | None = None,
+) -> str:
+    if environ is None:
+        load_app_environment(PROJECT_ROOT)
+        environ = os.environ
+    model = str(environ.get("DB_RAG_EMBEDDING_MODEL", "") or "").strip()
     if not model:
         return EMBEDDING_MODEL
-    if model not in SUPPORTED_DB_RAG_EMBEDDING_MODELS:
-        supported = ", ".join(SUPPORTED_DB_RAG_EMBEDDING_MODELS)
-        raise ValueError(f"Unsupported DB_RAG_EMBEDDING_MODEL '{model}'. Supported values: {supported}.")
     return model
 
 

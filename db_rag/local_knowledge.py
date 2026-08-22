@@ -209,13 +209,20 @@ class LocalPublicationKnowledge:
         *,
         limit: int = 5,
         embedding_model: str = EMBEDDING_MODEL,
+        embedding_provider: str | None = None,
+        embedding_credential_env: str | None = None,
         reason_code: EmbeddingReasonCode = (
             "EMBEDDING_CONFIGURATION_UNAVAILABLE"
         ),
     ) -> RetrievalOutcome[list[PublicationEvidenceHit]]:
         return RetrievalOutcome(
             value=self.search_lexical(query, limit=limit),
-            status=lexical_fallback_status(embedding_model, reason_code),
+            status=lexical_fallback_status(
+                embedding_model,
+                reason_code,
+                provider=embedding_provider,
+                credential_env=embedding_credential_env,
+            ),
         )
 
     def open_source(
@@ -281,6 +288,8 @@ class SemanticPublicationKnowledge:
     _collection: Any
     _embedding_function: Any
     embedding_model: str
+    embedding_provider: str | None
+    embedding_credential_env: str | None
 
     def __init__(
         self,
@@ -289,11 +298,19 @@ class SemanticPublicationKnowledge:
         collection: Any,
         embedding_function: Any,
         embedding_model: str = EMBEDDING_MODEL,
+        embedding_provider: str | None = None,
+        embedding_credential_env: str | None = None,
     ) -> None:
         object.__setattr__(self, "_local", local)
         object.__setattr__(self, "_collection", collection)
         object.__setattr__(self, "_embedding_function", embedding_function)
         object.__setattr__(self, "embedding_model", embedding_model)
+        object.__setattr__(self, "embedding_provider", embedding_provider)
+        object.__setattr__(
+            self,
+            "embedding_credential_env",
+            embedding_credential_env,
+        )
 
     def search(
         self,
@@ -312,7 +329,10 @@ class SemanticPublicationKnowledge:
         if limit < 1 or not query.strip() or not self._local._chunks:
             return RetrievalOutcome(
                 value=[],
-                status=hybrid_status(self.embedding_model),
+                status=hybrid_status(
+                    self.embedding_model,
+                    provider=self.embedding_provider,
+                ),
             )
         candidate_limit = limit * 2
         try:
@@ -322,6 +342,8 @@ class SemanticPublicationKnowledge:
                 query,
                 limit=limit,
                 embedding_model=self.embedding_model,
+                embedding_provider=self.embedding_provider,
+                embedding_credential_env=self.embedding_credential_env,
                 reason_code="EMBEDDING_PROVIDER_UNAVAILABLE",
             )
         if len(embeddings) != 1:
@@ -340,6 +362,8 @@ class SemanticPublicationKnowledge:
                 query,
                 limit=limit,
                 embedding_model=self.embedding_model,
+                embedding_provider=self.embedding_provider,
+                embedding_credential_env=self.embedding_credential_env,
                 reason_code="EMBEDDING_INDEX_UNAVAILABLE",
             )
         try:
@@ -382,7 +406,10 @@ class SemanticPublicationKnowledge:
         )
         return RetrievalOutcome(
             value=_fuse_hits(vector_hits, lexical_hits, limit=limit),
-            status=hybrid_status(self.embedding_model),
+            status=hybrid_status(
+                self.embedding_model,
+                provider=self.embedding_provider,
+            ),
         )
 
     def open_source(
@@ -398,6 +425,8 @@ class SemanticPublicationKnowledge:
 class UnavailableSemanticPublicationKnowledge:
     _local: LocalPublicationKnowledge
     embedding_model: str = EMBEDDING_MODEL
+    embedding_provider: str | None = None
+    embedding_credential_env: str | None = None
     reason_code: EmbeddingReasonCode = "EMBEDDING_CREDENTIALS_MISSING"
 
     def search(
@@ -418,6 +447,8 @@ class UnavailableSemanticPublicationKnowledge:
             query,
             limit=limit,
             embedding_model=self.embedding_model,
+            embedding_provider=self.embedding_provider,
+            embedding_credential_env=self.embedding_credential_env,
             reason_code=self.reason_code,
         )
 
