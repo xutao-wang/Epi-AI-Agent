@@ -74,6 +74,15 @@ function errorMessage(error: unknown): string {
   return "An unexpected error occurred.";
 }
 
+export function normalizeNewConversationRuntimeSettings(
+  current: RuntimeSettings,
+  options: RuntimeOptions,
+): RuntimeSettings {
+  return options.models.some((model) => model.id === current.model_name)
+    ? current
+    : options.defaults;
+}
+
 export function isPendingMessageAcknowledged(
   conversationMessage: ConversationMessageType,
   pendingMessage: ConversationMessageType,
@@ -597,8 +606,15 @@ export default function App({
       return null;
     }
 
+    const executableSettings = normalizeNewConversationRuntimeSettings(
+      selectedRuntimeSettings,
+      runtimeOptions,
+    );
+    if (executableSettings !== selectedRuntimeSettings) {
+      setSelectedRuntimeSettings(executableSettings);
+    }
     createThreadPromiseRef.current ??= apiClient
-      .createThread(selectedRuntimeSettings.model_name)
+      .createThread(executableSettings.model_name)
       .then((response) => response.thread_id)
       .catch((createError: unknown) => {
         createThreadPromiseRef.current = null;
@@ -938,6 +954,11 @@ export default function App({
     setRestoredReviewThreadId(null);
     setSubmittedClarifications({});
     setIsModelLockHintVisible(false);
+    if (runtimeOptions) {
+      setSelectedRuntimeSettings((current) =>
+        normalizeNewConversationRuntimeSettings(current, runtimeOptions),
+      );
+    }
   }
 
   const activeInterrupt = state?.active_interrupt;

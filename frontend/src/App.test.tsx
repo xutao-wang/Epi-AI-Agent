@@ -13,6 +13,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AppForTesting as App,
   isPendingMessageAcknowledged,
+  normalizeNewConversationRuntimeSettings,
 } from "./App";
 import { createApiClient } from "./apiClient";
 import type {
@@ -291,6 +292,40 @@ function deferred<T>() {
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+});
+
+describe("normalizeNewConversationRuntimeSettings", () => {
+  it("normalizes runtime settings against provider-neutral model options", () => {
+    const validSettings: RuntimeSettings = {
+      ...defaultRuntimeSettings,
+      model_name: "custom/qwen3",
+      temperature: 0.7,
+    };
+    const staleSettings: RuntimeSettings = {
+      ...defaultRuntimeSettings,
+      model_name: "removed/historical-model",
+    };
+    const options: RuntimeOptions = {
+      ...runtimeOptions,
+      defaults: {
+        ...defaultRuntimeSettings,
+        model_name: "custom/qwen3",
+      },
+      models: [
+        modelOption("custom/qwen3", "Qwen 3 via custom endpoint", {
+          provider: "openai_compatible",
+          provider_label: "Custom endpoint",
+        }),
+      ],
+    };
+
+    expect(
+      normalizeNewConversationRuntimeSettings(validSettings, options),
+    ).toBe(validSettings);
+    expect(
+      normalizeNewConversationRuntimeSettings(staleSettings, options),
+    ).toBe(options.defaults);
+  });
 });
 
 describe("App", () => {
@@ -1762,6 +1797,114 @@ describe("App", () => {
     expect(confirm).toHaveBeenLastCalledWith(
       "This conversation used gpt-5.6-terra (Medium). Continue with Claude Opus 5?",
     );
+  });
+
+  it("normalizes an unavailable historical model before creating a new conversation", async () => {
+    const savedThreadId = "thread-saved";
+    let createThreadBody: BodyInit | null | undefined;
+    const claudeOptions: RuntimeOptions = {
+      ...runtimeOptions,
+      defaults: {
+        ...defaultRuntimeSettings,
+        model_name: "claude-opus-5",
+      },
+      models: [
+        modelOption("claude-opus-5", "Claude Opus 5", {
+          provider: "anthropic",
+          provider_label: "Anthropic",
+          supports_sampling_controls: false,
+        }),
+      ],
+    };
+    const historicalState = threadState({
+      thread_id: savedThreadId,
+      conversation: [
+        { id: "prior-user", role: "user", text: "Compare TB survival" },
+      ],
+      runtime_settings: {
+        ...defaultRuntimeSettings,
+        model_name: "gpt-5.6-terra",
+      },
+      runtime_settings_locked: true,
+      model_name: "gpt-5.6-terra",
+      model_label: "gpt-5.6-terra (Medium)",
+      model_available: false,
+      model_replacement_required: true,
+    } as unknown as Partial<ApiThreadState>);
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "http://api.test/api/runtime/options") {
+        return Promise.resolve(runtimeOptionsResponse(claudeOptions));
+      }
+      if (url === "http://api.test/api/conversations") {
+        return Promise.resolve(jsonResponse({
+          items: [{
+            thread_id: savedThreadId,
+            title: "TB cohort survival analysis",
+            title_source: "automatic",
+            model_name: "gpt-5.6-terra",
+            created_at: "2026-07-30T00:00:00+00:00",
+            updated_at: "2026-07-30T00:00:00+00:00",
+          }],
+        }));
+      }
+      if (url === `http://api.test/api/threads/${savedThreadId}/state`) {
+        return Promise.resolve(jsonResponse(historicalState));
+      }
+      if (url === `http://api.test/api/conversations/${savedThreadId}/open`) {
+        return Promise.resolve(jsonResponse({
+          thread_id: savedThreadId,
+          title: "TB cohort survival analysis",
+          title_source: "automatic",
+          model_name: "gpt-5.6-terra",
+          created_at: "2026-07-30T00:00:00+00:00",
+          updated_at: "2026-07-30T00:00:00+00:00",
+        }));
+      }
+      if (url === "http://api.test/api/threads" && init?.method === "POST") {
+        createThreadBody = init.body;
+        return Promise.resolve(createThreadResponse("thread-new"));
+      }
+      if (
+        url === "http://api.test/api/threads/thread-new/messages"
+        && init?.method === "POST"
+      ) {
+        return Promise.resolve(jsonResponse(threadState({
+          thread_id: "thread-new",
+          run: {
+            state: "done",
+            steps: 1,
+            error: null,
+            started_at: null,
+            updated_at: null,
+          },
+          conversation: [
+            { id: "new-user", role: "user", text: "New Claude request" },
+          ],
+        })));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+
+    render(<App apiBase="http://api.test" fetchImpl={fetchMock} />);
+    fireEvent.click(await screen.findByRole("button", {
+      name: "TB cohort survival analysis",
+    }));
+    expect(await screen.findByText("Compare TB survival")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
+    fireEvent.change(screen.getByLabelText("Ask a question about your dataset!"), {
+      target: { value: "New Claude request" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => expect(createThreadBody).toBeDefined());
+    expect(screen.getByRole("combobox", { name: "Model" })).toHaveValue(
+      "claude-opus-5",
+    );
+    expect(createThreadBody).toBe(JSON.stringify({
+      model_name: "claude-opus-5",
+    }));
   });
 
   it("keeps the newest saved-conversation list when an earlier refresh finishes late", async () => {
