@@ -32,6 +32,8 @@ produce medium-effort inference.
 
 - Define reasoning beside each model's name, provider, output limits, and
   timeouts in the central model registry.
+- Derive every model's visible reasoning suffix from that consumed reasoning
+  configuration, using `Standard` when reasoning is absent.
 - Remove unused `reasoning_tier` metadata throughout Python, API schemas,
   TypeScript types, examples, and tests.
 - Preserve existing OpenAI reasoning behavior.
@@ -44,7 +46,8 @@ produce medium-effort inference.
 
 ## Non-goals
 
-- Do not add a reasoning selector to the user interface.
+- Do not add an independently editable reasoning selector to the user
+  interface; reasoning remains fixed by the selected model profile.
 - Do not let reasoning settings change within an existing conversation.
 - Do not change output-token limits, workflow limits, timeouts, pricing, model
   availability, or default-model selection.
@@ -111,6 +114,38 @@ The built-in registry declares actual behavior:
 The internal lightweight title/naming model retains its current low effort by
 using `ReasoningConfig(effort="low")`.
 
+## Derived display labels
+
+Visible reasoning text must not be another manually maintained field. A model
+profile derives its suffix directly from `reasoning`:
+
+```python
+def reasoning_display(config: ReasoningConfig | None) -> str:
+    return "Standard" if config is None else config.effort.title()
+
+display_label = f"{base_label} ({reasoning_display(reasoning)})"
+```
+
+Profiles store only a base label such as `Claude Sonnet 5`; the public model
+descriptor exposes the derived display label. This produces the following
+built-in UI labels:
+
+```text
+gpt-5.4 (Standard)
+gpt-5.6-luna (Low)
+gpt-5.6-terra (Medium)
+gpt-5.6-sol (Medium)
+Claude Opus 5 (Medium)
+Claude Sonnet 5 (Medium)
+Claude Haiku 4.5 (Standard)
+```
+
+`Standard` means that the application sends no explicit reasoning or thinking
+configuration. It does not claim that the provider lacks ordinary model
+inference. Custom compatible profiles also derive `Standard` while reasoning
+is unsupported for that provider type. The frontend continues rendering the
+server-provided `label`; it does not infer effort from model names.
+
 ## Provider translation
 
 The OpenAI adapter consumes a non-null reasoning configuration by passing:
@@ -158,8 +193,8 @@ API keys or other secrets.
 
 Remove `reasoning_tier` from model descriptors and the public runtime-options
 schema. Remove the matching frontend `ModelOption` property and test fixtures.
-The model picker remains visually unchanged because it already renders only
-the model label.
+The model picker continues rendering only the model descriptor's `label`, but
+that label now includes the backend-derived reasoning suffix for every model.
 
 Remove `reasoning_tier` from `CustomModelEntry` and
 `config/custom_models.example.json`. Custom compatible models receive
@@ -182,21 +217,33 @@ arguments:
 7. Runtime-option API and frontend tests no longer require `reasoning_tier`.
 8. Custom-model parsing rejects the removed property and accepts an otherwise
    equivalent entry without it.
+9. A table-driven assertion covers every built-in model's reasoning config,
+   provider constructor kwargs, and exact derived label.
+10. The model picker renders every available built-in model with the exact
+    backend-provided derived label and never constructs a suffix itself.
 
 Per repository policy, add a dedicated backend smoke script that exercises the
-real production `build_chat_llm` boundary. The real-provider portion must run
-at most once, finish within five minutes, and report the response usage without
-printing credentials. Because it makes a billable Anthropic request, it
-requires a funded `ANTHROPIC_API_KEY`; if the account remains exhausted, retain
-and report that provider error rather than retrying automatically.
+real production `build_chat_llm` boundary. It checks every built-in model
+available under the configured credentials exactly once, with the smallest
+useful prompt, and records the selected model, derived reasoning display,
+provider response model, and usage without printing credentials. The complete
+smoke has one five-minute deadline and never retries a model automatically.
+
+The smoke can make billable OpenAI and Anthropic requests. It requires funded
+provider keys and access to each registered model. An exhausted account or an
+unsupported model is preserved as that model's explicit verification failure;
+it is not silently skipped, substituted, or reported as a passing check.
 
 ## Acceptance criteria
 
 - There is one reasoning declaration per built-in model profile.
 - No `reasoning_tier` reference remains in production code, schemas, examples,
   frontend types, or maintained tests.
+- Every model label suffix is derived from the consumed `reasoning` field;
+  absent reasoning displays as `Standard`.
 - Opus 5 and Sonnet 5 requests carry adaptive thinking and medium effort.
 - Haiku 4.5 carries neither reasoning keyword.
 - Existing OpenAI reasoning request arguments are unchanged.
-- Focused tests, affected backend/frontend suites, and the required smoke
-  produce recorded verification results.
+- The exhaustive built-in model matrix, affected backend/frontend suites, and
+  one-pass real-provider smoke produce recorded verification results for every
+  model rather than sampling one representative model.
