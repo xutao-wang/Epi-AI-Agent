@@ -1,0 +1,70 @@
+from __future__ import annotations
+
+from langchain_core.messages import AIMessage
+
+from scripts.smoke_model_reasoning_matrix import run_smoke
+from utils.model_runtime_profiles import MODEL_RUNTIME_PROFILES
+
+
+class _FakeModel:
+    def __init__(self, model_id: str) -> None:
+        self.model_id = model_id
+
+    def invoke(self, messages, **kwargs):
+        assert messages and kwargs
+        return AIMessage(
+            content=f"reasoning-matrix-ok:{self.model_id}",
+            usage_metadata={
+                "input_tokens": 4,
+                "output_tokens": 2,
+                "total_tokens": 6,
+            },
+        )
+
+
+def test_checks_every_available_builtin_once_without_secrets(capsys) -> None:
+    calls: list[str] = []
+
+    def builder(*, model_name: str, api_key: str):
+        assert api_key in {"openai-secret", "anthropic-secret"}
+        calls.append(model_name)
+        return _FakeModel(model_name)
+
+    result = run_smoke(
+        {
+            "OPENAI_API_KEY": "openai-secret",
+            "ANTHROPIC_API_KEY": "anthropic-secret",
+        },
+        llm_builder=builder,
+    )
+    output = capsys.readouterr().out
+    assert result == 0
+    assert calls == list(MODEL_RUNTIME_PROFILES)
+    assert len(calls) == len(set(calls)) == 7
+    assert "Claude Opus 5 (Medium)" in output
+    assert "Claude Haiku 4.5 (Standard)" in output
+    assert "secret" not in output
+
+
+def test_records_failure_once_and_continues(capsys) -> None:
+    calls: list[str] = []
+
+    def builder(*, model_name: str, api_key: str):
+        calls.append(model_name)
+        if model_name == "claude-sonnet-5":
+            raise RuntimeError("provider rejected model")
+        return _FakeModel(model_name)
+
+    result = run_smoke(
+        {"ANTHROPIC_API_KEY": "anthropic-secret"},
+        llm_builder=builder,
+    )
+    output = capsys.readouterr().out
+    assert result == 1
+    assert calls == [
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-haiku-4-5",
+    ]
+    assert calls.count("claude-sonnet-5") == 1
+    assert "RUN_FAILED" in output
