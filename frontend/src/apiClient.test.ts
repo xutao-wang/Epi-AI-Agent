@@ -113,7 +113,6 @@ const runtimeOptions = {
       label: "gpt-5.4 (Standard)",
       provider: "openai",
       provider_label: "OpenAI",
-      reasoning_tier: "standard",
       summary: "Reliable general-purpose default.",
       initial_output_tokens: 8_192,
       automatic_output_token_ceiling: 16_384,
