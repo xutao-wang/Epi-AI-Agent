@@ -29,8 +29,14 @@ _TIMEOUT_SECONDS = 300
 _OUTPUT_BUDGET = 512
 
 
+class _MatrixDeadlineExceeded(TimeoutError):
+    """Raised only when the smoke's single global deadline expires."""
+
+
 def _timeout(_signum, _frame) -> None:
-    raise TimeoutError("model reasoning matrix exceeded five minutes")
+    raise _MatrixDeadlineExceeded(
+        "model reasoning matrix exceeded five minutes"
+    )
 
 
 def _response_model(response: Any) -> str:
@@ -76,7 +82,7 @@ def run_smoke(
                     f"input_tokens={int(usage.get('input_tokens') or 0)} "
                     f"output_tokens={int(usage.get('output_tokens') or 0)}"
                 )
-            except TimeoutError as exc:
+            except _MatrixDeadlineExceeded as exc:
                 failures += 1
                 print(
                     f"FAIL model={model_id} label={profile.label} "
