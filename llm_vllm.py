@@ -50,8 +50,8 @@ def _build_openai_chat_llm(
         "use_previous_response_id": True,
         "include_response_headers": True,
     }
-    if profile.reasoning_effort is not None:
-        kwargs["reasoning_effort"] = profile.reasoning_effort
+    if profile.reasoning is not None:
+        kwargs["reasoning_effort"] = profile.reasoning.effort
     if profile.supports_sampling_controls:
         kwargs["temperature"] = 0.0 if temperature is None else temperature
         kwargs["top_p"] = 1.0 if top_p is None else top_p
@@ -61,15 +61,17 @@ def _build_openai_chat_llm(
 def _build_anthropic_chat_llm(profile: ModelRuntimeProfile, api_key: str):
     from langchain_anthropic import ChatAnthropic
 
-    # Claude 5-family models run adaptive thinking by default and reject
-    # sampling parameters, budget_tokens, and OpenAI-only kwargs — send none.
-    return ChatAnthropic(
-        model=profile.served_model_id,
-        api_key=api_key,
-        timeout=profile.request_timeout_seconds,
-        max_retries=0,
-        max_tokens=profile.initial_output_tokens,
-    )
+    kwargs: dict[str, object] = {
+        "model": profile.served_model_id,
+        "api_key": api_key,
+        "timeout": profile.request_timeout_seconds,
+        "max_retries": 0,
+        "max_tokens": profile.initial_output_tokens,
+    }
+    if profile.reasoning is not None:
+        kwargs["thinking"] = {"type": profile.reasoning.mode}
+        kwargs["effort"] = profile.reasoning.effort
+    return ChatAnthropic(**kwargs)
 
 
 def _build_openai_compatible_chat_llm(
@@ -160,8 +162,8 @@ def build_openai_llm(
                 "include_response_headers": True,
             }
         )
-    if profile is not None and profile.reasoning_effort is not None:
-        kwargs["reasoning_effort"] = profile.reasoning_effort
+    if profile is not None and profile.reasoning is not None:
+        kwargs["reasoning_effort"] = profile.reasoning.effort
     supports_sampling = profile is None or profile.supports_sampling_controls
     if supports_sampling and temperature is not None:
         kwargs["temperature"] = temperature

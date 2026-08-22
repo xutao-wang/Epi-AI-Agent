@@ -75,7 +75,6 @@ class ModelOption(BaseModel):
     label: str
     provider: Literal["openai", "anthropic", "openai_compatible"] = "openai"
     provider_label: str = "OpenAI"
-    reasoning_tier: Literal["standard", "low", "medium", "high"]
     supports_sampling_controls: bool
     summary: str
     initial_output_tokens: int = Field(gt=0)

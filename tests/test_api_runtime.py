@@ -41,6 +41,7 @@ from api.conversation_history import ConversationHistoryStore
 from epi_agent import tool_call_protocol
 from api.schemas import (
     ApiThreadState,
+    ModelOption,
     ResumeInterruptRequest,
     RunStatus,
     RuntimeCapabilities,
@@ -120,6 +121,12 @@ def test_model_profiles_declare_sampling_control_support() -> None:
         ]
         is False
     )
+
+    option = ModelOption(
+        **model_runtime_profile("claude-sonnet-5").descriptor()
+    )
+    assert option.label == "Claude Sonnet 5 (Medium)"
+    assert "reasoning_tier" not in option.model_dump()
 
 
 def test_dataset_summary_prefers_provenance_title_over_legacy_description() -> None:

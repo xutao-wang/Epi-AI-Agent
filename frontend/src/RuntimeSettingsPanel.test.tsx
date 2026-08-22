@@ -17,15 +17,14 @@ const standardSettings: RuntimeSettings = {
 function modelOption(
   id: string,
   label: string,
-  reasoning_tier: ModelOption["reasoning_tier"],
   supportsSamplingControls: boolean,
+  overrides: Partial<ModelOption> = {},
 ): ModelOption {
   return {
     id,
     label,
     provider: "openai",
     provider_label: "OpenAI",
-    reasoning_tier,
     supports_sampling_controls: supportsSamplingControls,
     summary: `${label} guidance.`,
     initial_output_tokens: 8_192,
@@ -36,6 +35,7 @@ function modelOption(
     workflow_timeout_seconds: 300,
     automatic_output_cost: "$0.02",
     incremental_output_cost: "$0.01",
+    ...overrides,
   };
 }
 
@@ -52,14 +52,49 @@ const options: RuntimeOptions = {
     },
   },
   models: [
-    modelOption("gpt-5.4", "gpt-5.4 (Standard)", "standard", true),
-    modelOption("gpt-5.6-luna", "gpt-5.6-luna (Low)", "low", false),
-    modelOption("gpt-5.6-terra", "gpt-5.6-terra (Medium)", "medium", false),
-    modelOption("gpt-5.6-sol", "gpt-5.6-sol (Medium)", "medium", false),
+    modelOption("gpt-5.4", "gpt-5.4 (Standard)", true),
+    modelOption("gpt-5.6-luna", "gpt-5.6-luna (Low)", false),
+    modelOption("gpt-5.6-terra", "gpt-5.6-terra (Medium)", false),
+    modelOption("gpt-5.6-sol", "gpt-5.6-sol (Medium)", false),
+    modelOption("claude-opus-5", "Claude Opus 5 (Medium)", false, {
+      provider: "anthropic",
+      provider_label: "Anthropic",
+    }),
+    modelOption("claude-sonnet-5", "Claude Sonnet 5 (Medium)", false, {
+      provider: "anthropic",
+      provider_label: "Anthropic",
+    }),
+    modelOption("claude-haiku-4-5", "Claude Haiku 4.5 (Standard)", false, {
+      provider: "anthropic",
+      provider_label: "Anthropic",
+    }),
   ],
 };
 
 describe("RuntimeSettingsPanel", () => {
+  it("renders every backend-derived reasoning label verbatim", () => {
+    render(
+      <RuntimeSettingsPanel
+        locked={false}
+        onChange={vi.fn()}
+        options={options}
+        settings={standardSettings}
+      />,
+    );
+    const labels = [
+      "gpt-5.4 (Standard)",
+      "gpt-5.6-luna (Low)",
+      "gpt-5.6-terra (Medium)",
+      "gpt-5.6-sol (Medium)",
+      "Claude Opus 5 (Medium)",
+      "Claude Sonnet 5 (Medium)",
+      "Claude Haiku 4.5 (Standard)",
+    ];
+    for (const label of labels) {
+      expect(screen.getByRole("option", { name: label })).toBeInTheDocument();
+    }
+  });
+
   it("shows publication knowledge independently from optional DB-RAG", () => {
     render(
       <RuntimeSettingsPanel

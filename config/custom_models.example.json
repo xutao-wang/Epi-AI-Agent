@@ -6,7 +6,6 @@
     "model": "Qwen/Qwen3-72B-Instruct",
     "api_key_env": "VLLM_API_KEY",
     "summary": "Locally served vLLM model.",
-    "reasoning_tier": "standard",
     "initial_output_tokens": 8192,
     "automatic_output_token_ceiling": 16384,
     "user_output_token_increment": 8192,
