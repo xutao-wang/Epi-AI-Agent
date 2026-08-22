@@ -83,6 +83,7 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGALRM, _timeout)
     signal.alarm(args.timeout_seconds)
     started = time.monotonic()
+    stage = "startup"
     try:
         load_app_environment(PROJECT_ROOT)
         embedding_model = resolve_db_rag_embedding_model(os.environ)
@@ -112,21 +113,25 @@ def main(argv: list[str] | None = None) -> int:
             thread_id="real-hybrid-evidence-smoke",
             policy=None,
         )
+        stage = "catalog retrieval"
         catalog_result = build_db_rag_tool_registry().invoke(
             "dbrag-search_catalog",
             {"study_id": study_id, "queries": ["participant identifier", "age"], "limit": 5},
-            context,
+            context=context,
         )
+        stage = "publication retrieval"
         publication_result = build_publication_tool_registry(include_pubmed=False).invoke(
             "publication-search_study_evidence",
             {"study_id": study_id, "query": "study design", "limit": 5},
-            context,
+            context=context,
         )
+        stage = "study-design retrieval"
         design_result = build_study_design_tool_registry().invoke(
             "study-design-search",
             {"study_id": study_id, "query": "participant visits", "limit": 5},
-            context,
+            context=context,
         )
+        stage = "artifact validation"
         catalog_count = _verify_artifact(
             store.require(catalog_result.artifacts[0]).content,
             catalog=True,
@@ -148,7 +153,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     except (RuntimeError, TimeoutError):
-        print("hybrid evidence smoke failed; inspect configured study assets and embedding readiness.", file=sys.stderr)
+        print(
+            f"hybrid evidence smoke failed at {stage}; "
+            "inspect configured study assets and embedding readiness.",
+            file=sys.stderr,
+        )
         return 1
     finally:
         signal.alarm(0)

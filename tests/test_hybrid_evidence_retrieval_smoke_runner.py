@@ -29,3 +29,16 @@ def test_hybrid_retrieval_smoke_uses_real_production_boundaries() -> None:
     assert "Fake" not in source
     assert "monkeypatch" not in source
     assert "stub" not in source.casefold()
+
+
+def test_hybrid_retrieval_smoke_passes_context_by_keyword() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+
+    assert source.count("context=context,") == 3
+
+
+def test_hybrid_retrieval_smoke_reports_a_sanitized_failure_stage() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+
+    assert 'stage = "startup"' in source
+    assert "failed at {stage}" in source
