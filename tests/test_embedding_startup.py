@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 from pathlib import Path
 
@@ -58,6 +59,7 @@ class RecordingEmbedder:
 
 def test_successful_startup_probe_runs_once_and_returns_hybrid_status(
     tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     embedder = RecordingEmbedder([[0.1, 0.2, 0.3]])
     adapter_calls: list[tuple[str, str]] = []
@@ -66,6 +68,7 @@ def test_successful_startup_probe_runs_once_and_returns_hybrid_status(
         adapter_calls.append((profile.id, api_key))
         return embedder
 
+    caplog.set_level(logging.INFO, logger="uvicorn.error")
     result = initialize_embedding(
         {"TEST_EMBEDDING_KEY": "secret-test-key"},
         registry_path=_registry_path(tmp_path),
@@ -81,6 +84,13 @@ def test_successful_startup_probe_runs_once_and_returns_hybrid_status(
     assert embedder.calls == [["Epi Agent embedding startup probe"]]
     assert "secret-test-key" not in repr(result)
     assert "secret-test-key" not in result.status.model_dump_json()
+    completion_records = [
+        record
+        for record in caplog.records
+        if record.getMessage().startswith("Embedding startup probe completed")
+    ]
+    assert len(completion_records) == 1
+    assert completion_records[0].name == "uvicorn.error"
 
 
 def test_missing_credentials_skips_adapter_and_returns_lexical_status(

@@ -24,7 +24,7 @@ from .config import DbRagRuntimePaths
 from epi_agent.studies import StudyRegistry
 
 
-_LOGGER = logging.getLogger(__name__)
+_LOGGER = logging.getLogger("uvicorn.error")
 _PROBE_TEXT = "Epi Agent embedding startup probe"
 
 
