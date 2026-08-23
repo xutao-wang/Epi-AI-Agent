@@ -19,7 +19,7 @@ _ENVIRONMENT_NAME_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
 
 class EmbeddingProfile(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     id: str = Field(min_length=1, max_length=128)
     label: str = Field(min_length=1, max_length=200)
@@ -76,6 +76,8 @@ class EmbeddingProfile(BaseModel):
 
 
 class EmbeddingProfileRegistry(BaseModel):
+    # Keep container parsing JSON-friendly (JSON arrays become tuples), while each
+    # profile card above remains type-strict.
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     default_profile: str = Field(min_length=1, max_length=128)

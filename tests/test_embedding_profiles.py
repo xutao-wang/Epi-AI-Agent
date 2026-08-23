@@ -62,7 +62,10 @@ def test_tracked_embedding_registry_has_valid_enabled_default() -> None:
         lambda payload: payload["profiles"][0].update(base_url="file:///tmp/model"),
         lambda payload: payload["profiles"][0].update(api_key_env="openai-key"),
         lambda payload: payload["profiles"][0].update(dimensions=0),
+        lambda payload: payload["profiles"][0].update(dimensions="3072"),
         lambda payload: payload["profiles"][0].update(timeout_seconds=0),
+        lambda payload: payload["profiles"][0].update(timeout_seconds="10"),
+        lambda payload: payload["profiles"][0].update(enabled="true"),
         lambda payload: payload.update(default_profile="missing"),
     ],
 )
