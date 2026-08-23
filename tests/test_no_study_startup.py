@@ -31,6 +31,7 @@ def test_graph_factory_binds_all_studies_with_the_embedding_route(
     from api.runtime import GraphBuildContext
     from db_rag.config import EMBEDDING_MODEL
     from db_rag.readiness import DbRagReadiness
+    from db_rag.vectorstore import OpenAIEmbeddingFunction
     from utils.user_storage import UserStorageLayout
 
     discovered_studies = StudyRegistry(
@@ -86,6 +87,11 @@ def test_graph_factory_binds_all_studies_with_the_embedding_route(
         raising=False,
     )
     monkeypatch.setattr(app_module, "build_openai_llm", lambda **_kwargs: "llm")
+    monkeypatch.setattr(
+        OpenAIEmbeddingFunction,
+        "embed_query",
+        lambda _self, _input: [[0.0] * 3072],
+    )
     monkeypatch.setattr(
         app_module,
         "build_graph",
