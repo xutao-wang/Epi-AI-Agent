@@ -53,3 +53,16 @@ def test_active_delivery_sources_have_no_retired_r_tokens() -> None:
             offenders.append(str(path.relative_to(ROOT)))
 
     assert sorted(set(offenders)) == []
+
+
+def test_stale_db_rag_error_module_and_streamlit_smoke_are_removed() -> None:
+    forbidden_paths = (
+        "db_rag/service/errors.py",
+        "scripts/e2e_streamlit_db_rag_grouped_review_real.py",
+    )
+
+    assert [
+        path
+        for path in forbidden_paths
+        if (ROOT / path).exists()
+    ] == []
