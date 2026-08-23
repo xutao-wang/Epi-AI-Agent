@@ -69,6 +69,18 @@ const options: RuntimeOptions = {
       provider_label: "Anthropic",
     }),
   ],
+  embedding_startup_status: {
+    profile_id: "configured",
+    profile_label: "Configured embedding profile",
+    provider: "unknown",
+    index_compatibility: "",
+    available: true,
+    retrieval_mode: "hybrid_vector_lexical",
+    reason_code: null,
+    message: "",
+    compatible_study_ids: [],
+    incompatible_study_ids: [],
+  },
 };
 
 describe("RuntimeSettingsPanel", () => {

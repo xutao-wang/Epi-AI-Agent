@@ -711,6 +711,15 @@ select {
   padding: 12px 14px;
 }
 
+.embedding-fallback-notice {
+  width: 100%;
+  border: 1px solid #d4a72c;
+  border-radius: 6px;
+  background: #fff8c5;
+  color: #633c01;
+  padding: 12px 14px;
+}
+
 .run-status {
   color: #4b5563;
   font-size: 14px;

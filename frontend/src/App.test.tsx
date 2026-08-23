@@ -22,7 +22,21 @@ import type {
   ModelOption,
   RuntimeOptions,
   RuntimeSettings,
+  EmbeddingStartupStatus,
 } from "./types";
+
+const hybridEmbeddingStatus: EmbeddingStartupStatus = {
+  profile_id: "openai-text-embedding-3-large",
+  profile_label: "OpenAI text-embedding-3-large",
+  provider: "openai",
+  index_compatibility: "OpenAI/text-embedding-3-large",
+  available: true,
+  retrieval_mode: "hybrid_vector_lexical",
+  reason_code: null,
+  message: "",
+  compatible_study_ids: [],
+  incompatible_study_ids: [],
+};
 
 function jsonResponse(body: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(body), {
@@ -55,6 +69,7 @@ function threadState(
     file_artifacts: [],
     output: {},
     diagnostics: {},
+    embedding_startup_status: hybridEmbeddingStatus,
     ...overrides,
   };
 }
@@ -269,6 +284,7 @@ const runtimeOptions: RuntimeOptions = {
       incremental_output_cost: "$0.75",
     }),
   ],
+  embedding_startup_status: hybridEmbeddingStatus,
 };
 
 function createThreadResponse(threadId = "thread-1") {
@@ -327,6 +343,54 @@ describe("normalizeNewConversationRuntimeSettings", () => {
 });
 
 describe("App", () => {
+  it("shows one startup fallback notice before and after thread creation", async () => {
+    const message =
+      "Semantic embedding search is unavailable. " +
+      "(OpenAI text-embedding-3-large is not configured.) Catalog, publication, " +
+      "and study-design searches will use lexical matching only.";
+    const fallbackStatus: EmbeddingStartupStatus = {
+      ...hybridEmbeddingStatus,
+      available: false,
+      retrieval_mode: "lexical_fallback",
+      reason_code: "EMBEDDING_CREDENTIALS_MISSING",
+      message,
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        runtimeOptionsResponse({
+          ...runtimeOptions,
+          embedding_startup_status: fallbackStatus,
+        }),
+      )
+      .mockResolvedValueOnce(createThreadResponse())
+      .mockResolvedValueOnce(
+        jsonResponse(
+          threadState({
+            conversation: [{ id: "user-1", role: "user", text: "Hello" }],
+            embedding_startup_status: fallbackStatus,
+          }),
+        ),
+      );
+    render(
+      <App
+        apiBase="http://api.test"
+        fetchImpl={fetchMock}
+        loadConversationHistory={false}
+      />,
+    );
+
+    expect(await screen.findByText(message)).toBeInTheDocument();
+    fireEvent.change(
+      screen.getByLabelText("Ask a question about your dataset!"),
+      { target: { value: "Hello" } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    expect(screen.getAllByText(message)).toHaveLength(1);
+  });
+
   it("renders the local application without hosted account controls", async () => {
     render(<App apiBase="http://api.test" loadConversationHistory={false} />);
 

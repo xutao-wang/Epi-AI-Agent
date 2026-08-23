@@ -69,6 +69,23 @@ export interface RuntimeCapabilities {
   db_rag_dataset: RuntimeCapability;
 }
 
+export type EmbeddingRetrievalMode =
+  | "hybrid_vector_lexical"
+  | "lexical_fallback";
+
+export interface EmbeddingStartupStatus {
+  profile_id: string;
+  profile_label: string;
+  provider: string;
+  index_compatibility: string;
+  available: boolean;
+  retrieval_mode: EmbeddingRetrievalMode;
+  reason_code: string | null;
+  message: string;
+  compatible_study_ids: string[];
+  incompatible_study_ids: string[];
+}
+
 export type ModelProvider = "openai" | "anthropic" | "openai_compatible";
 
 export interface ModelOption {
@@ -92,6 +109,7 @@ export interface RuntimeOptions {
   defaults: RuntimeSettings;
   models: ModelOption[];
   capabilities: RuntimeCapabilities;
+  embedding_startup_status: EmbeddingStartupStatus;
 }
 
 export interface ConversationSummary {
@@ -424,4 +442,5 @@ export interface ApiThreadState {
   file_artifacts: FileArtifactSummary[];
   output: Record<string, unknown>;
   diagnostics: Record<string, unknown>;
+  embedding_startup_status: EmbeddingStartupStatus;
 }

@@ -12,6 +12,7 @@ import DbRagDatasetReview from "./DbRagDatasetReview";
 import Clarification from "./Clarification";
 import ConversationHistory from "./ConversationHistory";
 import ModelOutputLimit from "./ModelOutputLimit";
+import EmbeddingFallbackNotice from "./EmbeddingFallbackNotice";
 import type {
   ApiThreadState,
   ActiveInterrupt,
@@ -1016,6 +1017,8 @@ export default function App({
     selectedModel?.label ?? selectedRuntimeSettings.model_name;
   const settingsLocked = Boolean(modelLocked || isBusy);
   const workflowStatus = activityStatusText(state);
+  const embeddingStartupStatus =
+    state?.embedding_startup_status ?? runtimeOptions?.embedding_startup_status;
   const activityTitle = isSubmitting
     ? "Submitting your message"
     : isResuming
@@ -1178,7 +1181,7 @@ export default function App({
               {runFailureMessage}
             </div>
           ) : null}
-
+          <EmbeddingFallbackNotice status={embeddingStartupStatus} />
           <section
             className="conversation-panel"
             aria-label="Conversation messages"
