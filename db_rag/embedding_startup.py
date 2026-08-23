@@ -20,6 +20,8 @@ from .embedding_routes import (
     resolve_profile_route,
 )
 from .retrieval_status import EmbeddingReasonCode, RetrievalMode
+from .config import DbRagRuntimePaths
+from epi_agent.studies import StudyRegistry
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -162,8 +164,58 @@ def initialize_embedding(
     return EmbeddingStartupResult(route=route, status=_hybrid_status(route))
 
 
+def _format_study_labels(labels: list[str]) -> str:
+    if len(labels) == 1:
+        return labels[0]
+    if len(labels) == 2:
+        return f"{labels[0]} and {labels[1]}"
+    return f"{', '.join(labels[:-1])}, and {labels[-1]}"
+
+
+def assess_study_compatibility(
+    status: EmbeddingStartupStatus,
+    route: EmbeddingRoute,
+    studies: StudyRegistry,
+) -> EmbeddingStartupStatus:
+    compatible: list[str] = []
+    incompatible: list[str] = []
+    incompatible_labels: list[str] = []
+    for study in sorted(studies.values, key=lambda item: item.study_id):
+        paths = study.db_rag_paths
+        if (
+            isinstance(paths, DbRagRuntimePaths)
+            and paths.embedding_model == route.model
+        ):
+            compatible.append(study.study_id)
+        else:
+            incompatible.append(study.study_id)
+            incompatible_labels.append(study.label or study.study_id)
+
+    update: dict[str, object] = {
+        "compatible_study_ids": tuple(compatible),
+        "incompatible_study_ids": tuple(incompatible),
+    }
+    if not status.available or not incompatible:
+        return status.model_copy(update=update)
+
+    labels = _format_study_labels(incompatible_labels)
+    plural = len(incompatible) != 1
+    update.update(
+        reason_code="EMBEDDING_INDEX_INCOMPATIBLE",
+        message=(
+            f"Semantic embedding search is unavailable for {labels}. "
+            f"({status.profile_label} is incompatible with the semantic index "
+            f"for {'these studies' if plural else 'this study'}.) Searches for "
+            f"{'these studies' if plural else 'this study'} will use lexical "
+            "matching only."
+        ),
+    )
+    return status.model_copy(update=update)
+
+
 __all__ = [
     "EmbeddingStartupResult",
     "EmbeddingStartupStatus",
+    "assess_study_compatibility",
     "initialize_embedding",
 ]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -295,6 +296,52 @@ def test_missing_embedding_key_binds_lexical_fallback_without_opening_chroma(
     ].message
     assert outcome.status.reason_code == "EMBEDDING_CREDENTIALS_MISSING"
     assert outcome.value[0][0].table == "REPORT_TABLE"
+
+
+def test_incompatible_study_index_uses_scoped_lexical_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    compatible = _bundle(tmp_path, "compatible", "MATCHING_TABLE")
+    mismatch = _bundle(tmp_path, "mismatch", "MISMATCH_TABLE")
+    mismatch = replace(
+        mismatch,
+        db_rag_paths=replace(
+            mismatch.db_rag_paths,
+            embedding_model="Other/incompatible-model",
+        ),
+    )
+    monkeypatch.setattr(session_studies, "resolve_db_rag_readiness", _available)
+    monkeypatch.setattr(session_studies.chromadb, "PersistentClient", _FakeClient)
+    monkeypatch.setattr(
+        session_studies,
+        "OpenAIEmbeddingFunction",
+        _FakeEmbeddingFunction,
+    )
+    route = resolve_embedding_route(
+        {"OPENAI_API_KEY": "session-key"},
+        EMBEDDING_MODEL,
+    )
+    route = replace(
+        route,
+        factory=lambda model, key: _FakeEmbeddingFunction(model, api_key=key),
+    )
+
+    bound = session_studies.bind_session_studies(
+        StudyRegistry([compatible, mismatch]),
+        embedding_route=route,
+    )
+
+    compatible_outcome = bound.studies.require(
+        "compatible"
+    ).catalog.search_many_with_status(["MATCHING_TABLE"], limit=5)
+    mismatch_outcome = bound.studies.require(
+        "mismatch"
+    ).catalog.search_many_with_status(["MISMATCH_TABLE"], limit=5)
+    assert compatible_outcome.status.mode == "hybrid_vector_lexical"
+    assert mismatch_outcome.status.mode == "lexical_fallback"
+    assert mismatch_outcome.status.reason_code == "EMBEDDING_INDEX_INCOMPATIBLE"
+    assert mismatch.db_rag_paths.chroma_path not in _FakeClient.requested_paths
 
 
 def test_unavailable_openrouter_route_binds_provider_aware_lexical_fallback(

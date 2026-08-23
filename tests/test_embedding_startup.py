@@ -6,7 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from db_rag.embedding_startup import initialize_embedding
+from db_rag.config import DbRagRuntimePaths
+from db_rag.embedding_startup import assess_study_compatibility, initialize_embedding
+from epi_agent.studies import StudyBundle, StudyRegistry
 
 
 def _registry_path(
@@ -174,3 +176,69 @@ def test_invalid_registry_never_prevents_startup(tmp_path: Path) -> None:
     assert result.route.available is False
     assert result.status.profile_label == "Configured embedding profile"
     assert result.status.reason_code == "EMBEDDING_PROFILE_INVALID"
+
+
+def _study(study_id: str, label: str, embedding_model: str) -> StudyBundle:
+    return StudyBundle(
+        study_id=study_id,
+        label=label,
+        knowledge=None,
+        catalog=None,
+        data_sources={},
+        db_rag_paths=DbRagRuntimePaths(
+            duckdb_path=Path("database.duckdb"),
+            catalog_path=Path("catalog.json"),
+            chroma_path=Path("index"),
+            embedding_model=embedding_model,
+        ),
+    )
+
+
+def test_study_compatibility_is_independent_of_successful_transport_probe(
+    tmp_path: Path,
+) -> None:
+    embedder = RecordingEmbedder([[0.1, 0.2, 0.3]])
+    startup = initialize_embedding(
+        {"TEST_EMBEDDING_KEY": "secret"},
+        registry_path=_registry_path(tmp_path),
+        adapters={"recording": lambda *_args: embedder},
+    )
+    studies = StudyRegistry(
+        [
+            _study("compatible", "Compatible Study", "Test/test-model"),
+            _study("mismatch", "Mismatched Study", "Other/model"),
+        ]
+    )
+
+    status = assess_study_compatibility(startup.status, startup.route, studies)
+
+    assert status.available is True
+    assert status.retrieval_mode == "hybrid_vector_lexical"
+    assert status.compatible_study_ids == ("compatible",)
+    assert status.incompatible_study_ids == ("mismatch",)
+    assert "Mismatched Study" in status.message
+    assert "Compatible Study" not in status.message
+    assert embedder.calls == [["Epi Agent embedding startup probe"]]
+
+
+def test_global_probe_failure_keeps_actual_index_compatibility_partition(
+    tmp_path: Path,
+) -> None:
+    startup = initialize_embedding(
+        {},
+        registry_path=_registry_path(tmp_path),
+        adapters={"recording": lambda *_args: pytest.fail("adapter must not run")},
+    )
+    studies = StudyRegistry(
+        [
+            _study("compatible", "Compatible Study", "Test/test-model"),
+            _study("mismatch", "Mismatched Study", "Other/model"),
+        ]
+    )
+
+    status = assess_study_compatibility(startup.status, startup.route, studies)
+
+    assert status.available is False
+    assert status.compatible_study_ids == ("compatible",)
+    assert status.incompatible_study_ids == ("mismatch",)
+    assert status.message == startup.status.message

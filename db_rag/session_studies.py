@@ -151,6 +151,29 @@ def bind_session_studies(
             )
             readiness_by_study[study.study_id] = readiness
             continue
+        if paths.embedding_model != expected_embedding_model:
+            incompatible_route = replace(
+                embedding_route,
+                unavailable_reason_code="EMBEDDING_INDEX_INCOMPATIBLE",
+            )
+            readiness = DbRagReadiness(
+                status="available",
+                message=(
+                    "DB-RAG dataset retrieval is available with lexical fallback; "
+                    "the selected embedding profile is incompatible with this "
+                    "study's semantic index."
+                ),
+            )
+            bound_studies.append(
+                _unavailable_study(
+                    study,
+                    catalog_data,
+                    embedding_route=incompatible_route,
+                    reason_code="EMBEDDING_INDEX_INCOMPATIBLE",
+                )
+            )
+            readiness_by_study[study.study_id] = readiness
+            continue
         readiness = resolve_db_rag_readiness(
             paths=paths,
             expected_embedding_model=expected_embedding_model,
