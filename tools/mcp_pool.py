@@ -113,13 +113,3 @@ def call_server_tool(server: str, tool_name: str, **payload):
     """Very simple helper: call a tool with keyword args as payload."""
     payload.setdefault("server", server)
     return call_mcp_tool_sync(server, tool_name, payload)
-
-
-def query_weather(city: str, start_date: str | None = None, end_date: str | None = None):
-    """Convenience wrapper for the weather MCP server."""
-    payload = {"city": city, "server": "weather"}
-    if start_date:
-        payload["start_date"] = start_date
-    if end_date:
-        payload["end_date"] = end_date
-    return call_mcp_tool_sync("weather", "query_weather", payload)

@@ -1,10 +1,6 @@
 from __future__ import annotations
 
 import ast
-import io
-import os
-from typing import Any
-import warnings
 
 
 ERROR_CATEGORY_POLICY_BLOCKED = "policy_blocked"
@@ -88,10 +84,6 @@ DISALLOWED_FS_METHOD_CALLS = {
     "to_pickle",
     "to_sql",
 }
-
-
-class RenderingPolicyError(RuntimeError):
-    """The executor could not establish its rendering contract."""
 
 
 def _policy_error(message: str) -> dict[str, str]:
@@ -226,32 +218,3 @@ def validate_generated_code(code: str) -> dict[str, str] | None:
                     f"{_format_fs_call_name(node, name_parts, getattr(node.func, 'attr', None))}"
                 )
     return None
-
-
-def prepare_plotting() -> Any:
-    os.environ["MPLBACKEND"] = "Agg"
-    warnings.filterwarnings(
-        "ignore",
-        message="FigureCanvasAgg is non-interactive, and thus cannot be shown",
-        category=UserWarning,
-    )
-    try:
-        import matplotlib
-
-        matplotlib.use("Agg", force=True)
-        import matplotlib.pyplot as plt
-    except Exception as exc:
-        raise RenderingPolicyError(
-            f"Unable to initialize the headless Matplotlib renderer: {exc}"
-        ) from exc
-    return plt
-
-
-def capture_figure_png(plt: Any) -> bytes:
-    figure_numbers = list(plt.get_fignums())
-    if not figure_numbers:
-        return b""
-    figure = plt.figure(figure_numbers[-1])
-    buffer = io.BytesIO()
-    figure.savefig(buffer, format="png", bbox_inches="tight")
-    return buffer.getvalue()

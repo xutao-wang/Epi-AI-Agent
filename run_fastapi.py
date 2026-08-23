@@ -349,15 +349,6 @@ def ensure_active_provider_credential(
         return
 
 
-def prepare_provider_credentials(
-    environ: MutableMapping[str, str],
-    *,
-    verifier: Callable[..., None] = ensure_active_provider_credential,
-) -> None:
-    """Compatibility hook for callers of the former local-only launcher."""
-    verifier(environ=environ)
-
-
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Start the Epidemiology Research Agent demo."

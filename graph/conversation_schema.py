@@ -235,26 +235,6 @@ ConversationEventInput: TypeAlias = (
     | ErrorEventInput
 )
 
-ConversationEvent: TypeAlias = (
-    UserEvent
-    | AssistantEvent
-    | ClarificationEvent
-    | ClarificationExchangeEvent
-    | RoutingDecisionEvent
-    | ToolCallEvent
-    | ToolResultEvent
-    | CodeEvent
-    | ExecutionStartedEvent
-    | ExecutionFinishedEvent
-    | FigureEvent
-    | AttachmentEvent
-    | SqlEvent
-    | ReviewRequestEvent
-    | ReviewDecisionEvent
-    | ErrorEvent
-)
-
-
 class ConversationArtifactInput(TypedDict):
     kind: str
     producer: str

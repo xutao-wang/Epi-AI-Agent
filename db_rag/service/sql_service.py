@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import re
 from pathlib import Path
 from typing import Any
 
@@ -16,86 +15,6 @@ from ..generation import validate_sql
 
 def _quote_duckdb_identifier(identifier: str) -> str:
     return '"' + str(identifier).replace('"', '""') + '"'
-
-
-def _mask_single_quoted_literals_and_comments(sql: str) -> str:
-    masked: list[str] = []
-    quote_char: str | None = None
-    i = 0
-    while i < len(sql):
-        char = sql[i]
-        if quote_char:
-            masked.append(" ")
-            if char == quote_char:
-                if i + 1 < len(sql) and sql[i + 1] == quote_char:
-                    masked.append(" ")
-                    i += 2
-                    continue
-                quote_char = None
-            i += 1
-            continue
-        if char == "-" and i + 1 < len(sql) and sql[i + 1] == "-":
-            masked.extend("  ")
-            i += 2
-            while i < len(sql) and sql[i] not in "\r\n":
-                masked.append(" ")
-                i += 1
-            continue
-        if char == "/" and i + 1 < len(sql) and sql[i + 1] == "*":
-            masked.extend("  ")
-            i += 2
-            while i < len(sql):
-                if sql[i] == "*" and i + 1 < len(sql) and sql[i + 1] == "/":
-                    masked.extend("  ")
-                    i += 2
-                    break
-                masked.append(" ")
-                i += 1
-            continue
-        if char == "'":
-            quote_char = char
-            masked.append(" ")
-            i += 1
-            continue
-        masked.append(char)
-        i += 1
-    return "".join(masked)
-
-
-def _contains_sql_identifier(sql: str, identifier: str) -> bool:
-    value = str(identifier or "").strip()
-    if not value:
-        return False
-    masked_sql = _mask_single_quoted_literals_and_comments(sql)
-    quoted = _quote_duckdb_identifier(value)
-    if quoted in masked_sql:
-        return True
-    if re.search(rf"(?<![A-Za-z0-9_]){re.escape(value)}(?![A-Za-z0-9_])", masked_sql):
-        return True
-    return False
-
-
-def _validate_observation_sql(
-    sql: str,
-    *,
-    approved_tables: list[str],
-    approved_columns: list[dict[str, Any]],
-) -> tuple[bool, str | None]:
-    masked_sql = _mask_single_quoted_literals_and_comments(sql)
-    if not re.search(r"\bFROM\b", masked_sql, re.IGNORECASE):
-        return False, (
-            "SQL must extract row-level observations and must read from at least one approved source table "
-            "with a FROM clause; metadata-only SELECT literals are not allowed."
-        )
-
-    if approved_tables and not any(_contains_sql_identifier(sql, table) for table in approved_tables):
-        return False, "SQL must read from at least one approved source table, not only return metadata labels."
-
-    approved_column_names = [str(column.get("column") or "").strip() for column in approved_columns]
-    if approved_column_names and not any(_contains_sql_identifier(sql, column) for column in approved_column_names):
-        return False, "SQL must select or filter on at least one approved source column."
-
-    return True, None
 
 
 def _validate_approved_schema_references(

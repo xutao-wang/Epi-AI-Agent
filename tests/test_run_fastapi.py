@@ -3,7 +3,6 @@ from __future__ import annotations
 import sys
 from types import SimpleNamespace
 from pathlib import Path
-from unittest.mock import Mock
 
 import pytest
 from dotenv import dotenv_values
@@ -23,8 +22,6 @@ from utils.runtime_defaults import (
     DEFAULT_EPI_AGENT_MAX_ITERATIONS,
     DEFAULT_OPENAI_MODEL,
     configured_epi_agent_max_iterations,
-    configured_openai_models,
-    configured_title_model,
 )
 
 
@@ -69,20 +66,6 @@ def test_prepare_environment_preserves_explicit_paths(tmp_path: Path) -> None:
         environ["REPORT_AGENT_CHECKPOINT_DB_PATH"]
         == "/configured/checkpoints.db"
     )
-
-
-def test_prepare_provider_credentials_always_verifies_local_key() -> None:
-    import run_fastapi
-
-    environ = {"OPENAI_API_KEY": "key"}
-    verifier = Mock()
-
-    run_fastapi.prepare_provider_credentials(
-        environ,
-        verifier=verifier,
-    )
-
-    verifier.assert_called_once_with(environ=environ)
 
 
 def test_configure_native_runtime_uses_project_runtime_after_default_confirmation(
@@ -138,18 +121,6 @@ def test_configure_native_runtime_rejects_unconfirmed_missing_custom_directory(
             choose_directory=lambda: target,
             persist=False,
         )
-
-
-def test_configured_models_offer_only_profiled_models() -> None:
-    environ = {"OPENAI_API_KEY": "configured"}
-
-    assert configured_openai_models(environ) == (
-        "gpt-5.4",
-        "gpt-5.6-luna",
-        "gpt-5.6-terra",
-        "gpt-5.6-sol",
-    )
-    assert configured_title_model(environ) == "gpt-5.6-luna"
 
 
 def test_epi_agent_max_iterations_defaults_to_fifty() -> None:

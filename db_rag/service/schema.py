@@ -75,32 +75,6 @@ def _catalog_indexes_for_lookup(
     return _schema_variable_catalog_for_path(str(catalog_path))
 
 
-def _lookup_schema_column(
-    table: str,
-    column: str,
-    *,
-    catalog_path: str | Path | None = None,
-    catalog: dict[str, Any] | None = None,
-) -> dict[str, str] | None:
-    indexes = _catalog_indexes_for_lookup(
-        catalog_path=catalog_path,
-        catalog=catalog,
-    )
-    if indexes is None:
-        return None
-    variable_by_pair, _variable_by_column = indexes
-    entry = variable_by_pair.get(
-        (str(table or "").strip(), str(column or "").strip())
-    )
-    if entry is None:
-        return None
-    return {
-        "table": str(entry["table"]),
-        "column": str(entry["column"]),
-        "description": str(entry.get("description") or ""),
-    }
-
-
 def _lookup_schema_variable_metadata(
     table: str,
     column: str,

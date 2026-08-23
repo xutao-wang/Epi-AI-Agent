@@ -470,18 +470,6 @@ class AttachmentReaderService:
         self.vision_analyzer = vision_analyzer
         self.conversation_artifacts = dict(conversation_artifacts or {})
 
-    def for_conversation(
-        self,
-        artifacts: dict[str, Any] | None,
-    ) -> "AttachmentReaderService":
-        return AttachmentReaderService(
-            self.store,
-            self.runtime_root,
-            limits=self.limits,
-            vision_analyzer=self.vision_analyzer,
-            conversation_artifacts=artifacts,
-        )
-
     def _conversation_record(
         self,
         attachment_id: str,

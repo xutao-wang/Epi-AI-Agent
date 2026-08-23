@@ -818,13 +818,6 @@ def dataset_artifact_description(artifact: dict[str, Any] | None) -> str:
     return ""
 
 
-def dataset_artifact_display_label(artifact: dict[str, Any] | None) -> str:
-    item = dict(artifact or {})
-    dataset_id = str(item.get("id") or "").strip() or "unknown"
-    description = dataset_artifact_description(item)
-    return f"{description} ({dataset_id})" if description else dataset_id
-
-
 def persist_dataset_artifact(
     *,
     runtime_root: str | Path | ThreadStorageScope | None,

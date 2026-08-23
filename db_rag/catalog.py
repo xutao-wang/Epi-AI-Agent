@@ -421,22 +421,6 @@ def _schema_evidence_hit(
     )
 
 
-def _bounded_interleave(
-    first: list[dict[str, Any]],
-    second: list[dict[str, Any]],
-    *,
-    limit: int,
-) -> list[dict[str, Any]]:
-    merged: list[dict[str, Any]] = []
-    for index in range(max(len(first), len(second))):
-        for rows in (first, second):
-            if index < len(rows):
-                merged.append(rows[index])
-                if len(merged) == limit:
-                    return merged
-    return merged
-
-
 def _as_text(value: Any) -> str:
     return str(value or "").strip()
 

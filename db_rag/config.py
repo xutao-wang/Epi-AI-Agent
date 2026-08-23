@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from study_package.manifest import StudyPackageManifest, resolve_package_path
-from utils.env_loader import app_env_path_for_project, load_app_environment
+from utils.env_loader import load_app_environment
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -48,17 +48,6 @@ def resolve_db_rag_runtime_paths(
         ),
         embedding_model=manifest.database.embedding_model,
     )
-
-
-def shared_env_path_for_project(project_root: Path = PROJECT_ROOT) -> Path:
-    return app_env_path_for_project(project_root)
-
-
-def embedding_credentials_ready() -> bool:
-    """DB-RAG semantic search embeds queries with OpenAI regardless of the
-    active chat provider; without OPENAI_API_KEY it degrades to unavailable."""
-    load_app_environment(PROJECT_ROOT)
-    return bool(str(os.getenv("OPENAI_API_KEY", "") or "").strip())
 
 
 def resolve_db_rag_embedding_model(
