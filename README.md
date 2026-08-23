@@ -20,7 +20,7 @@ uv pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Install the included RePORT India and NHANES study packages, then start the
+Install the included synthetic RePORT India and NHANES study packages, then start the
 server:
 
 ```bash
