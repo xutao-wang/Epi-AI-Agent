@@ -2453,7 +2453,7 @@ select {
   gap: 0;
 }
 
-.db-rag-concept-card h2 {
+.db-rag-concept-card h3 {
   margin: 0;
   border-bottom: 1px solid #d8dee4;
   padding-bottom: 8px;
@@ -2461,7 +2461,8 @@ select {
   font-weight: 650;
 }
 
-.db-rag-data-linkage {
+.db-rag-data-linkage,
+.db-rag-linkage-section {
   display: grid;
   gap: 14px;
   margin-top: 20px;
@@ -2520,11 +2521,13 @@ select {
 }
 
 .db-rag-data-linkage h3,
-.db-rag-data-linkage h4 {
+.db-rag-data-linkage h4,
+.db-rag-linkage-section h3 {
   margin: 0;
 }
 
-.db-rag-data-linkage h3 {
+.db-rag-data-linkage h3,
+.db-rag-linkage-section h3 {
   font-size: 16px;
   font-weight: 600;
 }
