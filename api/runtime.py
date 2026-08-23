@@ -88,6 +88,10 @@ from utils.attachment_readers import AttachmentReaderService
 from utils.user_storage import ThreadStorageScope, UserStorageLayout
 from utils.display_history import build_display_history
 from utils.export_thread import build_thread_export
+from db_rag.embedding_startup import (
+    EmbeddingStartupStatus,
+    silent_embedding_startup_status,
+)
 from utils.review_interrupts import (
     project_review_interrupt,
     validate_resume_decision,
@@ -1191,6 +1195,9 @@ class ReportAgentApiRuntime:
             ),
         )
     )
+    embedding_startup_status: EmbeddingStartupStatus = field(
+        default_factory=silent_embedding_startup_status
+    )
     history_store: ConversationHistoryStore | None = None
     title_generator: OpenAIConversationTitleGenerator | None = None
     title_generator_factory: TitleGeneratorFactory | None = None
@@ -1613,6 +1620,7 @@ class ReportAgentApiRuntime:
         return RuntimeOptions(
             defaults=defaults,
             capabilities=self.capabilities,
+            embedding_startup_status=self.embedding_startup_status,
             models=[
                 ModelOption(**self.registered_models[model].descriptor())
                 for model in self.models
@@ -2654,6 +2662,7 @@ class ReportAgentApiRuntime:
                     runtime_settings_locked=thread.locked,
                     model_label=model_label,
                     model_available=thread.model_available,
+                    embedding_startup_status=self.embedding_startup_status,
                 )
             return project_thread_state(
                 thread_id=thread_id,
@@ -2663,6 +2672,7 @@ class ReportAgentApiRuntime:
                 runtime_settings_locked=thread.locked,
                 model_label=model_label,
                 model_available=thread.model_available,
+                embedding_startup_status=self.embedding_startup_status,
             )
         app, runner = self._bound_graph(thread)
         snapshot = app.get_state(
@@ -2691,6 +2701,7 @@ class ReportAgentApiRuntime:
             runtime_settings_locked=thread.locked,
             model_label=model_label,
             model_available=thread.model_available,
+            embedding_startup_status=self.embedding_startup_status,
         )
         if projected.active_interrupt is not None:
             self._activity_call(
@@ -2719,6 +2730,7 @@ class ReportAgentApiRuntime:
             model_label=model_label,
             model_available=thread.model_available,
             activity_runs=self._activity_runs(thread_id),
+            embedding_startup_status=self.embedding_startup_status,
         )
 
     def _dataset_artifact(
@@ -3302,6 +3314,7 @@ def project_thread_state(
     model_label: str = "",
     model_available: bool = True,
     activity_runs: list[ActivityRun] | None = None,
+    embedding_startup_status: EmbeddingStartupStatus | None = None,
 ) -> ApiThreadState:
     values = _projection_values(snapshot)
     snapshot_next = list(getattr(snapshot, "next", None) or [])
@@ -3410,4 +3423,7 @@ def project_thread_state(
         ),
         model_available=model_available,
         model_replacement_required=not model_available,
+        embedding_startup_status=(
+            embedding_startup_status or silent_embedding_startup_status()
+        ),
     )

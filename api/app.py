@@ -21,11 +21,12 @@ from api.deployment import (
 from api.runtime import GraphBuildContext, ReportAgentApiRuntime, RuntimeSettings
 from api.schemas import RuntimeCapabilities, RuntimeCapability
 from api.server import create_app
-from db_rag.config import (
-    resolve_db_rag_embedding_model,
-    resolve_db_rag_reranker_model,
+from db_rag.config import resolve_db_rag_reranker_model
+from db_rag.embedding_routes import EmbeddingRoute
+from db_rag.embedding_startup import (
+    assess_study_compatibility,
+    initialize_embedding,
 )
-from db_rag.embedding_routes import EmbeddingRoute, resolve_embedding_route
 from db_rag.readiness import DbRagReadiness, resolve_db_rag_readiness
 from db_rag.retrieval_status import lexical_fallback_status
 from db_rag.session_studies import bind_session_studies
@@ -205,8 +206,14 @@ def build_application(
     )
 
     studies = discover_studies(selected_study_root / "studies")
-    db_rag_embedding_model = resolve_db_rag_embedding_model(environ)
-    embedding_route = resolve_embedding_route(environ, db_rag_embedding_model)
+    embedding_startup = initialize_embedding(environ)
+    embedding_route = embedding_startup.route
+    embedding_startup_status = assess_study_compatibility(
+        embedding_startup.status,
+        embedding_route,
+        studies,
+    )
+    db_rag_embedding_model = embedding_route.model
     db_rag_readiness = _db_rag_readiness(
         studies,
         embedding_route=embedding_route,
@@ -290,6 +297,7 @@ def build_application(
                 message=db_rag_readiness.message,
             ),
         ),
+        embedding_startup_status=embedding_startup_status,
         activity_store=activity_store,
     )
 

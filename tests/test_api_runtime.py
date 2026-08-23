@@ -47,6 +47,7 @@ from api.schemas import (
     RuntimeCapabilities,
     RuntimeCapability,
 )
+from db_rag.embedding_startup import EmbeddingStartupStatus
 from graph.conversation_events import (
     append_conversation_event,
     build_attachment_event,
@@ -496,6 +497,7 @@ def _runtime(
     runtime_settings: dict | None = None,
     capabilities: RuntimeCapabilities | None = None,
     models: list[str] | None = None,
+    embedding_startup_status: EmbeddingStartupStatus | None = None,
 ) -> ReportAgentApiRuntime:
     settings = {
         **_DEFAULT_RUNTIME_SETTINGS,
@@ -509,6 +511,11 @@ def _runtime(
         default_runtime_settings=settings,
         models=models or ["gpt-5.4", "gpt-5.6-luna"],
         runtime_root=runtime_root,
+        **(
+            {"embedding_startup_status": embedding_startup_status}
+            if embedding_startup_status is not None
+            else {}
+        ),
         **({"capabilities": capabilities} if capabilities is not None else {}),
     )
     thread = runtime._thread("thread-1")
@@ -3352,6 +3359,33 @@ def test_runtime_options_returns_existing_runtime_defaults() -> None:
             "message": "Study design knowledge is available.",
         },
     }
+
+
+def test_runtime_options_and_thread_state_share_live_embedding_startup_status() -> None:
+    status = EmbeddingStartupStatus(
+        profile_id="test-profile",
+        profile_label="Test embedding model",
+        provider="test-provider",
+        index_compatibility="Test/test-model",
+        available=False,
+        retrieval_mode="lexical_fallback",
+        reason_code="EMBEDDING_CREDENTIALS_MISSING",
+        message="Semantic embedding search is unavailable.",
+        compatible_study_ids=("study-a",),
+        incompatible_study_ids=(),
+    )
+    runtime = _runtime(
+        _RuntimeFakeGraph(SimpleNamespace(values={})),
+        runner=_RecordingRunner(),
+        embedding_startup_status=status,
+    )
+
+    options = runtime.runtime_options()
+    state = runtime.state("thread-1")
+
+    assert options.embedding_startup_status is status
+    assert state.embedding_startup_status is status
+    assert "embedding_startup_status" not in state.diagnostics
 
 
 def test_runtime_options_expose_ordered_model_descriptors() -> None:

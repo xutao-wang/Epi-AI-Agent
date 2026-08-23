@@ -49,6 +49,17 @@ class EmbeddingStartupResult:
     status: EmbeddingStartupStatus
 
 
+def silent_embedding_startup_status() -> EmbeddingStartupStatus:
+    """Return a test/default status that does not render a fallback notice."""
+    return EmbeddingStartupStatus(
+        profile_id="configured",
+        profile_label="Configured embedding profile",
+        provider="unknown",
+        available=True,
+        retrieval_mode="hybrid_vector_lexical",
+    )
+
+
 def _safe_cause(reason_code: EmbeddingReasonCode) -> str:
     if reason_code in {
         "EMBEDDING_PROFILE_INVALID",
@@ -218,4 +229,5 @@ __all__ = [
     "EmbeddingStartupStatus",
     "assess_study_compatibility",
     "initialize_embedding",
+    "silent_embedding_startup_status",
 ]

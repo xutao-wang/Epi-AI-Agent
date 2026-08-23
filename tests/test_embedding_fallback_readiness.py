@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from db_rag.config import EMBEDDING_MODEL
 from db_rag.embedding_routes import resolve_embedding_route
+from db_rag.embedding_startup import initialize_embedding as real_initialize_embedding
 from db_rag.readiness import DbRagReadiness
 from db_rag.study import build_study_bundle
 from epi_agent.studies import StudyBundle, StudyRegistry
@@ -45,6 +46,55 @@ def test_missing_embedding_key_keeps_lexical_db_rag_available(monkeypatch) -> No
     assert readiness.available is True
     assert "lexical fallback" in readiness.message
     assert "OPENAI_API_KEY is not configured" in readiness.message
+
+
+def test_build_application_initializes_embedding_once_per_application(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import api.app as app_module
+    from epi_agent.studies import StudyRegistry
+    from utils.model_availability import (
+        ProviderEndpoint,
+        build_model_availability,
+    )
+
+    calls: list[dict[str, str]] = []
+
+    def initialize(environ):
+        calls.append(dict(environ))
+        return real_initialize_embedding({})
+
+    monkeypatch.setattr(app_module, "initialize_embedding", initialize, raising=False)
+    monkeypatch.setattr(
+        app_module,
+        "discover_studies",
+        lambda _root: StudyRegistry(),
+    )
+    environ = {
+        "ANTHROPIC_API_KEY": "anthropic-key",
+        "REPORT_AGENT_RUNTIME_ROOT": str(tmp_path / "runtime"),
+        "REPORT_AGENT_STUDY_ROOT": str(tmp_path / "studies"),
+    }
+    availability = build_model_availability(
+        environ,
+        {ProviderEndpoint("anthropic", "ANTHROPIC_API_KEY")},
+    )
+
+    application = app_module.build_application(
+        environ=environ,
+        model_availability=availability,
+    )
+    runtime = application.state.report_agent_runtime
+    runtime.runtime_options()
+    runtime.create_thread()
+    runtime.create_thread()
+
+    assert len(calls) == 1
+    assert (
+        runtime.embedding_startup_status.reason_code
+        == "EMBEDDING_CREDENTIALS_MISSING"
+    )
 
 
 def test_unavailable_future_embedding_route_keeps_db_rag_available(monkeypatch) -> None:

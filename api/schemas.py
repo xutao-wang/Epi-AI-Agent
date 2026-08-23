@@ -4,6 +4,11 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from db_rag.embedding_startup import (
+    EmbeddingStartupStatus,
+    silent_embedding_startup_status,
+)
+
 
 RunState = Literal[
     "idle",
@@ -91,6 +96,9 @@ class RuntimeOptions(BaseModel):
     defaults: RuntimeSettings
     models: list[ModelOption] = Field(default_factory=list)
     capabilities: RuntimeCapabilities
+    embedding_startup_status: EmbeddingStartupStatus = Field(
+        default_factory=silent_embedding_startup_status
+    )
 
 
 class ConversationAttachment(BaseModel):
@@ -431,6 +439,9 @@ class ApiThreadState(BaseModel):
     model_label: str = ""
     model_available: bool = True
     model_replacement_required: bool = False
+    embedding_startup_status: EmbeddingStartupStatus = Field(
+        default_factory=silent_embedding_startup_status
+    )
 
 
 class CreateThreadRequest(BaseModel):
