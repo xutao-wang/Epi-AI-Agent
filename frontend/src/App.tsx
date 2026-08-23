@@ -882,6 +882,9 @@ export default function App({
       );
       if (applyOwnedThreadState(ownerThreadId, generation, nextState)) {
         setError(null);
+        if (loadConversationHistory) {
+          void refreshSavedConversations();
+        }
       }
     } catch (resumeError) {
       if (
@@ -918,6 +921,9 @@ export default function App({
       const nextState = await apiClient.cancelRun(activeThreadId);
       if (applyOwnedThreadState(activeThreadId, generation, nextState)) {
         setError(null);
+        if (loadConversationHistory) {
+          void refreshSavedConversations();
+        }
       }
     } catch (cancelError) {
       await handleRequestError(cancelError, activeThreadId, generation);

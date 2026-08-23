@@ -1556,6 +1556,146 @@ describe("App", () => {
     expect(screen.getByText("Safe Thread B")).toBeInTheDocument();
   });
 
+  it("clears the saved-conversation review badge after resume and cancellation", async () => {
+    let conversationRequests = 0;
+    let threadStateRequests = 0;
+    const summary = {
+      thread_id: "thread-1",
+      title: "Clarification thread",
+      title_source: "automatic" as const,
+      model_name: "gpt-5.6-terra",
+      created_at: "2026-08-23T00:00:00+00:00",
+      updated_at: "2026-08-23T00:00:00+00:00",
+      last_opened_at: null,
+      archived_at: null,
+      awaiting_review: true,
+    };
+    const clarificationState = threadState({
+      run: {
+        state: "interrupted",
+        steps: 2,
+        error: null,
+        error_code: null,
+        user_message: null,
+        started_at: null,
+        updated_at: null,
+      },
+      conversation: [
+        { id: "user-1", role: "user", text: "Create a cohort" },
+      ],
+      active_interrupt: {
+        id: "interrupt-clarification",
+        type: "agent_clarification",
+        question: "Which follow-up window should be used?",
+        reason: "The outcome exists at multiple visits.",
+        options: [
+          { id: "month-12", label: "Use the 12-month visit." },
+        ],
+      },
+    });
+    const runningState = threadState({
+      run: {
+        state: "running",
+        steps: 3,
+        error: null,
+        error_code: null,
+        user_message: null,
+        started_at: null,
+        updated_at: null,
+      },
+      conversation: [
+        { id: "user-1", role: "user", text: "Create a cohort" },
+      ],
+    });
+    const cancelledState = threadState({
+      run: {
+        state: "cancelled",
+        steps: 3,
+        error: null,
+        error_code: null,
+        user_message: null,
+        started_at: null,
+        updated_at: null,
+      },
+      conversation: [
+        {
+          id: "user-1",
+          role: "user",
+          text: "Create a cohort",
+          status: "cancelled",
+        },
+      ],
+    });
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "http://api.test/api/runtime/options") {
+        return Promise.resolve(runtimeOptionsResponse());
+      }
+      if (url === "http://api.test/api/conversations") {
+        conversationRequests += 1;
+        return Promise.resolve(
+          jsonResponse({
+            items: [
+              {
+                ...summary,
+                awaiting_review: conversationRequests < 3,
+              },
+            ],
+          }),
+        );
+      }
+      if (url === "http://api.test/api/threads/thread-1/state") {
+        threadStateRequests += 1;
+        return Promise.resolve(
+          jsonResponse(threadStateRequests === 1 ? clarificationState : runningState),
+        );
+      }
+      if (url === "http://api.test/api/conversations/thread-1/open") {
+        return Promise.resolve(jsonResponse(summary));
+      }
+      if (
+        url ===
+          "http://api.test/api/threads/thread-1/interrupts/interrupt-clarification/resume" &&
+        init?.method === "POST"
+      ) {
+        return Promise.resolve(jsonResponse(runningState));
+      }
+      if (
+        url === "http://api.test/api/threads/thread-1/cancel" &&
+        init?.method === "POST"
+      ) {
+        return Promise.resolve(jsonResponse(cancelledState));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+
+    render(<App apiBase="http://api.test" fetchImpl={fetchMock} />);
+
+    expect(await screen.findByText("Awaiting review")).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Clarification thread" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("radio", { name: "Let the agent decide" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("Awaiting review")).not.toBeInTheDocument();
+    });
+    expect(conversationRequests).toBe(3);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel run" }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("Awaiting review")).not.toBeInTheDocument();
+      expect(
+        screen.getByLabelText("Ask a question about your dataset!"),
+      ).toBeEnabled();
+    });
+    expect(conversationRequests).toBe(4);
+  });
+
   it("ignores a cancellation response after switching conversations", async () => {
     const cancelA = deferred<Response>();
     const summaries = [
