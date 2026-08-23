@@ -7,23 +7,47 @@ from typing import Generic, Literal, TypeVar
 T = TypeVar("T")
 RetrievalMode = Literal["hybrid_vector_lexical", "lexical_fallback"]
 EmbeddingReasonCode = Literal[
+    "EMBEDDING_PROFILE_INVALID",
+    "EMBEDDING_PROFILE_UNKNOWN",
+    "EMBEDDING_PROFILE_DISABLED",
     "EMBEDDING_CREDENTIALS_MISSING",
     "EMBEDDING_ROUTE_UNAVAILABLE",
+    "EMBEDDING_TRANSPORT_UNAVAILABLE",
     "EMBEDDING_CONFIGURATION_UNAVAILABLE",
     "EMBEDDING_INDEX_UNAVAILABLE",
+    "EMBEDDING_INDEX_INCOMPATIBLE",
     "EMBEDDING_PROVIDER_UNAVAILABLE",
+    "EMBEDDING_PROBE_TIMEOUT",
+    "EMBEDDING_RESPONSE_INVALID",
+    "EMBEDDING_DIMENSION_MISMATCH",
 ]
 
 _REASONS: dict[EmbeddingReasonCode, str] = {
+    "EMBEDDING_PROFILE_INVALID": "its profile registry is invalid",
+    "EMBEDDING_PROFILE_UNKNOWN": "its selected profile is unknown",
+    "EMBEDDING_PROFILE_DISABLED": "its selected profile is disabled",
     "EMBEDDING_ROUTE_UNAVAILABLE": (
         "no embedding adapter is available for this route"
+    ),
+    "EMBEDDING_TRANSPORT_UNAVAILABLE": (
+        "no embedding adapter is available for this transport"
     ),
     "EMBEDDING_CONFIGURATION_UNAVAILABLE": (
         "its configuration is unavailable or incompatible"
     ),
     "EMBEDDING_INDEX_UNAVAILABLE": "the semantic index is unavailable",
+    "EMBEDDING_INDEX_INCOMPATIBLE": (
+        "the semantic index is incompatible with the selected profile"
+    ),
     "EMBEDDING_PROVIDER_UNAVAILABLE": (
         "the embedding provider could not complete the query"
+    ),
+    "EMBEDDING_PROBE_TIMEOUT": "the embedding provider timed out",
+    "EMBEDDING_RESPONSE_INVALID": (
+        "the embedding provider returned an invalid response"
+    ),
+    "EMBEDDING_DIMENSION_MISMATCH": (
+        "the embedding provider returned an incompatible vector dimension"
     ),
 }
 

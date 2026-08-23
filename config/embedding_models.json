@@ -1,0 +1,18 @@
+{
+  "default_profile": "openai-text-embedding-3-large",
+  "profiles": [
+    {
+      "id": "openai-text-embedding-3-large",
+      "label": "OpenAI text-embedding-3-large",
+      "provider": "openai",
+      "transport": "openai_embeddings",
+      "model": "text-embedding-3-large",
+      "index_compatibility": "OpenAI/text-embedding-3-large",
+      "dimensions": 3072,
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY",
+      "timeout_seconds": 10,
+      "enabled": true
+    }
+  ]
+}
