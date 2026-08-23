@@ -89,16 +89,26 @@ To send another message in such a conversation, select and confirm one of the
 currently available models; the conversation then continues with that model.
 
 Evidence retrieval routes embeddings independently from the selected chat
-model. The built-in `OpenAI/text-embedding-3-large` route uses
-`OPENAI_API_KEY`, even when the chat model is Claude or a custom model. Catalog,
-reviewed-publication, and study-design searches then combine vector and lexical
-ranking. If the configured embedding route, adapter, credentials, index, or
-provider is unavailable, those tools continue with lexical-only search and
-explicitly report the embedding model, provider, and reason without stopping
-the agent. A future model such as Qwen through OpenRouter therefore degrades to
-lexical search when its route is unavailable; this release does not yet include
-an OpenRouter embedding transport. Building or rebuilding a study package's
-embedding index still requires a compatible embedding route.
+model. Non-secret embedding cards live in `config/embedding_models.json`; the
+registry default is used unless an operator sets `DB_RAG_EMBEDDING_PROFILE`.
+The built-in `openai-text-embedding-3-large` profile reads `OPENAI_API_KEY`,
+even when the chat model is Claude or a custom model. The legacy
+`DB_RAG_EMBEDDING_MODEL` setting is still mapped to a card by its exact index
+compatibility identity during migration.
+
+At application startup, the selected profile makes one bounded real connection
+probe. A successful probe is silent and enables combined vector-plus-lexical
+catalog, reviewed-publication, and study-design ranking for study indexes that
+match the card. Invalid cards, missing credentials, unsupported transports,
+provider failures, invalid vectors, and incompatible indexes never stop the
+application or agent: searches continue with lexical matching and the UI shows
+one sanitized fallback notice. Searches do not repeat the startup health probe;
+later query failures fall back only for that request.
+
+Adding a future embedding model such as Qwen requires an administrator to add a
+registry card, register its code-owned transport adapter, and build matching
+study indexes. The browser intentionally has no embedding-profile selector,
+because users cannot rebuild packaged indexes from the application.
 
 To make one real chat-provider smoke request with OpenAI and OpenRouter keys
 removed for the duration of the request, run:
