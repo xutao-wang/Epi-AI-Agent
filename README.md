@@ -43,10 +43,9 @@ By default, the application is available at:
 - `OPENAI_API_KEY` enables the registered OpenAI models.
 - `ANTHROPIC_API_KEY` enables the registered Anthropic models.
 
-Set `DB_RAG_EMBEDDING_PROFILE` to select the embedding profile used for
-evidence retrieval; otherwise, the registry default is used.
-The built-in `openai-text-embedding-3-large` profile reads `OPENAI_API_KEY`,
-even when the chat model is Claude.
+Semantic search uses the built-in OpenAI `text-embedding-3-large` model and
+requires `OPENAI_API_KEY`, even when the chat model is Claude. If OpenAI
+embeddings are unavailable, search falls back to lexical matching.
 
 ## Safety note
 
