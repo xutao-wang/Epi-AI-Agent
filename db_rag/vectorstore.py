@@ -21,25 +21,40 @@ class OpenAIEmbeddingFunction:
     _MAX_EMPTY_DATA_RETRIES = 1
     _QUERY_CACHE_SIZE = 64
 
-    def __init__(self, model: str, *, api_key: str):
+    def __init__(
+        self,
+        model: str,
+        *,
+        api_key: str,
+        provider_model: str | None = None,
+        base_url: str | None = None,
+        timeout_seconds: float | None = None,
+    ):
         resolved_model = str(model or "").strip()
-        if resolved_model != EMBEDDING_MODEL:
-            raise ValueError(
-                f"Unsupported DB-RAG embedding model '{resolved_model}'. "
-                f"Expected '{EMBEDDING_MODEL}'."
-            )
+        if not resolved_model:
+            raise ValueError("DB-RAG embedding model must not be blank.")
+        resolved_provider_model = str(provider_model or "").strip()
+        if not resolved_provider_model:
+            resolved_provider_model = resolved_model.split("/", 1)[-1]
 
         from openai import OpenAI
 
         self._query_cache: OrderedDict[bytes, tuple[float, ...]] = OrderedDict()
         self._query_cache_lock = threading.Lock()
         self.config_model = resolved_model
-        self.model = resolved_model.split("/", 1)[1]
-        self.client = OpenAI(
+        self.model = resolved_provider_model
+        client_options: dict[str, Any] = dict(
             api_key=api_key,
             max_retries=0,
-            timeout=resolve_db_rag_request_timeout_seconds(),
+            timeout=(
+                timeout_seconds
+                if timeout_seconds is not None
+                else resolve_db_rag_request_timeout_seconds()
+            ),
         )
+        if base_url is not None:
+            client_options["base_url"] = base_url
+        self.client = OpenAI(**client_options)
 
     @staticmethod
     def name() -> str:
