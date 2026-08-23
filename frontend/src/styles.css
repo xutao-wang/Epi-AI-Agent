@@ -713,6 +713,7 @@ select {
 
 .embedding-fallback-notice {
   width: 100%;
+  box-sizing: border-box;
   border: 1px solid #d4a72c;
   border-radius: 6px;
   background: #fff8c5;
