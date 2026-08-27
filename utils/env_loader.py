@@ -27,7 +27,22 @@ def _load_env_file(path: Path, *, protected_keys: set[str]) -> None:
         os.environ[key] = value
 
 
-def load_app_environment(project_root: str | Path = PROJECT_ROOT) -> None:
+def load_app_environment(
+    project_root: str | Path = PROJECT_ROOT,
+    *,
+    local_api_keys_only: bool = False,
+) -> None:
+    """Load shared defaults and the project's local environment file.
+
+    When ``local_api_keys_only`` is enabled, inherited ``*_API_KEY`` values
+    are discarded before loading the project files. This lets a local run use
+    only credentials explicitly present in the project's ``.env``.
+    """
+    if local_api_keys_only:
+        for key in tuple(os.environ):
+            if key.endswith("_API_KEY"):
+                os.environ.pop(key, None)
+
     protected_keys = set(os.environ)
     root = Path(project_root)
     app_path = app_env_path_for_project(root)

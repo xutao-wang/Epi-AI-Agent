@@ -30,9 +30,15 @@ from utils.model_availability import (
     profile_endpoint,
     registered_model_profiles,
 )
-from utils.model_runtime_profiles import PROVIDER_OPENAI_COMPATIBLE
+from utils.model_runtime_profiles import (
+    ENABLED_CUSTOM_ENDPOINTS_ENV,
+    PROVIDER_OPENAI_COMPATIBLE,
+    enabled_custom_endpoint_ids,
+    load_custom_endpoint_entries,
+)
 from utils.provider_startup import (
     ProviderCredentialError,
+    discover_openai_compatible_models,
     verify_active_provider,
     verify_provider_credential,
 )
@@ -138,10 +144,11 @@ def _configure_provider_menu(
 ) -> None:
     while True:
         profiles = registered_model_profiles(environ)
+        discovery_endpoints = load_custom_endpoint_entries(environ=environ)
         has_custom = any(
             profile.provider == PROVIDER_OPENAI_COMPATIBLE
             for profile in profiles.values()
-        )
+        ) or bool(discovery_endpoints)
         if force:
             prompt = (
                 "Configure AI providers. Existing providers are retained.\n\n"
@@ -194,6 +201,50 @@ def _configure_provider_menu(
             continue
         if selection == "3":
             if has_custom:
+                custom_options = {
+                    profile.custom_endpoint_id: profile.base_label
+                    for profile in profiles.values()
+                    if profile.provider == PROVIDER_OPENAI_COMPATIBLE
+                    and profile.custom_endpoint_id
+                }
+                custom_options.update(
+                    {
+                        endpoint_id: entry.label or endpoint_id
+                        for endpoint_id, entry in discovery_endpoints.items()
+                    }
+                )
+                endpoint_ids = tuple(custom_options)
+                selected_endpoint = endpoint_ids[0]
+                if len(endpoint_ids) > 1:
+                    listing = "\n".join(
+                        f"{index}. {custom_options[endpoint_id]} ({endpoint_id})"
+                        for index, endpoint_id in enumerate(endpoint_ids, start=1)
+                    )
+                    try:
+                        endpoint_choice = (
+                            input_fn(
+                                "Choose the compatible endpoint:\n"
+                                f"{listing}\nSelection [1]: "
+                            ).strip()
+                            or "1"
+                        )
+                        selected_index = int(endpoint_choice)
+                        if not 1 <= selected_index <= len(endpoint_ids):
+                            raise ValueError
+                        selected_endpoint = endpoint_ids[selected_index - 1]
+                    except (IndexError, ValueError):
+                        output_fn("Select one of the listed compatible endpoints.")
+                        continue
+                    except (EOFError, KeyboardInterrupt) as error:
+                        raise StartupConfigurationError(
+                            "Compatible endpoint setup was cancelled."
+                        ) from error
+                configured = selected_endpoint
+                environ[ENABLED_CUSTOM_ENDPOINTS_ENV] = configured
+                persist(
+                    project_root,
+                    {ENABLED_CUSTOM_ENDPOINTS_ENV: configured},
+                )
                 return
             output_fn(
                 "No compatible models are registered. Copy "
@@ -219,6 +270,7 @@ def configure_and_verify_providers(
     getpass_fn: Callable[[str], str] = getpass.getpass,
     output_fn: Callable[[str], None] = print,
     verifier: Callable[..., None] = verify_provider_credential,
+    discoverer: Callable[..., Sequence[str]] = discover_openai_compatible_models,
     persist: Callable[[str | Path, dict[str, str]], None] = persist_local_env_values,
     force: bool = False,
 ) -> ModelAvailability:
@@ -227,16 +279,12 @@ def configure_and_verify_providers(
     for key in _DEPRECATED_LOCAL_ENV_KEYS - {"REPORT_AGENT_CHECKPOINT_DB_PATH"}:
         environ.pop(key, None)
 
-    profiles = registered_model_profiles(environ)
-    custom_exists = any(
-        profile.provider == PROVIDER_OPENAI_COMPATIBLE
-        for profile in profiles.values()
-    )
     has_builtin = any(
         normalize_secret_input(environ.get(key, ""))
         for key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY")
     )
-    if force or (not has_builtin and not custom_exists):
+    has_selected_custom = bool(enabled_custom_endpoint_ids(environ))
+    if force or not (has_builtin or has_selected_custom):
         _configure_provider_menu(
             project_root=project_root,
             environ=environ,
@@ -250,7 +298,53 @@ def configure_and_verify_providers(
 
     verified: set[ProviderEndpoint] = set()
     profiles = registered_model_profiles(environ)
+    discovered_profiles = {}
+    discovery_endpoints = load_custom_endpoint_entries(environ=environ)
+    for endpoint_id in enabled_custom_endpoint_ids(environ):
+        entry = discovery_endpoints.get(endpoint_id)
+        if entry is None:
+            continue
+        key = normalize_secret_input(
+            environ.get(entry.api_key_env, "") if entry.api_key_env else ""
+        )
+        if entry.api_key_env and not key:
+            output_fn(
+                f"Warning: {entry.api_key_env} is required by compatible "
+                f"endpoint {entry.base_url}; its models are unavailable."
+            )
+            continue
+        try:
+            remote_model_ids = discoverer(key, base_url=entry.base_url)
+            endpoint_profiles = entry.profiles_for(remote_model_ids)
+        except (ProviderCredentialError, ValueError) as error:
+            output_fn(
+                f"Compatible endpoint discovery failed for "
+                f"{entry.base_url}: {error}"
+            )
+            continue
+        duplicate_ids = sorted(
+            set(endpoint_profiles) & (set(profiles) | set(discovered_profiles))
+        )
+        if duplicate_ids:
+            raise StartupConfigurationError(
+                "Discovered custom model id duplicates an existing model: "
+                + ", ".join(duplicate_ids)
+            )
+        discovered_profiles.update(endpoint_profiles)
+        verified.add(
+            ProviderEndpoint(
+                provider=PROVIDER_OPENAI_COMPATIBLE,
+                api_key_env=entry.api_key_env,
+                base_url=entry.base_url,
+            )
+        )
+        output_fn(
+            f"Compatible endpoint verified: {len(endpoint_profiles)} "
+            f"model(s) discovered."
+        )
     for endpoint in configured_provider_endpoints(environ):
+        if endpoint in verified:
+            continue
         key = normalize_secret_input(
             environ.get(endpoint.api_key_env, "") if endpoint.api_key_env else ""
         )
@@ -290,7 +384,11 @@ def configure_and_verify_providers(
             output_fn(f"{_provider_label(endpoint.provider)} verified.")
 
     try:
-        return build_model_availability(environ, verified)
+        return build_model_availability(
+            environ,
+            verified,
+            discovered_profiles,
+        )
     except ValueError as error:
         raise StartupConfigurationError(str(error)) from error
 
@@ -372,7 +470,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         description="Start the Epidemiology Research Agent demo."
     )
     parser.add_argument("--host", type=_loopback_host, default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--port", type=int, default=8080)
     parser.add_argument(
         "--reconfigure",
         action="store_true",
@@ -515,7 +613,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     try:
         validate_python_version()
-        load_app_environment(PROJECT_ROOT)
+        load_app_environment(
+            PROJECT_ROOT,
+            local_api_keys_only=True,
+        )
         configure_native_runtime()
         prepare_environment()
         model_availability = configure_and_verify_providers(

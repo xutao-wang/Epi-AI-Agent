@@ -1,11 +1,11 @@
 [
   {
-    "id": "vllm:qwen3-72b",
-    "label": "Qwen3 72B (local vLLM)",
-    "base_url": "http://127.0.0.1:8001/v1",
-    "model": "Qwen/Qwen3-72B-Instruct",
-    "api_key_env": "VLLM_API_KEY",
-    "summary": "Locally served vLLM model.",
+    "endpoint_id": "vllm",
+    "label": "Local vLLM",
+    "base_url": "http://127.0.0.1:8000/v1",
+    "discover_models": true,
+    "api_key_env": "",
+    "summary": "Model discovered from the local vLLM endpoint.",
     "initial_output_tokens": 8192,
     "automatic_output_token_ceiling": 16384,
     "user_output_token_increment": 8192,
