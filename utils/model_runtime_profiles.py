@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import threading
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, ROUND_CEILING
 from pathlib import Path
@@ -36,6 +36,7 @@ PROVIDER_API_KEY_ENVS: dict[str, str] = {
 }
 
 CUSTOM_MODELS_PATH_ENV = "REPORT_AGENT_CUSTOM_MODELS_PATH"
+ENABLED_CUSTOM_ENDPOINTS_ENV = "REPORT_AGENT_ENABLED_CUSTOM_ENDPOINTS"
 DEFAULT_CUSTOM_MODELS_PATH = PROJECT_ROOT / "config" / "custom_models.json"
 
 
@@ -87,6 +88,7 @@ class ModelRuntimeProfile:
     remote_model_id: str | None = None
     supports_vision: bool = True
     supports_mid_conversation_system: bool = True
+    custom_endpoint_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.provider == PROVIDER_OPENAI:
@@ -368,7 +370,98 @@ class CustomModelEntry(BaseModel):
             supports_mid_conversation_system=(
                 self.supports_mid_conversation_system
             ),
+            custom_endpoint_id=self.id,
         )
+
+
+class CustomEndpointEntry(BaseModel):
+    """One selected endpoint whose served models are discovered at startup."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    endpoint_id: str = Field(min_length=1, max_length=80)
+    base_url: str = Field(min_length=1)
+    discover_models: Literal[True]
+    label: str = ""
+    api_key_env: str = ""
+    summary: str = ""
+    initial_output_tokens: int = Field(default=8_192, gt=0)
+    automatic_output_token_ceiling: int = Field(default=16_384, gt=0)
+    user_output_token_increment: int = Field(default=8_192, gt=0)
+    absolute_output_token_ceiling: int = Field(default=24_576, gt=0)
+    request_timeout_seconds: int = Field(default=120, gt=0)
+    workflow_timeout_seconds: int = Field(default=300, gt=0)
+    output_usd_per_million: str | None = None
+    supports_vision: bool = False
+    supports_mid_conversation_system: bool = False
+    supports_sampling_controls: bool = True
+    routing_context_char_ceiling: int = Field(default=262_144, gt=0)
+
+    def profiles_for(
+        self,
+        remote_model_ids: Sequence[str],
+    ) -> dict[str, ModelRuntimeProfile]:
+        price: Decimal | None = None
+        if self.output_usd_per_million is not None:
+            try:
+                price = Decimal(str(self.output_usd_per_million))
+            except InvalidOperation as exc:
+                raise ValueError(
+                    f"Custom endpoint {self.endpoint_id!r} has an invalid "
+                    "output_usd_per_million value."
+                ) from exc
+        profiles: dict[str, ModelRuntimeProfile] = {}
+        for value in remote_model_ids:
+            remote_model_id = str(value or "").strip()
+            if not remote_model_id:
+                raise ValueError(
+                    f"Custom endpoint {self.endpoint_id!r} returned a blank "
+                    "model id."
+                )
+            model_id = f"{self.endpoint_id}:{remote_model_id}"
+            if len(model_id) > 200:
+                raise ValueError(
+                    f"Discovered custom model id {model_id!r} exceeds 200 "
+                    "characters."
+                )
+            if model_id in profiles:
+                raise ValueError(
+                    f"Custom endpoint {self.endpoint_id!r} returned duplicate "
+                    f"model id {remote_model_id!r}."
+                )
+            endpoint_label = self.label or self.endpoint_id
+            profiles[model_id] = ModelRuntimeProfile(
+                model_id=model_id,
+                base_label=f"{endpoint_label}: {remote_model_id}",
+                reasoning=None,
+                supports_sampling_controls=self.supports_sampling_controls,
+                summary=self.summary or "Discovered custom endpoint model.",
+                initial_output_tokens=self.initial_output_tokens,
+                automatic_output_token_ceiling=(
+                    self.automatic_output_token_ceiling
+                ),
+                user_output_token_increment=self.user_output_token_increment,
+                absolute_output_token_ceiling=self.absolute_output_token_ceiling,
+                request_timeout_seconds=self.request_timeout_seconds,
+                workflow_timeout_seconds=self.workflow_timeout_seconds,
+                routing_context_char_ceiling=self.routing_context_char_ceiling,
+                output_usd_per_million=price,
+                provider=PROVIDER_OPENAI_COMPATIBLE,
+                api_key_env=self.api_key_env,
+                api_key_required=bool(self.api_key_env.strip()),
+                base_url=self.base_url,
+                remote_model_id=remote_model_id,
+                supports_vision=self.supports_vision,
+                supports_mid_conversation_system=(
+                    self.supports_mid_conversation_system
+                ),
+                custom_endpoint_id=self.endpoint_id,
+            )
+        if not profiles:
+            raise ValueError(
+                f"Custom endpoint {self.endpoint_id!r} returned no models."
+            )
+        return profiles
 
 
 def custom_models_path(
@@ -380,14 +473,28 @@ def custom_models_path(
     return DEFAULT_CUSTOM_MODELS_PATH
 
 
-def load_custom_model_profiles(
-    path: str | Path | None = None,
-    *,
+def enabled_custom_endpoint_ids(
     environ: Mapping[str, str] = os.environ,
-) -> dict[str, ModelRuntimeProfile]:
+) -> tuple[str, ...]:
+    configured = str(
+        environ.get(ENABLED_CUSTOM_ENDPOINTS_ENV, "") or ""
+    ).strip()
+    return tuple(
+        dict.fromkeys(
+            endpoint_id.strip()
+            for endpoint_id in configured.split(",")
+            if endpoint_id.strip()
+        )
+    )
+
+
+def _read_custom_model_items(
+    path: str | Path | None,
+    environ: Mapping[str, str],
+) -> list[object]:
     resolved = Path(path) if path is not None else custom_models_path(environ)
     if not resolved.is_file():
-        return {}
+        return []
     try:
         raw = json.loads(resolved.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -398,9 +505,30 @@ def load_custom_model_profiles(
         raise ValueError(
             f"Custom model registry must be a JSON array: {resolved}"
         )
+    return raw
+
+
+def load_custom_model_profiles(
+    path: str | Path | None = None,
+    *,
+    environ: Mapping[str, str] = os.environ,
+) -> dict[str, ModelRuntimeProfile]:
+    items = _read_custom_model_items(path, environ)
+    discovery_endpoint_ids = {
+        CustomEndpointEntry.model_validate(item).endpoint_id
+        for item in items
+        if isinstance(item, dict) and item.get("discover_models") is True
+    }
     profiles: dict[str, ModelRuntimeProfile] = {}
-    for item in raw:
+    for item in items:
+        if isinstance(item, dict) and item.get("discover_models") is True:
+            continue
         entry = CustomModelEntry.model_validate(item)
+        if entry.id in discovery_endpoint_ids:
+            raise ValueError(
+                f"Custom model id {entry.id!r} conflicts with a custom "
+                "endpoint id."
+            )
         if (
             entry.id in profiles
             or entry.id in MODEL_RUNTIME_PROFILES
@@ -411,6 +539,24 @@ def load_custom_model_profiles(
             )
         profiles[entry.id] = entry.to_profile()
     return profiles
+
+
+def load_custom_endpoint_entries(
+    path: str | Path | None = None,
+    *,
+    environ: Mapping[str, str] = os.environ,
+) -> dict[str, CustomEndpointEntry]:
+    entries: dict[str, CustomEndpointEntry] = {}
+    for item in _read_custom_model_items(path, environ):
+        if not (isinstance(item, dict) and item.get("discover_models") is True):
+            continue
+        entry = CustomEndpointEntry.model_validate(item)
+        if entry.endpoint_id in entries:
+            raise ValueError(
+                f"Custom endpoint id {entry.endpoint_id!r} is duplicated."
+            )
+        entries[entry.endpoint_id] = entry
+    return entries
 
 
 _CUSTOM_PROFILES_LOCK = threading.Lock()
@@ -470,6 +616,8 @@ def configured_model_profiles(
 
 __all__ = [
     "CUSTOM_MODELS_PATH_ENV",
+    "ENABLED_CUSTOM_ENDPOINTS_ENV",
+    "CustomEndpointEntry",
     "CustomModelEntry",
     "MODEL_RUNTIME_PROFILES",
     "ModelRuntimeProfile",
@@ -484,7 +632,9 @@ __all__ = [
     "Provider",
     "configured_model_profiles",
     "custom_models_path",
+    "enabled_custom_endpoint_ids",
     "load_custom_model_profiles",
+    "load_custom_endpoint_entries",
     "model_runtime_profile",
     "reload_custom_model_profiles",
 ]

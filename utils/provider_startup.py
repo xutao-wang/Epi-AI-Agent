@@ -82,6 +82,42 @@ def verify_openai_credentials(
         raise _status_failure(provider_label, status_code) from error
 
 
+def discover_openai_compatible_models(
+    api_key: str,
+    *,
+    base_url: str,
+    client_factory: Callable[..., Any] | None = None,
+) -> tuple[str, ...]:
+    """Return the exact model IDs advertised by one compatible endpoint."""
+    from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
+
+    normalized_key = str(api_key or "").strip() or "not-needed"
+    factory = client_factory or OpenAI
+    try:
+        response = factory(
+            api_key=normalized_key,
+            base_url=base_url,
+            max_retries=0,
+            timeout=10.0,
+        ).models.list()
+    except (APIConnectionError, APITimeoutError) as error:
+        raise ProviderCredentialError(
+            "network",
+            "The custom endpoint could not be reached. Check your network and "
+            "try again.",
+        ) from error
+    except APIStatusError as error:
+        raise _status_failure(
+            "The custom endpoint",
+            int(error.status_code),
+        ) from error
+
+    return tuple(
+        str(getattr(model, "id", "") or "").strip()
+        for model in getattr(response, "data", ())
+    )
+
+
 def verify_anthropic_credentials(
     api_key: str,
     *,
@@ -161,6 +197,7 @@ def verify_active_provider(
 
 __all__ = [
     "ProviderCredentialError",
+    "discover_openai_compatible_models",
     "verify_active_provider",
     "verify_anthropic_credentials",
     "verify_openai_credentials",
