@@ -46,7 +46,12 @@ function client() {
     }),
     getDatasetSchema: vi.fn().mockResolvedValue({
       dataset_id: "subset-1",
-      schema: { age: { dataType: "number" } },
+      schema: {
+        age: {
+          dataType: "number",
+          description: "Age at baseline",
+        },
+      },
     }),
     getDatasetProvenance: vi.fn().mockResolvedValue({
       dataset_id: "subset-1",
@@ -87,6 +92,11 @@ describe("DbRagDatasetReview", () => {
       "thread-1",
       "subset-1",
     );
+
+    fireEvent.click(schemaSummary);
+    expect(
+      screen.getByRole("table", { name: "Dataset schema" }),
+    ).toHaveTextContent("Age at baseline");
 
     fireEvent.click(sqlSummary);
     expect(sqlDetails).toHaveAttribute("open");

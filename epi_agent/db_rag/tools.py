@@ -21,7 +21,7 @@ from db_rag.filter_references import (
     FilterReferenceResolutionError,
     resolve_filter_references,
 )
-from db_rag.catalog import SemanticCatalogUnavailableError
+from db_rag.catalog import SchemaCatalog, SemanticCatalogUnavailableError
 from db_rag.config import EMBEDDING_MODEL
 from db_rag.retrieval_status import RetrievalOutcome, hybrid_status
 from db_rag.service.dataset_naming import deterministic_dataset_name
@@ -3754,6 +3754,15 @@ def _persist_extraction_result(
 ) -> ToolResult:
     plan_id = arguments["plan_id"]
     plan_version = int(arguments["plan_version"])
+    study = _require_plan_study(context, plan)
+    schema_catalog = study.catalog
+    if not isinstance(schema_catalog, SchemaCatalog):
+        raise ToolExecutionError(
+            "DATASET_SCHEMA_CATALOG_UNAVAILABLE",
+            f"Study schema catalog is unavailable: {plan.study_id}",
+            recoverable=True,
+            details={"study_id": plan.study_id},
+        )
     predecessor_identity = _predecessor_identity(arguments)
     sql_content = dict(sql_artifact.content)
     if sql_artifact.provenance.get("study_id") != plan.study_id:
@@ -4004,6 +4013,7 @@ def _persist_extraction_result(
                 candidate,
                 approved_selection,
                 execution,
+                schema_catalog=schema_catalog,
                 study_id=plan.study_id,
                 selection_artifact_id=plan_id,
                 sql_candidate_artifact_id=sql_artifact.id,

@@ -180,9 +180,20 @@ export interface DatasetPreview {
   row_count: number | null;
 }
 
+export interface DatasetColumnSchema {
+  condition?: unknown;
+  dataType?: string;
+  depends_on?: unknown;
+  description?: string;
+  section_context?: unknown;
+  values?: unknown;
+}
+
+export type DatasetSchema = Record<string, DatasetColumnSchema>;
+
 export interface DatasetSchemaResponse {
   dataset_id: string;
-  schema: Record<string, unknown>;
+  schema: DatasetSchema;
 }
 
 export interface ProvenanceArtifactIdentity {

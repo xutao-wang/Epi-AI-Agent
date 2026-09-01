@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import AuthenticatedArtifact from "./AuthenticatedArtifact";
 import CodeBlock from "./CodeBlock";
+import DatasetSchemaView from "./DatasetSchemaView";
 import type {
   ConversationAttachment,
   CompletedAnalysisResult,
@@ -366,10 +367,7 @@ export default function MessageAttachment({
           {schema ? (
             <section className="dataset-schema">
               <h4>Schema</h4>
-          <CodeBlock
-            code={JSON.stringify(schema.schema, null, 2)}
-            language="json"
-          />
+              <DatasetSchemaView schema={schema.schema} />
             </section>
           ) : null}
           {datasetProvenance ? (

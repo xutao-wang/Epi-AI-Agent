@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import Any
 from uuid import uuid4
 
+from db_rag.catalog import SchemaCatalog
 from db_rag.service.dataset_naming import generate_dataset_name
-from db_rag.service.schema import _lookup_schema_variable_metadata
 from graph.state import MetaKeys
 from utils.dataset_artifacts import (
     StagedDatasetArtifact,
@@ -23,6 +23,16 @@ _COLUMN_METADATA_FIELDS = (
     "section_context",
     "column_profile",
 )
+
+
+class DatasetSchemaMetadataError(ValueError):
+    def __init__(self, output_column: str, reason: str) -> None:
+        super().__init__(
+            "Dataset schema metadata is unavailable for output column "
+            f"{output_column!r}: {reason}."
+        )
+        self.output_column = output_column
+        self.reason = reason
 
 
 def _read_value(payload: Any, field: str, default: Any = None) -> Any:
@@ -195,6 +205,7 @@ def _reconcile_output_columns(
     dataframe: Any,
     selected_columns: list[dict[str, Any]],
     *,
+    schema_catalog: SchemaCatalog,
     sql: str,
 ) -> dict[str, Any]:
     physical = [str(column) for column in dataframe.columns]
@@ -249,6 +260,7 @@ def _reconcile_output_columns(
             dataframe,
             selected_columns,
             sources,
+            schema_catalog=schema_catalog,
         ),
         "output_column_sources": sources,
         "warnings": warnings,
@@ -259,8 +271,10 @@ def _build_schema_from_sources(
     dataframe: Any,
     selected_columns: list[dict[str, Any]],
     sources: dict[str, dict[str, Any]],
+    *,
+    schema_catalog: SchemaCatalog,
 ) -> dict[str, dict[str, Any]]:
-    selected_by_pair = {
+    selected_by_identity = {
         (
             str(column.get("source") or "").strip(),
             str(column.get("table") or "").strip(),
@@ -270,45 +284,45 @@ def _build_schema_from_sources(
     }
     schema: dict[str, dict[str, Any]] = {}
     dtypes = getattr(dataframe, "dtypes", None)
-    for position, column_name in enumerate(
-        list(getattr(dataframe, "columns", []))
-    ):
+    for column_name in list(getattr(dataframe, "columns", [])):
         column_key = str(column_name)
         binding = dict(sources.get(column_key) or {})
-        source_fields = list(binding.get("source_fields") or [])
-        selected: dict[str, Any] = {}
-        if source_fields:
-            source_field = dict(source_fields[0])
-            selected = selected_by_pair.get(
-                (
-                    str(source_field.get("source") or "").strip(),
-                    str(source_field.get("table") or "").strip(),
-                    str(source_field.get("column") or "").strip(),
-                ),
-                {},
+        source_fields = [
+            dict(field)
+            for field in list(binding.get("source_fields") or [])
+            if isinstance(field, dict)
+        ]
+        if len(source_fields) != 1:
+            raise DatasetSchemaMetadataError(
+                column_key,
+                "expected exactly one source field",
             )
-        if not selected and position < len(selected_columns):
-            selected = dict(selected_columns[position])
-        table_name = str(selected.get("table") or "").strip()
-        reviewed_meta = _lookup_schema_variable_metadata(
-            table_name,
-            column_key,
+        identity = tuple(
+            str(source_fields[0].get(key) or "").strip()
+            for key in ("source", "table", "column")
         )
+        if not all(identity) or identity not in selected_by_identity:
+            raise DatasetSchemaMetadataError(
+                column_key,
+                f"exact approved source identity {identity!r} is missing",
+            )
+        reviewed_meta = schema_catalog.field_metadata(*identity)
         if reviewed_meta is None:
-            selected_name = str(selected.get("column") or "").strip()
-            if selected_name:
-                reviewed_meta = _lookup_schema_variable_metadata(
-                    table_name,
-                    selected_name,
-                )
+            raise DatasetSchemaMetadataError(
+                column_key,
+                f"exact catalog entry {identity!r} is missing",
+            )
         meta: dict[str, Any] = {}
-        description = str(
-            (reviewed_meta or {}).get("description")
-            or selected.get("description")
-            or ""
-        ).strip()
-        if description:
-            meta["description"] = description
+        description = str((reviewed_meta or {}).get("description") or "").strip()
+        if not description:
+            raise DatasetSchemaMetadataError(
+                column_key,
+                (
+                    f"exact catalog entry {identity!r} has no non-empty "
+                    "catalog description"
+                ),
+            )
+        meta["description"] = description
         for field in (
             "values",
             "depends_on",
@@ -330,6 +344,7 @@ def persist_sql_subset_artifact(
     approved_selection: dict[str, Any],
     execution_result: Any,
     *,
+    schema_catalog: SchemaCatalog,
     study_id: str,
     selection_artifact_id: str | None,
     sql_candidate_artifact_id: str | None,
@@ -410,6 +425,7 @@ def persist_sql_subset_artifact(
     reconciliation = _reconcile_output_columns(
         dataframe,
         selected_columns,
+        schema_catalog=schema_catalog,
         sql=persisted_sql,
     )
     reconciliation_warnings = list(reconciliation["warnings"])
@@ -539,6 +555,7 @@ def persist_sql_subset_artifact(
 
 
 __all__ = [
+    "DatasetSchemaMetadataError",
     "persist_sql_subset_artifact",
     "serialize_columns",
 ]

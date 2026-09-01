@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 import json
 import re
 from pathlib import Path
@@ -69,6 +70,34 @@ class SchemaCatalog:
             for entry in self._catalog.get("columns", [])
             if isinstance(entry, dict)
         )
+
+    def field_metadata(
+        self,
+        source: str,
+        table: str,
+        column: str,
+    ) -> dict[str, Any] | None:
+        expected = (_as_text(source), _as_text(table), _as_text(column))
+        if not all(expected):
+            return None
+        for raw_entry in self._catalog.get("columns", []):
+            if not isinstance(raw_entry, dict):
+                continue
+            entry_source = (
+                _as_text(raw_entry.get("source") or raw_entry.get("source_id"))
+                or self._default_source_id
+            )
+            identity = (
+                entry_source,
+                _as_text(raw_entry.get("table")),
+                _as_text(raw_entry.get("column")),
+            )
+            if (
+                identity == expected
+                and raw_entry.get("runtime_available", True) is not False
+            ):
+                return deepcopy(raw_entry)
+        return None
 
     def inspect_table(
         self,

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import CodeBlock from "./CodeBlock";
+import DatasetSchemaView from "./DatasetSchemaView";
 import type {
   ActiveInterrupt,
   DatasetPreview,
@@ -207,7 +208,7 @@ export default function DbRagDatasetReview({
       {schema ? (
         <details className="db-rag-dataset-review-section">
           <summary>Schema</summary>
-          <CodeBlock code={JSON.stringify(schema.schema, null, 2)} language="json" />
+          <DatasetSchemaView schema={schema.schema} />
         </details>
       ) : null}
 

@@ -108,7 +108,12 @@ describe("MessageAttachment", () => {
     });
     const getDatasetSchema = vi.fn().mockResolvedValue({
       dataset_id: "subset-1",
-      schema: { subject_id: { dataType: "string" } },
+      schema: {
+        subject_id: {
+          dataType: "string",
+          description: "Participant identifier",
+        },
+      },
     });
     const getDatasetProvenance = vi.fn().mockResolvedValue({
       dataset_id: "subset-1",
@@ -148,9 +153,13 @@ describe("MessageAttachment", () => {
     fireEvent.click(detailsSummary);
 
     expect(details).toHaveAttribute("open");
+    expect((await screen.findByText("SUB-1")).closest("table"))
+      .toHaveTextContent("SUB-1");
     expect(
-      await within(details as HTMLDetailsElement).findByRole("table"),
-    ).toHaveTextContent("SUB-1");
+      await within(details as HTMLDetailsElement).findByRole("table", {
+        name: "Dataset schema",
+      }),
+    ).toHaveTextContent("Participant identifier");
     await waitFor(() => {
       expect(getDatasetPreview).toHaveBeenCalledWith("subset-1", 100);
       expect(getDatasetSchema).toHaveBeenCalledWith("subset-1");

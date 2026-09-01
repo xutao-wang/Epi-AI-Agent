@@ -1532,7 +1532,70 @@ select {
   margin-top: 12px;
 }
 
-.dataset-schema pre {
+.dataset-schema-view {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.dataset-schema-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid #d8dee4;
+  border-radius: 6px;
+}
+
+.dataset-schema-table {
+  width: 100%;
+  min-width: 760px;
+  border-collapse: collapse;
+  background: #ffffff;
+  font-size: 13px;
+}
+
+.dataset-schema-table th,
+.dataset-schema-table td {
+  border-bottom: 1px solid #d8dee4;
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.dataset-schema-table th {
+  background: #f6f8fa;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.dataset-schema-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.dataset-schema-column {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.dataset-schema-cell-list {
+  display: grid;
+  gap: 3px;
+}
+
+.dataset-schema-unavailable {
+  color: #6e7781;
+}
+
+.dataset-schema-raw > summary {
+  cursor: pointer;
+  color: #1f2933;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.dataset-schema-raw pre {
   max-height: 300px;
   overflow: auto;
   border: 1px solid #d8dee4;

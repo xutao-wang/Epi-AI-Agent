@@ -3241,9 +3241,11 @@ describe("App", () => {
         }),
       },
     );
-    expect(
-      screen.getByLabelText("Ask a question about your dataset!"),
-    ).toBeEnabled();
+    await waitFor(() => {
+      expect(
+        screen.getByLabelText("Ask a question about your dataset!"),
+      ).toBeEnabled();
+    });
   });
 
   it("cancels a clarification, pauses, and waits for the next user message", async () => {
@@ -3773,7 +3775,7 @@ describe("App", () => {
     expect(screen.queryByLabelText("Model")).not.toBeInTheDocument();
   });
 
-  it("reset clears the current thread and restores the backend default model", async () => {
+  it("reset clears the current thread so the next submit creates a new settings-backed thread", async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(runtimeOptionsResponse())
@@ -3835,9 +3837,6 @@ describe("App", () => {
     await waitFor(() => {
       expect(screen.queryByText("Old answer")).not.toBeInTheDocument();
     });
-    expect(screen.getByRole("combobox", { name: "Model" })).toHaveValue(
-      "gpt-5.4",
-    );
     expect(screen.queryByText("Ready")).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Ask a question about your dataset!"), {
       target: { value: "New question" },
@@ -3851,7 +3850,7 @@ describe("App", () => {
       {
         method: "POST",
         headers: expect.any(Headers),
-        body: JSON.stringify({ model_name: "gpt-5.4" }),
+        body: JSON.stringify({ model_name: "gpt-5.4-mini" }),
       },
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
