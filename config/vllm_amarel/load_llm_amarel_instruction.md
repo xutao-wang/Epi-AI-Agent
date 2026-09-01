@@ -24,7 +24,6 @@ From the project root, launch the configured model:
 
 ```bash
 image_name=vllm-openai_v0.19.1.sif
-# model_name=Qwen/Qwen3-Next-80B-A3B-Instruct-FP8 # need two nodes for initialization
 model_name=google/gemma-4-31B-it 
 bash config/vllm_amarel/load_llm_with_vllm.sh \
   "$image_name" "$model_name"
