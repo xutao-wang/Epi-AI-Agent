@@ -34,6 +34,7 @@ from utils.model_runtime_profiles import (
     ENABLED_CUSTOM_ENDPOINTS_ENV,
     PROVIDER_OPENAI_COMPATIBLE,
     enabled_custom_endpoint_ids,
+    load_compatible_model_profiles,
     load_custom_endpoint_entries,
 )
 from utils.provider_startup import (
@@ -270,7 +271,7 @@ def configure_and_verify_providers(
     getpass_fn: Callable[[str], str] = getpass.getpass,
     output_fn: Callable[[str], None] = print,
     verifier: Callable[..., None] = verify_provider_credential,
-    discoverer: Callable[..., Sequence[str]] = discover_openai_compatible_models,
+    discoverer: Callable[..., Sequence[object]] = discover_openai_compatible_models,
     persist: Callable[[str | Path, dict[str, str]], None] = persist_local_env_values,
     force: bool = False,
 ) -> ModelAvailability:
@@ -300,6 +301,7 @@ def configure_and_verify_providers(
     profiles = registered_model_profiles(environ)
     discovered_profiles = {}
     discovery_endpoints = load_custom_endpoint_entries(environ=environ)
+    compatible_model_profiles = load_compatible_model_profiles(environ=environ)
     for endpoint_id in enabled_custom_endpoint_ids(environ):
         entry = discovery_endpoints.get(endpoint_id)
         if entry is None:
@@ -315,7 +317,10 @@ def configure_and_verify_providers(
             continue
         try:
             remote_model_ids = discoverer(key, base_url=entry.base_url)
-            endpoint_profiles = entry.profiles_for(remote_model_ids)
+            endpoint_profiles = entry.profiles_for(
+                remote_model_ids,
+                model_profiles=compatible_model_profiles,
+            )
         except (ProviderCredentialError, ValueError) as error:
             output_fn(
                 f"Compatible endpoint discovery failed for "

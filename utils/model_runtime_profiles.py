@@ -36,8 +36,18 @@ PROVIDER_API_KEY_ENVS: dict[str, str] = {
 }
 
 CUSTOM_MODELS_PATH_ENV = "REPORT_AGENT_CUSTOM_MODELS_PATH"
+MODEL_PROFILES_PATH_ENV = "REPORT_AGENT_MODEL_PROFILES_PATH"
 ENABLED_CUSTOM_ENDPOINTS_ENV = "REPORT_AGENT_ENABLED_CUSTOM_ENDPOINTS"
 DEFAULT_CUSTOM_MODELS_PATH = PROJECT_ROOT / "config" / "custom_models.json"
+DEFAULT_MODEL_PROFILES_PATH = PROJECT_ROOT / "config" / "model_profiles.json"
+
+SAFE_COMPATIBLE_INITIAL_OUTPUT_TOKENS = 1_024
+SAFE_COMPATIBLE_AUTOMATIC_OUTPUT_TOKEN_CEILING = 2_048
+SAFE_COMPATIBLE_USER_OUTPUT_TOKEN_INCREMENT = 1_024
+SAFE_COMPATIBLE_ABSOLUTE_OUTPUT_TOKEN_CEILING = 4_096
+SAFE_COMPATIBLE_REQUEST_TIMEOUT_SECONDS = 180
+SAFE_COMPATIBLE_WORKFLOW_TIMEOUT_SECONDS = 600
+SAFE_COMPATIBLE_ROUTING_CONTEXT_CHAR_CEILING = 16_000
 
 
 def _cost_display(tokens: int, usd_per_million: Decimal | None) -> str | None:
@@ -89,6 +99,8 @@ class ModelRuntimeProfile:
     supports_vision: bool = True
     supports_mid_conversation_system: bool = True
     custom_endpoint_id: str | None = None
+    context_window_tokens: int | None = None
+    output_approval_required: bool = True
 
     def __post_init__(self) -> None:
         if self.provider == PROVIDER_OPENAI:
@@ -120,6 +132,8 @@ class ModelRuntimeProfile:
 
     @property
     def label(self) -> str:
+        if self.provider == PROVIDER_OPENAI_COMPATIBLE:
+            return self.base_label
         return f"{self.base_label} ({self.reasoning_display})"
 
     @property
@@ -169,6 +183,7 @@ class ModelRuntimeProfile:
             ),
             "request_timeout_seconds": self.request_timeout_seconds,
             "workflow_timeout_seconds": self.workflow_timeout_seconds,
+            "context_window_tokens": self.context_window_tokens,
             "automatic_output_cost": self.automatic_output_cost_display,
             "incremental_output_cost": self.incremental_output_cost_display,
         }
@@ -336,6 +351,7 @@ class CustomModelEntry(BaseModel):
     supports_mid_conversation_system: bool = False
     supports_sampling_controls: bool = True
     routing_context_char_ceiling: int = Field(default=262_144, gt=0)
+    output_approval_required: bool = False
 
     def to_profile(self) -> ModelRuntimeProfile:
         price: Decimal | None = None
@@ -371,6 +387,7 @@ class CustomModelEntry(BaseModel):
                 self.supports_mid_conversation_system
             ),
             custom_endpoint_id=self.id,
+            output_approval_required=self.output_approval_required,
         )
 
 
@@ -384,35 +401,23 @@ class CustomEndpointEntry(BaseModel):
     discover_models: Literal[True]
     label: str = ""
     api_key_env: str = ""
-    summary: str = ""
-    initial_output_tokens: int = Field(default=8_192, gt=0)
-    automatic_output_token_ceiling: int = Field(default=16_384, gt=0)
-    user_output_token_increment: int = Field(default=8_192, gt=0)
-    absolute_output_token_ceiling: int = Field(default=24_576, gt=0)
-    request_timeout_seconds: int = Field(default=120, gt=0)
-    workflow_timeout_seconds: int = Field(default=300, gt=0)
-    output_usd_per_million: str | None = None
-    supports_vision: bool = False
-    supports_mid_conversation_system: bool = False
-    supports_sampling_controls: bool = True
-    routing_context_char_ceiling: int = Field(default=262_144, gt=0)
+    output_approval_required: bool = False
 
     def profiles_for(
         self,
-        remote_model_ids: Sequence[str],
+        remote_models: Sequence[object],
+        *,
+        model_profiles: Mapping[str, "CompatibleModelProfileEntry"] | None = None,
     ) -> dict[str, ModelRuntimeProfile]:
-        price: Decimal | None = None
-        if self.output_usd_per_million is not None:
-            try:
-                price = Decimal(str(self.output_usd_per_million))
-            except InvalidOperation as exc:
-                raise ValueError(
-                    f"Custom endpoint {self.endpoint_id!r} has an invalid "
-                    "output_usd_per_million value."
-                ) from exc
         profiles: dict[str, ModelRuntimeProfile] = {}
-        for value in remote_model_ids:
-            remote_model_id = str(value or "").strip()
+        configured_profiles = model_profiles or {}
+        for value in remote_models:
+            remote_model_id = str(
+                getattr(value, "model_id", value) or ""
+            ).strip()
+            max_model_len = _positive_int_or_none(
+                getattr(value, "max_model_len", None)
+            )
             if not remote_model_id:
                 raise ValueError(
                     f"Custom endpoint {self.endpoint_id!r} returned a blank "
@@ -429,39 +434,175 @@ class CustomEndpointEntry(BaseModel):
                     f"Custom endpoint {self.endpoint_id!r} returned duplicate "
                     f"model id {remote_model_id!r}."
                 )
-            endpoint_label = self.label or self.endpoint_id
+            configured = configured_profiles.get(remote_model_id)
+            if configured is None:
+                configured = CompatibleModelProfileEntry()
+            token_settings = configured.token_settings(max_model_len)
+            price = configured.parsed_output_price(remote_model_id)
+            display_model_id = remote_model_id
+            if configured.label:
+                company, separator, _ = remote_model_id.rpartition("/")
+                display_model_id = (
+                    f"{company}/{configured.label}"
+                    if separator
+                    else configured.label
+                )
             profiles[model_id] = ModelRuntimeProfile(
                 model_id=model_id,
-                base_label=f"{endpoint_label}: {remote_model_id}",
+                base_label=f"{self.endpoint_id}:{display_model_id}",
                 reasoning=None,
-                supports_sampling_controls=self.supports_sampling_controls,
-                summary=self.summary or "Discovered custom endpoint model.",
-                initial_output_tokens=self.initial_output_tokens,
-                automatic_output_token_ceiling=(
-                    self.automatic_output_token_ceiling
+                supports_sampling_controls=(
+                    configured.supports_sampling_controls
+                    if configured.supports_sampling_controls is not None
+                    else False
                 ),
-                user_output_token_increment=self.user_output_token_increment,
-                absolute_output_token_ceiling=self.absolute_output_token_ceiling,
-                request_timeout_seconds=self.request_timeout_seconds,
-                workflow_timeout_seconds=self.workflow_timeout_seconds,
-                routing_context_char_ceiling=self.routing_context_char_ceiling,
+                summary=(
+                    configured.summary
+                    or "Model discovered from a compatible endpoint."
+                ),
+                initial_output_tokens=token_settings[0],
+                automatic_output_token_ceiling=token_settings[1],
+                user_output_token_increment=token_settings[2],
+                absolute_output_token_ceiling=token_settings[3],
+                request_timeout_seconds=(
+                    configured.request_timeout_seconds
+                    or SAFE_COMPATIBLE_REQUEST_TIMEOUT_SECONDS
+                ),
+                workflow_timeout_seconds=(
+                    configured.workflow_timeout_seconds
+                    or SAFE_COMPATIBLE_WORKFLOW_TIMEOUT_SECONDS
+                ),
+                routing_context_char_ceiling=(
+                    configured.routing_context_char_ceiling
+                    or SAFE_COMPATIBLE_ROUTING_CONTEXT_CHAR_CEILING
+                ),
                 output_usd_per_million=price,
                 provider=PROVIDER_OPENAI_COMPATIBLE,
                 api_key_env=self.api_key_env,
                 api_key_required=bool(self.api_key_env.strip()),
                 base_url=self.base_url,
                 remote_model_id=remote_model_id,
-                supports_vision=self.supports_vision,
+                supports_vision=bool(configured.supports_vision),
                 supports_mid_conversation_system=(
-                    self.supports_mid_conversation_system
+                    bool(configured.supports_mid_conversation_system)
                 ),
                 custom_endpoint_id=self.endpoint_id,
+                context_window_tokens=max_model_len,
+                output_approval_required=self.output_approval_required,
             )
         if not profiles:
             raise ValueError(
                 f"Custom endpoint {self.endpoint_id!r} returned no models."
             )
         return profiles
+
+
+def _positive_int_or_none(value: object) -> int | None:
+    try:
+        parsed = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+class VllmLaunchProfile(BaseModel):
+    """Validated vLLM server settings used before endpoint discovery."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tensor_parallel_size: int = Field(gt=0)
+    max_model_len: int = Field(gt=0)
+    gpu_memory_utilization: float = Field(gt=0, le=1)
+    enforce_eager: bool
+    enable_auto_tool_choice: bool
+    tool_call_parser: str = Field(min_length=1, max_length=80)
+    chat_template: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=500,
+        pattern=r"^[^\r\n\t]+$",
+    )
+    dtype: Literal["auto", "bfloat16", "float", "float16", "float32", "half"] = (
+        "auto"
+    )
+    quantization: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=80,
+        pattern=r"^[^\r\n\t]+$",
+    )
+    kv_cache_dtype: Literal[
+        "auto",
+        "bfloat16",
+        "float16",
+        "fp8",
+        "fp8_ds_mla",
+        "fp8_e4m3",
+        "fp8_e5m2",
+        "fp8_inc",
+    ] = "auto"
+
+
+class CompatibleModelProfileEntry(BaseModel):
+    """Optional model-specific defaults keyed by exact served model ID."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    label: str = ""
+    summary: str | None = None
+    initial_output_tokens: int | None = Field(default=None, gt=0)
+    automatic_output_token_ceiling: int | None = Field(default=None, gt=0)
+    user_output_token_increment: int | None = Field(default=None, gt=0)
+    absolute_output_token_ceiling: int | None = Field(default=None, gt=0)
+    request_timeout_seconds: int | None = Field(default=None, gt=0)
+    workflow_timeout_seconds: int | None = Field(default=None, gt=0)
+    output_usd_per_million: str | None = None
+    supports_vision: bool | None = None
+    supports_mid_conversation_system: bool | None = None
+    supports_sampling_controls: bool | None = None
+    routing_context_char_ceiling: int | None = Field(default=None, gt=0)
+    vllm: VllmLaunchProfile | None = None
+
+    def parsed_output_price(self, model_id: str) -> Decimal | None:
+        if self.output_usd_per_million is None:
+            return None
+        try:
+            return Decimal(str(self.output_usd_per_million))
+        except InvalidOperation as exc:
+            raise ValueError(
+                f"Compatible model {model_id!r} has an invalid "
+                "output_usd_per_million value."
+            ) from exc
+
+    def token_settings(
+        self,
+        max_model_len: int | None,
+    ) -> tuple[int, int, int, int]:
+        initial = (
+            self.initial_output_tokens
+            or SAFE_COMPATIBLE_INITIAL_OUTPUT_TOKENS
+        )
+        automatic = (
+            self.automatic_output_token_ceiling
+            or SAFE_COMPATIBLE_AUTOMATIC_OUTPUT_TOKEN_CEILING
+        )
+        increment = (
+            self.user_output_token_increment
+            or SAFE_COMPATIBLE_USER_OUTPUT_TOKEN_INCREMENT
+        )
+        absolute = (
+            self.absolute_output_token_ceiling
+            or SAFE_COMPATIBLE_ABSOLUTE_OUTPUT_TOKEN_CEILING
+        )
+        if max_model_len is not None:
+            initial = min(initial, max(1, max_model_len // 8))
+            automatic = min(automatic, max(1, max_model_len // 4))
+            increment = min(increment, max(1, max_model_len // 8))
+            absolute = min(absolute, max(1, max_model_len // 2))
+        automatic = max(initial, automatic)
+        absolute = max(automatic, absolute)
+        increment = min(increment, absolute)
+        return initial, automatic, increment, absolute
 
 
 def custom_models_path(
@@ -471,6 +612,15 @@ def custom_models_path(
     if configured:
         return Path(configured).expanduser()
     return DEFAULT_CUSTOM_MODELS_PATH
+
+
+def model_profiles_path(
+    environ: Mapping[str, str] = os.environ,
+) -> Path:
+    configured = str(environ.get(MODEL_PROFILES_PATH_ENV, "") or "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return DEFAULT_MODEL_PROFILES_PATH
 
 
 def enabled_custom_endpoint_ids(
@@ -559,6 +709,37 @@ def load_custom_endpoint_entries(
     return entries
 
 
+def load_compatible_model_profiles(
+    path: str | Path | None = None,
+    *,
+    environ: Mapping[str, str] = os.environ,
+) -> dict[str, CompatibleModelProfileEntry]:
+    resolved = Path(path) if path is not None else model_profiles_path(environ)
+    if not resolved.is_file():
+        return {}
+    try:
+        raw = json.loads(resolved.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"Compatible model profile registry is unreadable: "
+            f"{resolved} ({exc})"
+        ) from exc
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"Compatible model profile registry must be a JSON object: "
+            f"{resolved}"
+        )
+    profiles: dict[str, CompatibleModelProfileEntry] = {}
+    for raw_model_id, item in raw.items():
+        model_id = str(raw_model_id or "").strip()
+        if not model_id:
+            raise ValueError(
+                "Compatible model profile registry contains a blank model id."
+            )
+        profiles[model_id] = CompatibleModelProfileEntry.model_validate(item)
+    return profiles
+
+
 _CUSTOM_PROFILES_LOCK = threading.Lock()
 _CUSTOM_PROFILES: dict[str, ModelRuntimeProfile] | None = None
 
@@ -616,7 +797,9 @@ def configured_model_profiles(
 
 __all__ = [
     "CUSTOM_MODELS_PATH_ENV",
+    "MODEL_PROFILES_PATH_ENV",
     "ENABLED_CUSTOM_ENDPOINTS_ENV",
+    "CompatibleModelProfileEntry",
     "CustomEndpointEntry",
     "CustomModelEntry",
     "MODEL_RUNTIME_PROFILES",
@@ -624,6 +807,7 @@ __all__ = [
     "ReasoningConfig",
     "ReasoningEffort",
     "ReasoningMode",
+    "VllmLaunchProfile",
     "PROVIDER_ANTHROPIC",
     "PROVIDER_API_KEY_ENVS",
     "PROVIDER_LABELS",
@@ -635,6 +819,8 @@ __all__ = [
     "enabled_custom_endpoint_ids",
     "load_custom_model_profiles",
     "load_custom_endpoint_entries",
+    "load_compatible_model_profiles",
     "model_runtime_profile",
+    "model_profiles_path",
     "reload_custom_model_profiles",
 ]

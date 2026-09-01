@@ -1,5 +1,5 @@
 {
-  "built_at": "2026-08-24T16:29:22.675215+00:00",
+  "built_at": "2026-08-31T00:45:57.892999+00:00",
   "source_sha256": {
     "frontend/index.html": "89f2b276eb183f4ebfe35982a0cac2d863da771436560c61d977e282ee15b07a",
     "frontend/package-lock.json": "a14f127c2e852575ffd49c7e3c4c5e342da58af5f92b45622f0963064b0ad1d5",
@@ -8,8 +8,8 @@
     "frontend/src/AgentActivityTimeline.tsx": "bf11e9be781b4074a276b145e6c3e33130e8014cc0aee5442f63f2b7b1c28427",
     "frontend/src/AnalysisResultReview.test.tsx": "0b48095c202069586a683139bcaa755cc2a589a26c3659acc1a65ed2c48458a4",
     "frontend/src/AnalysisResultReview.tsx": "ab396bb240808398d9804fc70d30bb12591d67c2fdea756e29d740d4b56252ba",
-    "frontend/src/App.test.tsx": "75e9d758fd2e9e103b14c9c15fbb6b9af5099a5b3fb05d72100959d61fdee6bb",
-    "frontend/src/App.tsx": "d2221ce5d5687220ae94e180b67bd209d39f84ace41e07d4b9feb219405f7223",
+    "frontend/src/App.test.tsx": "46d917ea739733a9a26d6ade80dd14548025a7abfa1bcfaa66c553976daff490",
+    "frontend/src/App.tsx": "e05ce50da93d85dd451ed12c9411bd9ce6e86a6ecf1b2b717e637688c9668afa",
     "frontend/src/AppShell.test.tsx": "c519044d167bf199bac0332171fa9a2d60a49aaddb20afae98b30f6dc6774489",
     "frontend/src/AppShell.tsx": "08b013bdc959a1da6aa29d3d7d95fa192d48aac342a33d5b024ec790f7479d17",
     "frontend/src/AttachmentComposer.test.tsx": "ccee2af1ceea1ecbd8cc85c0131dc510e5086a81b76cc62264fa280b34fe7a30",
@@ -48,7 +48,7 @@
     "frontend/src/reviewSelection.test.ts": "3f8b25c1386ac48456de39bebb96c056b9b25fa1e6627abb7c930847a6ec4f99",
     "frontend/src/reviewSelection.ts": "021c79c78e1ac4627a7563c848c59d36521cf227a4f7ee99ff3545ceac4a5d2f",
     "frontend/src/styles.css": "8245116ebc6ef3f3c99b7fc0ff8e656c1ec35442effd95ed83cf5f7af531d71b",
-    "frontend/src/types.ts": "66e1cd4fe34cf54d7b99ab3bd4d74b771b77fd5b8bc6e677f8626161f8ede1ee",
+    "frontend/src/types.ts": "6a4de89a54b60408b479e576f7de51f584247ea685b88d3f7afea436325392dc",
     "frontend/src/vite-env.d.ts": "65996936fbb042915f7b74a200fcdde7e410f32a669b1ab9597cfaa4b0faddb5",
     "frontend/tsconfig.json": "a043926a1c02562384a05d174123966c72d6b145b8a89201e673d31a1f024de4",
     "frontend/tsconfig.node.json": "966bcda855805869c0de7ae9f09fd972aa4b948502cf90a6dc3bbcb149d68c85",

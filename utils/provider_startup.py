@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -8,6 +9,22 @@ class ProviderCredentialError(RuntimeError):
     def __init__(self, kind: str, message: str) -> None:
         super().__init__(message)
         self.kind = kind
+
+
+@dataclass(frozen=True)
+class DiscoveredModelMetadata:
+    """Deployment metadata advertised for one compatible model."""
+
+    model_id: str
+    max_model_len: int | None = None
+
+
+def _positive_int_or_none(value: object) -> int | None:
+    try:
+        parsed = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 def _status_failure(provider_label: str, status_code: int) -> ProviderCredentialError:
@@ -87,8 +104,8 @@ def discover_openai_compatible_models(
     *,
     base_url: str,
     client_factory: Callable[..., Any] | None = None,
-) -> tuple[str, ...]:
-    """Return the exact model IDs advertised by one compatible endpoint."""
+) -> tuple[DiscoveredModelMetadata, ...]:
+    """Return exact model IDs and deployment metadata from ``/models``."""
     from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 
     normalized_key = str(api_key or "").strip() or "not-needed"
@@ -112,10 +129,21 @@ def discover_openai_compatible_models(
             int(error.status_code),
         ) from error
 
-    return tuple(
-        str(getattr(model, "id", "") or "").strip()
-        for model in getattr(response, "data", ())
-    )
+    discovered = []
+    for model in getattr(response, "data", ()):
+        model_id = str(getattr(model, "id", "") or "").strip()
+        max_model_len = getattr(model, "max_model_len", None)
+        if max_model_len is None:
+            model_extra = getattr(model, "model_extra", None)
+            if isinstance(model_extra, dict):
+                max_model_len = model_extra.get("max_model_len")
+        discovered.append(
+            DiscoveredModelMetadata(
+                model_id=model_id,
+                max_model_len=_positive_int_or_none(max_model_len),
+            )
+        )
+    return tuple(discovered)
 
 
 def verify_anthropic_credentials(
@@ -196,6 +224,7 @@ def verify_active_provider(
 
 
 __all__ = [
+    "DiscoveredModelMetadata",
     "ProviderCredentialError",
     "discover_openai_compatible_models",
     "verify_active_provider",

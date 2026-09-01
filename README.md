@@ -74,6 +74,48 @@ environment variable containing that key; do not put the key itself in JSON.
 The previous fixed-model entry format remains supported when a static model
 mapping is needed.
 
+`custom_models.json` contains only endpoint connection settings. Model-specific
+fallbacks live in `config/model_profiles.json`, keyed by the exact model ID
+returned by `/v1/models`. At startup, live deployment metadata takes priority
+(currently including vLLM's `max_model_len`), then the matching predefined
+profile is applied. Missing profile values receive conservative defaults:
+unknown capabilities are disabled, local cost remains unknown, timeouts are
+180/600 seconds, and the output-token ladder is 1024/2048/1024/4096. When a
+live context window is smaller, those token limits are reduced automatically.
+The profile `summary` is optional; the application supplies generic display
+text when it is absent.
+
+The optional nested `vllm` object is read by
+`config/vllm_amarel/load_llm_with_vllm.sh` before the endpoint exists. It
+contains deployment settings such as `max_model_len`, tensor parallelism,
+GPU-memory utilization, and tool-call parsing. Launch a configured model from
+that directory with only the image name and exact model ID:
+
+```bash
+bash load_llm_with_vllm.sh \
+  vllm-openai_v0.19.1.sif \
+  google/gemma-4-31B-it
+```
+
+After startup, `/v1/models` remains authoritative for the context length that
+vLLM actually accepted and exposed to the application.
+
+For an existing multi-node Slurm allocation, pass the allocated node count to
+the companion launcher:
+
+```bash
+bash config/vllm_amarel/load_llm_with_vllm_multi_node.sh \
+  vllm-openai_v0.19.1.sif \
+  Qwen/Qwen3-Next-80B-A3B-Instruct-FP8 \
+  2
+```
+
+Single- and multi-node launches share the same model profile. Tensor
+parallelism comes from that profile; the multi-node launcher derives pipeline
+parallelism from the node-count argument. See
+`config/vllm_amarel/load_llm_amarel_instruction.md` for the matching `salloc`
+request and networking overrides.
+
 Semantic search uses the built-in OpenAI `text-embedding-3-large` model and
 requires `OPENAI_API_KEY`, even when the chat model is Claude. If OpenAI
 embeddings are unavailable, search falls back to lexical matching.

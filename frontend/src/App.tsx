@@ -962,9 +962,7 @@ export default function App({
     setSubmittedClarifications({});
     setIsModelLockHintVisible(false);
     if (runtimeOptions) {
-      setSelectedRuntimeSettings((current) =>
-        normalizeNewConversationRuntimeSettings(current, runtimeOptions),
-      );
+      setSelectedRuntimeSettings(runtimeOptions.defaults);
     }
   }
 

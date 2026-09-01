@@ -400,6 +400,21 @@ def _prepare_model_request(
         if phase == "authorized"
         else agent_config.model_profile.initial_output_tokens
     )
+    if phase in {"automatic", "authorized"}:
+        remaining_output_tokens = (
+            agent_config.model_profile.absolute_output_token_ceiling
+            - int(output_state.get("chain_output_tokens") or 0)
+        )
+        if remaining_output_tokens <= 0:
+            return _model_output_error_patch(
+                output_state,
+                code="MODEL_OUTPUT_LIMIT_EXHAUSTED",
+                message=(
+                    f"{agent_config.model_profile.label} exhausted its "
+                    "technical output limit."
+                ),
+            )
+        budget = min(budget, remaining_output_tokens)
     messages = _adapt_messages_for_profile(
         [
             SystemMessage(content=agent_config.system_prompt),
@@ -552,6 +567,18 @@ def _model_answer_patch(
         output_state["chain_output_tokens"] = int(
             output_state.get("chain_output_tokens") or 0
         ) + observation.output_tokens
+        if (
+            output_state["chain_output_tokens"]
+            >= agent_config.model_profile.absolute_output_token_ceiling
+        ):
+            return _model_output_error_patch(
+                output_state,
+                code="MODEL_OUTPUT_LIMIT_EXHAUSTED",
+                message=(
+                    f"{agent_config.model_profile.label} exhausted its "
+                    "technical output limit."
+                ),
+            )
         if phase == "authorized":
             return _model_output_error_patch(
                 output_state,
@@ -562,6 +589,18 @@ def _model_answer_patch(
                 ),
             )
         if phase == "automatic":
+            if not agent_config.model_profile.output_approval_required:
+                output_state["phase"] = "automatic"
+                output_state["continuation_count"] = int(
+                    output_state.get("continuation_count") or 0
+                ) + 1
+                return {
+                    "messages": [answer],
+                    "iteration_count": iteration_count + 1,
+                    "completion_blocked": True,
+                    "final_response": None,
+                    "model_output_state": output_state,
+                }
             if output_state.get("user_increment_consumed"):
                 return _model_output_error_patch(
                     output_state,
