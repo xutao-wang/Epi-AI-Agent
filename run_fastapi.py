@@ -301,7 +301,6 @@ def configure_and_verify_providers(
     profiles = registered_model_profiles(environ)
     discovered_profiles = {}
     discovery_endpoints = load_custom_endpoint_entries(environ=environ)
-    compatible_model_profiles = load_compatible_model_profiles(environ=environ)
     for endpoint_id in enabled_custom_endpoint_ids(environ):
         entry = discovery_endpoints.get(endpoint_id)
         if entry is None:
@@ -316,9 +315,17 @@ def configure_and_verify_providers(
             )
             continue
         try:
-            remote_model_ids = discoverer(key, base_url=entry.base_url)
+            remote_models = tuple(discoverer(key, base_url=entry.base_url))
+            served_model_ids = tuple(
+                str(getattr(value, "model_id", value) or "").strip()
+                for value in remote_models
+            )
+            compatible_model_profiles = load_compatible_model_profiles(
+                environ=environ,
+                model_ids=served_model_ids,
+            )
             endpoint_profiles = entry.profiles_for(
-                remote_model_ids,
+                remote_models,
                 model_profiles=compatible_model_profiles,
             )
         except (ProviderCredentialError, ValueError) as error:

@@ -120,7 +120,6 @@ command -v "$srun_bin" >/dev/null 2>&1 || \
     die 69 "srun executable not found: ${srun_bin}"
 command -v "$python_bin" >/dev/null 2>&1 || \
     die 69 "Python executable not found: ${python_bin}"
-[[ -f $profile_path ]] || die 66 "model profile registry not found: ${profile_path}"
 [[ -x $single_node_launcher ]] || \
     die 69 "single-node launcher is not executable: ${single_node_launcher}"
 [[ $master_port =~ ^[0-9]+$ ]] && \
@@ -157,16 +156,27 @@ from pathlib import Path
 
 path = Path(sys.argv[1])
 model_id = sys.argv[2]
-try:
-    registry = json.loads(path.read_text(encoding="utf-8"))
-except (OSError, json.JSONDecodeError) as error:
-    raise SystemExit(f"Unable to read model profile registry {path}: {error}")
-profile = registry.get(model_id) if isinstance(registry, dict) else None
-settings = profile.get("vllm") if isinstance(profile, dict) else None
-value = settings.get("tensor_parallel_size") if isinstance(settings, dict) else None
+if path.is_file():
+    try:
+        registry = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise SystemExit(f"Unable to read model profile registry {path}: {error}")
+else:
+    registry = {}
+if not isinstance(registry, dict):
+    raise SystemExit(f"Model profile registry must be a JSON object: {path}")
+profile = registry.get(model_id, {})
+if not isinstance(profile, dict):
+    raise SystemExit(f"Model profile {model_id!r} must be a JSON object")
+settings = profile.get("vllm")
+if settings is None:
+    settings = {}
+elif not isinstance(settings, dict):
+    raise SystemExit(f"Model {model_id!r} vllm settings must be a JSON object")
+value = settings.get("tensor_parallel_size", 1)
 if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
     raise SystemExit(
-        f"Model {model_id!r} needs a positive vllm.tensor_parallel_size in {path}"
+        f"Model {model_id!r} vllm.tensor_parallel_size must be a positive integer"
     )
 print(value)
 PY

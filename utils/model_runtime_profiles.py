@@ -506,25 +506,25 @@ def _positive_int_or_none(value: object) -> int | None:
 
 
 class VllmLaunchProfile(BaseModel):
-    """Validated vLLM server settings used before endpoint discovery."""
+    """Validated vLLM command-line overrides for one served model."""
 
     model_config = ConfigDict(extra="forbid")
 
-    tensor_parallel_size: int = Field(gt=0)
-    max_model_len: int = Field(gt=0)
-    gpu_memory_utilization: float = Field(gt=0, le=1)
-    enforce_eager: bool
-    enable_auto_tool_choice: bool
-    tool_call_parser: str = Field(min_length=1, max_length=80)
+    tensor_parallel_size: int | None = Field(default=None, gt=0)
+    max_model_len: int | None = Field(default=None, gt=0)
+    gpu_memory_utilization: float | None = Field(default=None, gt=0, le=1)
+    enforce_eager: bool | None = None
+    enable_auto_tool_choice: bool | None = None
+    tool_call_parser: str | None = Field(default=None, min_length=1, max_length=80)
     chat_template: str | None = Field(
         default=None,
         min_length=1,
         max_length=500,
         pattern=r"^[^\r\n\t]+$",
     )
-    dtype: Literal["auto", "bfloat16", "float", "float16", "float32", "half"] = (
-        "auto"
-    )
+    dtype: Literal[
+        "auto", "bfloat16", "float", "float16", "float32", "half"
+    ] | None = None
     quantization: str | None = Field(
         default=None,
         min_length=1,
@@ -540,7 +540,7 @@ class VllmLaunchProfile(BaseModel):
         "fp8_e4m3",
         "fp8_e5m2",
         "fp8_inc",
-    ] = "auto"
+    ] | None = None
 
 
 class CompatibleModelProfileEntry(BaseModel):
@@ -712,6 +712,7 @@ def load_custom_endpoint_entries(
 def load_compatible_model_profiles(
     path: str | Path | None = None,
     *,
+    model_ids: Sequence[str] | None = None,
     environ: Mapping[str, str] = os.environ,
 ) -> dict[str, CompatibleModelProfileEntry]:
     resolved = Path(path) if path is not None else model_profiles_path(environ)
@@ -729,8 +730,24 @@ def load_compatible_model_profiles(
             f"Compatible model profile registry must be a JSON object: "
             f"{resolved}"
         )
+    if model_ids is None:
+        items = raw.items()
+    else:
+        selected_ids = tuple(
+            dict.fromkeys(
+                model_id
+                for value in model_ids
+                if (model_id := str(value or "").strip())
+            )
+        )
+        items = (
+            (model_id, raw[model_id])
+            for model_id in selected_ids
+            if model_id in raw
+        )
+
     profiles: dict[str, CompatibleModelProfileEntry] = {}
-    for raw_model_id, item in raw.items():
+    for raw_model_id, item in items:
         model_id = str(raw_model_id or "").strip()
         if not model_id:
             raise ValueError(

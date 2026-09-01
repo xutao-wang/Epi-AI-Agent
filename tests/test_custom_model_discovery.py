@@ -342,6 +342,75 @@ def test_startup_loads_profile_registry_for_discovered_model(tmp_path) -> None:
     assert profile.context_window_tokens == 32768
 
 
+def test_startup_validates_only_profiles_for_discovered_models(tmp_path) -> None:
+    from utils.provider_startup import DiscoveredModelMetadata
+
+    endpoint_path = tmp_path / "custom_models.json"
+    _write_discovery_registry(endpoint_path)
+    profile_path = tmp_path / "model_profiles.json"
+    profile_path.write_text(
+        json.dumps(
+            {
+                "google/gemma-4-31B-it": {
+                    "label": "Gemma 4 31B Instruct",
+                    "vllm": {},
+                },
+                "Qwen/offline-model": {
+                    "vllm": {"misspelled_parameter": True},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    environ = {
+        CUSTOM_MODELS_PATH_ENV: str(endpoint_path),
+        MODEL_PROFILES_PATH_ENV: str(profile_path),
+    }
+
+    catalog = configure_and_verify_providers(
+        project_root=tmp_path,
+        environ=environ,
+        input_fn=lambda _prompt: "3",
+        discoverer=lambda _key, **_kwargs: (
+            DiscoveredModelMetadata(
+                model_id="google/gemma-4-31B-it",
+                max_model_len=32768,
+            ),
+        ),
+        verifier=lambda _provider, _key, **_kwargs: None,
+        persist=lambda _root, _values: None,
+    )
+
+    assert catalog.available_model_ids == ("vllm:google/gemma-4-31B-it",)
+
+
+def test_scoped_profile_loading_rejects_invalid_active_model(tmp_path) -> None:
+    from pydantic import ValidationError
+
+    from utils.model_runtime_profiles import load_compatible_model_profiles
+
+    profile_path = tmp_path / "model_profiles.json"
+    profile_path.write_text(
+        json.dumps(
+            {
+                "google/gemma-4-31B-it": {
+                    "vllm": {"misspelled_parameter": True},
+                },
+                "Qwen/offline-model": {
+                    "vllm": {},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValidationError, match="misspelled_parameter"):
+        load_compatible_model_profiles(
+            profile_path,
+            model_ids=("google/gemma-4-31B-it",),
+        )
+
+
 def test_shipped_gemma_profile_keeps_summary_optional() -> None:
     from utils.model_runtime_profiles import load_compatible_model_profiles
 
@@ -403,6 +472,15 @@ def test_compatible_profile_accepts_valid_vllm_launch_settings() -> None:
     assert profile.vllm.dtype == "auto"
     assert profile.vllm.quantization == "fp8"
     assert profile.vllm.kv_cache_dtype == "auto"
+
+
+def test_compatible_profile_allows_every_vllm_override_to_be_omitted() -> None:
+    from utils.model_runtime_profiles import CompatibleModelProfileEntry
+
+    profile = CompatibleModelProfileEntry.model_validate({"vllm": {}})
+
+    assert profile.vllm is not None
+    assert profile.vllm.model_dump(exclude_none=True) == {}
 
 
 def test_vllm_launcher_reads_shipped_gemma_profile(tmp_path) -> None:
@@ -524,6 +602,115 @@ def test_vllm_launcher_uses_qwen_model_supplied_chat_template(tmp_path) -> None:
         "--tool-call-parser",
         "hermes",
     ]
+
+
+def test_vllm_launcher_passes_only_explicit_active_model_overrides(tmp_path) -> None:
+    project_root = Path(__file__).parents[1]
+    launcher = project_root / "config/vllm_amarel/load_llm_with_vllm.sh"
+    profile_path = tmp_path / "model_profiles.json"
+    profile_path.write_text(
+        json.dumps(
+            {
+                "org/active-model": {
+                    "vllm": {
+                        "tensor_parallel_size": 2,
+                        "enable_auto_tool_choice": True,
+                    }
+                },
+                "org/offline-model": {
+                    "vllm": {"misspelled_parameter": True},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    app_root = tmp_path / "apps"
+    image = app_root / "singularity_images/vllm.sif"
+    image.parent.mkdir(parents=True)
+    image.touch()
+    captured = tmp_path / "apptainer-arguments.txt"
+    fake_apptainer = tmp_path / "apptainer"
+    fake_apptainer.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$@\" > \"$VLLM_LAUNCH_CAPTURE_PATH\"\n",
+        encoding="utf-8",
+    )
+    fake_apptainer.chmod(0o755)
+    environ = {
+        **os.environ,
+        "APPTAINER_BIN": str(fake_apptainer),
+        "REPORT_AGENT_MODEL_PROFILES_PATH": str(profile_path),
+        "VLLM_APP_ROOT": str(app_root),
+        "VLLM_LAUNCH_CAPTURE_PATH": str(captured),
+    }
+
+    result = subprocess.run(
+        ["bash", str(launcher), image.name, "org/active-model"],
+        cwd=project_root,
+        env=environ,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    arguments = captured.read_text(encoding="utf-8").splitlines()
+    assert arguments[-6:] == [
+        "vllm",
+        "serve",
+        "org/active-model",
+        "--tensor-parallel-size",
+        "2",
+        "--enable-auto-tool-choice",
+    ]
+
+
+def test_vllm_launcher_uses_native_defaults_without_active_profile(tmp_path) -> None:
+    project_root = Path(__file__).parents[1]
+    launcher = project_root / "config/vllm_amarel/load_llm_with_vllm.sh"
+    profile_path = tmp_path / "model_profiles.json"
+    profile_path.write_text(
+        json.dumps(
+            {
+                "org/offline-model": {
+                    "vllm": {"misspelled_parameter": True},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    app_root = tmp_path / "apps"
+    image = app_root / "singularity_images/vllm.sif"
+    image.parent.mkdir(parents=True)
+    image.touch()
+    captured = tmp_path / "apptainer-arguments.txt"
+    fake_apptainer = tmp_path / "apptainer"
+    fake_apptainer.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$@\" > \"$VLLM_LAUNCH_CAPTURE_PATH\"\n",
+        encoding="utf-8",
+    )
+    fake_apptainer.chmod(0o755)
+    environ = {
+        **os.environ,
+        "APPTAINER_BIN": str(fake_apptainer),
+        "REPORT_AGENT_MODEL_PROFILES_PATH": str(profile_path),
+        "VLLM_APP_ROOT": str(app_root),
+        "VLLM_LAUNCH_CAPTURE_PATH": str(captured),
+    }
+
+    result = subprocess.run(
+        ["bash", str(launcher), image.name, "org/active-model"],
+        cwd=project_root,
+        env=environ,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    arguments = captured.read_text(encoding="utf-8").splitlines()
+    assert arguments[-3:] == ["vllm", "serve", "org/active-model"]
 
 
 def test_safe_token_defaults_shrink_to_live_context_window() -> None:

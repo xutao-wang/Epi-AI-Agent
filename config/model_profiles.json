@@ -43,7 +43,6 @@
       "gpu_memory_utilization": 0.9,
       "dtype": "auto",
       "kv_cache_dtype": "auto",
-      "enforce_eager": false,
       "enable_auto_tool_choice": true,
       "tool_call_parser": "hermes"
     }

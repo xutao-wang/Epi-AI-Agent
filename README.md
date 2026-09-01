@@ -78,7 +78,9 @@ mapping is needed.
 fallbacks live in `config/model_profiles.json`, keyed by the exact model ID
 returned by `/v1/models`. At startup, live deployment metadata takes priority
 (currently including vLLM's `max_model_len`), then the matching predefined
-profile is applied. Missing profile values receive conservative defaults:
+profile is applied. Only profiles for model IDs advertised by the selected
+endpoint are validated; an unused profile cannot block startup. Missing
+application profile values receive conservative defaults:
 unknown capabilities are disabled, local cost remains unknown, timeouts are
 180/600 seconds, and the output-token ladder is 1024/2048/1024/4096. When a
 live context window is smaller, those token limits are reduced automatically.
@@ -87,9 +89,13 @@ text when it is absent.
 
 The optional nested `vllm` object is read by
 `config/vllm_amarel/load_llm_with_vllm.sh` before the endpoint exists. It
-contains deployment settings such as `max_model_len`, tensor parallelism,
-GPU-memory utilization, and tool-call parsing. Launch a configured model from
-that directory with only the image name and exact model ID:
+contains optional command-line overrides such as `max_model_len`, tensor
+parallelism, GPU-memory utilization, and tool-call parsing. The launcher passes
+only values explicitly present for the selected model, leaving every omitted
+value to the installed vLLM version. A missing model entry or an empty `vllm`
+object therefore uses native vLLM defaults; explicitly supplied values and
+parameter names are still validated. Launch a model from that directory with
+only the image name and exact model ID:
 
 ```bash
 bash load_llm_with_vllm.sh \
@@ -110,8 +116,9 @@ bash config/vllm_amarel/load_llm_with_vllm_multi_node.sh \
   2
 ```
 
-Single- and multi-node launches share the same model profile. Tensor
-parallelism comes from that profile; the multi-node launcher derives pipeline
+Single- and multi-node launches share the same optional model overrides. The
+multi-node launcher defaults tensor parallelism to one when it is omitted,
+because Slurm needs a GPU count before vLLM starts, and derives pipeline
 parallelism from the node-count argument. See
 `config/vllm_amarel/load_llm_amarel_instruction.md` for the matching `salloc`
 request and networking overrides.
