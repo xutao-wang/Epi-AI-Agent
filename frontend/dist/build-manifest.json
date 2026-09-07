@@ -1,5 +1,5 @@
 {
-  "built_at": "2026-09-03T23:19:45.525989+00:00",
+  "built_at": "2026-09-07T00:31:09.211249+00:00",
   "source_sha256": {
     "frontend/index.html": "89f2b276eb183f4ebfe35982a0cac2d863da771436560c61d977e282ee15b07a",
     "frontend/package-lock.json": "a14f127c2e852575ffd49c7e3c4c5e342da58af5f92b45622f0963064b0ad1d5",
@@ -49,8 +49,8 @@
     "frontend/src/messageRendering.ts": "6bbd0207f2a014e04998457768e3afb8edb075f66fe62a9100a1bc753ce4be5f",
     "frontend/src/reviewSelection.test.ts": "3f8b25c1386ac48456de39bebb96c056b9b25fa1e6627abb7c930847a6ec4f99",
     "frontend/src/reviewSelection.ts": "021c79c78e1ac4627a7563c848c59d36521cf227a4f7ee99ff3545ceac4a5d2f",
-    "frontend/src/styles.css": "8245116ebc6ef3f3c99b7fc0ff8e656c1ec35442effd95ed83cf5f7af531d71b",
-    "frontend/src/types.ts": "66e1cd4fe34cf54d7b99ab3bd4d74b771b77fd5b8bc6e677f8626161f8ede1ee",
+    "frontend/src/styles.css": "a2b126c40f2182ba66baf43e9445b7f1f231c7fa7baa5451139b2c51fa78b3f0",
+    "frontend/src/types.ts": "644b511672215476e0d0136dc2c2f223b461375bb150a48521ae2fa1290ef3cf",
     "frontend/src/vite-env.d.ts": "65996936fbb042915f7b74a200fcdde7e410f32a669b1ab9597cfaa4b0faddb5",
     "frontend/tsconfig.json": "a043926a1c02562384a05d174123966c72d6b145b8a89201e673d31a1f024de4",
     "frontend/tsconfig.node.json": "966bcda855805869c0de7ae9f09fd972aa4b948502cf90a6dc3bbcb149d68c85",

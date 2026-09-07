@@ -17,12 +17,6 @@ from utils.model_runtime_profiles import (
 
 _COMPAT_PLACEHOLDER_KEY = "not-needed"
 
-# Optional attribution headers OpenRouter shows on its app leaderboards.
-_OPENROUTER_HEADERS = {
-    "HTTP-Referer": "https://github.com/technophilic03/Epi-AI-Agent",
-    "X-Title": "Epi-AI-Agent",
-}
-
 
 def resolve_provider_api_key(
     profile: ModelRuntimeProfile,
@@ -123,7 +117,6 @@ def _build_openrouter_chat_llm(
         timeout=profile.request_timeout_seconds,
         max_retries=0,
         max_tokens=profile.initial_output_tokens,
-        default_headers=_OPENROUTER_HEADERS,
     )
     if profile.reasoning is not None:
         kwargs["extra_body"] = {"reasoning": {"effort": profile.reasoning.effort}}
