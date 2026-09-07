@@ -110,7 +110,7 @@ is_positive_integer "$node_count" || die 64 "NODE_COUNT must be a positive integ
 scontrol_bin=${SCONTROL_BIN:-scontrol}
 srun_bin=${SRUN_BIN:-srun}
 python_bin=${PYTHON_BIN:-python3}
-profile_path=${REPORT_AGENT_MODEL_PROFILES_PATH:-${project_root}/config/model_profiles.json}
+profile_path=${REPORT_AGENT_MODEL_PROFILES_PATH:-${project_root}/config/amarel_model_profiles.json}
 master_port=${VLLM_MASTER_PORT:-29501}
 cpus_per_task=${VLLM_CPUS_PER_TASK:-${SLURM_CPUS_PER_TASK:-1}}
 

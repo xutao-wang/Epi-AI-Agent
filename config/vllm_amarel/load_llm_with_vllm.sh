@@ -16,7 +16,7 @@ additional_vllm_args=("$@")
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 project_root=$(cd -- "${script_dir}/../.." && pwd)
-profile_path=${REPORT_AGENT_MODEL_PROFILES_PATH:-${project_root}/config/model_profiles.json}
+profile_path=${REPORT_AGENT_MODEL_PROFILES_PATH:-${project_root}/config/amarel_model_profiles.json}
 python_bin=${PYTHON_BIN:-python3}
 app_root=${VLLM_APP_ROOT:-/projects/f_wj183_1/apps}
 apptainer_bin=${APPTAINER_BIN:-/usr/bin/apptainer}

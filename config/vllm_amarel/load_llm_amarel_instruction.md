@@ -16,7 +16,7 @@ srun \
   --cpus-per-task=32 \
   --gres=gpu:4 \
   --mem=240G \
-  --time=12:00:00 \
+  --time=2:00:00 \
   --pty bash
 ```
 
@@ -29,7 +29,7 @@ bash config/vllm_amarel/load_llm_with_vllm.sh \
   "$image_name" "$model_name"
 ```
 
-The matching `config/model_profiles.json` entry is optional. Its nested
+The matching `config/amarel_model_profiles.json` entry is optional. Its nested
 `vllm` object is a set of overrides: only parameters that are present are
 passed to `vllm serve`, and omitted parameters use the installed vLLM version's
 defaults. Unknown or invalid parameters for the selected model are rejected;
@@ -71,7 +71,7 @@ one native vLLM multiprocessing rank per node, and prints the head node and API
 URL. It uses the model profile's tensor parallel size within each node and uses
 the node count as the pipeline parallel size. If tensor parallelism is omitted,
 the launcher uses one GPU per node so it can construct the Slurm step. The same
-optional `config/model_profiles.json` overrides are used for single- and
+optional `config/amarel_model_profiles.json` overrides are used for single- and
 multi-node launches.
 
 If the launcher is called from an existing interactive `srun --pty` step, it

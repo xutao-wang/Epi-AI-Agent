@@ -319,8 +319,9 @@ describe("ConversationMessage", () => {
     await waitFor(() => {
       expect(navigator.clipboard.writeText).toHaveBeenCalledWith("lets proceed");
     });
-    expect(screen.getByRole("button", { name: "Message copied" }))
-      .toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "Message copied" }),
+    ).toBeInTheDocument();
 
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,

@@ -75,7 +75,7 @@ The previous fixed-model entry format remains supported when a static model
 mapping is needed.
 
 `custom_models.json` contains only endpoint connection settings. Model-specific
-fallbacks live in `config/model_profiles.json`, keyed by the exact model ID
+fallbacks live in `config/amarel_model_profiles.json`, keyed by the exact model ID
 returned by `/v1/models`. At startup, live deployment metadata takes priority
 (currently including vLLM's `max_model_len`), then the matching predefined
 profile is applied. Only profiles for model IDs advertised by the selected
