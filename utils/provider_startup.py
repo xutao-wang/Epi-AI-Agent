@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from utils.model_runtime_profiles import OPENROUTER_BASE_URL
@@ -10,6 +11,22 @@ class ProviderCredentialError(RuntimeError):
     def __init__(self, kind: str, message: str) -> None:
         super().__init__(message)
         self.kind = kind
+
+
+@dataclass(frozen=True)
+class DiscoveredModelMetadata:
+    """Deployment metadata advertised for one compatible model."""
+
+    model_id: str
+    max_model_len: int | None = None
+
+
+def _positive_int_or_none(value: object) -> int | None:
+    try:
+        parsed = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 def _status_failure(provider_label: str, status_code: int) -> ProviderCredentialError:
@@ -122,6 +139,53 @@ def verify_openrouter_credentials(
         raise _status_failure("OpenRouter", status_code)
 
 
+def discover_openai_compatible_models(
+    api_key: str,
+    *,
+    base_url: str,
+    client_factory: Callable[..., Any] | None = None,
+) -> tuple[DiscoveredModelMetadata, ...]:
+    """Return exact model IDs and deployment metadata from ``/models``."""
+    from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
+
+    normalized_key = str(api_key or "").strip() or "not-needed"
+    factory = client_factory or OpenAI
+    try:
+        response = factory(
+            api_key=normalized_key,
+            base_url=base_url,
+            max_retries=0,
+            timeout=10.0,
+        ).models.list()
+    except (APIConnectionError, APITimeoutError) as error:
+        raise ProviderCredentialError(
+            "network",
+            "The custom endpoint could not be reached. Check your network and "
+            "try again.",
+        ) from error
+    except APIStatusError as error:
+        raise _status_failure(
+            "The custom endpoint",
+            int(error.status_code),
+        ) from error
+
+    discovered = []
+    for model in getattr(response, "data", ()):
+        model_id = str(getattr(model, "id", "") or "").strip()
+        max_model_len = getattr(model, "max_model_len", None)
+        if max_model_len is None:
+            model_extra = getattr(model, "model_extra", None)
+            if isinstance(model_extra, dict):
+                max_model_len = model_extra.get("max_model_len")
+        discovered.append(
+            DiscoveredModelMetadata(
+                model_id=model_id,
+                max_model_len=_positive_int_or_none(max_model_len),
+            )
+        )
+    return tuple(discovered)
+
+
 def verify_anthropic_credentials(
     api_key: str,
     *,
@@ -204,7 +268,9 @@ def verify_active_provider(
 
 
 __all__ = [
+    "DiscoveredModelMetadata",
     "ProviderCredentialError",
+    "discover_openai_compatible_models",
     "verify_active_provider",
     "verify_anthropic_credentials",
     "verify_openai_credentials",

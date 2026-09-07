@@ -90,6 +90,7 @@ class ModelOption(BaseModel):
     absolute_output_token_ceiling: int = Field(gt=0)
     request_timeout_seconds: int = Field(gt=0)
     workflow_timeout_seconds: int = Field(gt=0)
+    context_window_tokens: int | None = Field(default=None, gt=0)
     automatic_output_cost: str | None = None
     incremental_output_cost: str | None = None
 
