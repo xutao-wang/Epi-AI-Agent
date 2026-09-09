@@ -66,38 +66,6 @@ bash config/vllm_amarel/load_llm_with_vllm_multi_node.sh \
   "$image_name" "$model_name" "$node_count"
 ```
 
-The launcher checks that `node_count` exactly matches the allocation, starts
-one native vLLM multiprocessing rank per node, and prints the head node and API
-URL. It uses the model profile's tensor parallel size within each node and uses
-the node count as the pipeline parallel size. If tensor parallelism is omitted,
-the launcher uses one GPU per node so it can construct the Slurm step. The same
-optional `config/amarel_model_profiles.json` overrides are used for single- and
-multi-node launches.
-
-If the launcher is called from an existing interactive `srun --pty` step, it
-automatically adds `srun --overlap`. A plain `salloc` allocation is less prone
-to nested-step resource conflicts.
-
-By default, NCCL selects the network transport. Only override it while
-diagnosing a transport problem:
-
-```bash
-VLLM_NETWORK_IFACE=ib0 NCCL_DEBUG=INFO \
-  bash config/vllm_amarel/load_llm_with_vllm_multi_node.sh \
-  "$image_name" "$model_name" "$node_count"
-```
-
-To avoid a rendezvous-port collision, select another unprivileged port:
-
-```bash
-VLLM_MASTER_PORT=29502 \
-  bash config/vllm_amarel/load_llm_with_vllm_multi_node.sh \
-  "$image_name" "$model_name" "$node_count"
-```
-
-Do not set `NCCL_IB_DISABLE=1` or `NCCL_P2P_DISABLE=1` unless a diagnosed
-hardware or driver problem requires it; those settings can reduce performance.
-
 ## Test the endpoint
 
 Keep the vLLM launcher running. Open another terminal and log in to the head
@@ -125,3 +93,28 @@ response = client.chat.completions.create(
 print(response.choices[0].message.content)
 PY
 ```
+
+## Run and access the Epi application
+
+On the vLLM head node, start the application from the project root:
+
+```bash
+python run_fastapi.py
+```
+
+Keep this terminal open while using the application. By default, the application
+listens on `127.0.0.1:8080`.
+
+On your local computer—not on Amarel—open another terminal and create an SSH
+tunnel to the head node:
+
+```bash
+ssh -N -J <netid>@amarel.rutgers.edu \
+  -L 8080:127.0.0.1:8080 \
+  <netid>@<HEAD_NODE>
+```
+
+Replace `<netid>` with your Rutgers NetID and `<HEAD_NODE>` with the head node
+printed by the vLLM launcher. Then open the following address in your browser:
+
+<http://127.0.0.1:8080/>

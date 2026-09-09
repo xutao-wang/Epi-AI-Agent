@@ -2277,6 +2277,8 @@ class ReportAgentApiRuntime:
         self,
         identity: RequestIdentity,
         thread_id: str,
+        *,
+        allow_awaiting_review: bool = False,
     ) -> bool:
         if (
             self.history_store is None
@@ -2287,7 +2289,7 @@ class ReportAgentApiRuntime:
         state = self.state(identity, thread_id)
         if state.run.state == "running":
             raise ThreadAlreadyRunningError(thread_id)
-        if state.active_interrupt is not None:
+        if state.active_interrupt is not None and not allow_awaiting_review:
             raise ThreadAwaitingReviewError(thread_id)
         return True
 
@@ -2337,7 +2339,11 @@ class ReportAgentApiRuntime:
                 session_id=LOCAL_SESSION_ID,
             )
         assert thread_id is not None
-        if not self._assert_conversation_mutable(identity, thread_id):
+        if not self._assert_conversation_mutable(
+            identity,
+            thread_id,
+            allow_awaiting_review=True,
+        ):
             return False
         thread = self._thread(identity, thread_id)
         if thread.app is not None and hasattr(thread.app, "checkpointer"):

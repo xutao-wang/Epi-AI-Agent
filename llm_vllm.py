@@ -115,7 +115,7 @@ def _build_openrouter_chat_llm(
         api_key=SecretStr(api_key),
         base_url=profile.base_url,
         timeout=profile.request_timeout_seconds,
-        max_retries=0,
+        max_retries=3,
         max_tokens=profile.initial_output_tokens,
     )
     if profile.reasoning is not None:

@@ -119,7 +119,7 @@ def test_openrouter_llm_uses_chat_completions_without_attribution(
 
     assert captured["model"] == "vendor/test-model"
     assert captured["base_url"] == OPENROUTER_BASE_URL
-    assert captured["max_retries"] == 0
+    assert captured["max_retries"] == 3
     assert captured["extra_body"] == {"reasoning": {"effort": "medium"}}
     assert "temperature" not in captured
     assert "top_p" not in captured
