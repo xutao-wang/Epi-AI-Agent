@@ -30,13 +30,5 @@
     "workflow_timeout_seconds": 420,
     "output_usd_per_million": "15",
     "supports_vision": true
-  },
-  {
-    "endpoint_id": "vllm",
-    "label": "Local vLLM",
-    "base_url": "http://127.0.0.1:8000/v1",
-    "discover_models": true,
-    "api_key_env": "",
-    "output_approval_required": false
   }
 ]
