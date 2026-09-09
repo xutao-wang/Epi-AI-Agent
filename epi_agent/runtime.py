@@ -232,6 +232,8 @@ def _record_model_observation(
     answer: AIMessage,
     *,
     duration_ms: int,
+    provider: str,
+    served_model_id: str,
 ) -> tuple[dict[str, Any], Any]:
     observation = observe_model_response(answer)
     current = dict(model_output_state)
@@ -247,14 +249,47 @@ def _record_model_observation(
     ]
     telemetry.append(record)
     current["telemetry"] = telemetry
-    current["aggregate_input_tokens"] = sum(
-        int(item.get("input_tokens") or 0) for item in telemetry
+    current["provider"] = provider
+    current["served_model_id"] = served_model_id
+
+    tokens_complete = bool(current.get("token_usage_complete", True)) and (
+        observation.input_tokens is not None
+        and observation.output_tokens is not None
     )
-    current["aggregate_output_tokens"] = sum(
-        int(item.get("output_tokens") or 0) for item in telemetry
+    current["token_usage_complete"] = tokens_complete
+    if tokens_complete:
+        current["aggregate_input_tokens"] = int(
+            current.get("aggregate_input_tokens") or 0
+        ) + observation.input_tokens
+        current["aggregate_output_tokens"] = int(
+            current.get("aggregate_output_tokens") or 0
+        ) + observation.output_tokens
+    else:
+        current["aggregate_input_tokens"] = None
+        current["aggregate_output_tokens"] = None
+
+    reasoning_complete = bool(current.get("reasoning_usage_complete", True)) and (
+        observation.reasoning_tokens is not None
     )
-    current["aggregate_reasoning_tokens"] = sum(
-        int(item.get("reasoning_tokens") or 0) for item in telemetry
+    current["reasoning_usage_complete"] = reasoning_complete
+    current["aggregate_reasoning_tokens"] = (
+        int(current.get("aggregate_reasoning_tokens") or 0)
+        + observation.reasoning_tokens
+        if reasoning_complete
+        else None
+    )
+
+    actual_cost_complete = (
+        provider == "openrouter"
+        and bool(current.get("actual_cost_complete", True))
+        and observation.actual_cost_usd is not None
+    )
+    current["actual_cost_complete"] = actual_cost_complete
+    current["aggregate_actual_openrouter_cost_usd"] = (
+        float(current.get("aggregate_actual_openrouter_cost_usd") or 0)
+        + observation.actual_cost_usd
+        if actual_cost_complete
+        else None
     )
     _LOGGER.info(
         "model_response_segment",
@@ -537,6 +572,8 @@ def _model_answer_patch(
             output_state,
             answer,
             duration_ms=duration_ms,
+            provider=agent_config.model_profile.provider,
+            served_model_id=agent_config.model_profile.served_model_id,
         )
     except ModelResponseProtocolError as exc:
         return _model_output_error_patch(
@@ -566,7 +603,7 @@ def _model_answer_patch(
         output_state["chain_response_ids"] = chain_response_ids
         output_state["chain_output_tokens"] = int(
             output_state.get("chain_output_tokens") or 0
-        ) + observation.output_tokens
+        ) + (observation.output_tokens or 0)
         if (
             output_state["chain_output_tokens"]
             >= agent_config.model_profile.absolute_output_token_ceiling
