@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from langchain_core.messages import AIMessage
 
+from api.runtime import project_thread_state
 from epi_agent.model_responses import observe_model_response
 from epi_agent.runtime import _record_model_observation
 
@@ -94,3 +97,35 @@ def test_one_missing_segment_marks_aggregate_usage_incomplete() -> None:
     assert state["aggregate_input_tokens"] is None
     assert state["aggregate_output_tokens"] is None
     assert state["aggregate_actual_openrouter_cost_usd"] is None
+
+
+def test_thread_state_exposes_only_sanitized_aggregate_usage() -> None:
+    snapshot = SimpleNamespace(
+        values={
+            "model_output_state": {
+                "provider": "openrouter",
+                "served_model_id": "vendor/model",
+                "aggregate_input_tokens": 150,
+                "aggregate_output_tokens": 30,
+                "aggregate_actual_openrouter_cost_usd": 0.003,
+                "telemetry": [{"provider_request_id": "private-request"}],
+            }
+        },
+        next=(),
+        interrupts=(),
+    )
+
+    public = project_thread_state(
+        thread_id="thread-1",
+        snapshot=snapshot,
+        run_status={"state": "done", "steps": 1},
+    ).model_dump(mode="json")
+
+    assert public["agent_usage"] == {
+        "provider": "openrouter",
+        "served_model_id": "vendor/model",
+        "input_tokens": 150,
+        "output_tokens": 30,
+        "actual_openrouter_cost_usd": 0.003,
+    }
+    assert "private-request" not in str(public)

@@ -426,6 +426,16 @@ class ActivityRun(BaseModel):
     updated_at: str
 
 
+class AgentModelUsage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str = Field(min_length=1)
+    served_model_id: str = Field(min_length=1)
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    actual_openrouter_cost_usd: float | None = Field(default=None, ge=0)
+
+
 class ApiThreadState(BaseModel):
     thread_id: str
     run: RunStatus
@@ -442,6 +452,7 @@ class ApiThreadState(BaseModel):
     model_label: str = ""
     model_available: bool = True
     model_replacement_required: bool = False
+    agent_usage: AgentModelUsage | None = None
     embedding_startup_status: EmbeddingStartupStatus = Field(
         default_factory=silent_embedding_startup_status
     )
