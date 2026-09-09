@@ -433,10 +433,10 @@ def test_shipped_qwen3_next_fp8_profile_uses_model_supplied_format() -> None:
     ]
 
     assert qwen.label == "Qwen3-Next 80B A3B Instruct FP8"
-    assert qwen.initial_output_tokens == 2048
-    assert qwen.automatic_output_token_ceiling == 4096
-    assert qwen.user_output_token_increment == 2048
-    assert qwen.absolute_output_token_ceiling == 8192
+    assert qwen.initial_output_tokens == 16384
+    assert qwen.automatic_output_token_ceiling == 32768
+    assert qwen.user_output_token_increment == 16384
+    assert qwen.absolute_output_token_ceiling == 49152
     assert qwen.supports_vision is False
     assert qwen.supports_mid_conversation_system is False
     assert qwen.vllm is not None
