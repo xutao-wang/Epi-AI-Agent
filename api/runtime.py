@@ -38,6 +38,7 @@ from pydantic import TypeAdapter, ValidationError
 from api.auth import AuthenticatedUser, LOCAL_SESSION_ID, RequestIdentity
 from api.schemas import (
     ActiveInterrupt,
+    AgentModelUsage,
     ActivityRun,
     ApiThreadState,
     AttachmentManifestSummary,
@@ -3310,6 +3311,27 @@ def _active_interrupt(snapshot: Any, values: dict[str, Any]) -> ActiveInterrupt 
         return None
 
 
+def _agent_model_usage(values: dict[str, Any]) -> AgentModelUsage | None:
+    state = values.get("model_output_state")
+    if not isinstance(state, dict):
+        return None
+    provider = state.get("provider")
+    served_model_id = state.get("served_model_id")
+    if not isinstance(provider, str) or not provider:
+        return None
+    if not isinstance(served_model_id, str) or not served_model_id:
+        return None
+    return AgentModelUsage(
+        provider=provider,
+        served_model_id=served_model_id,
+        input_tokens=state.get("aggregate_input_tokens"),
+        output_tokens=state.get("aggregate_output_tokens"),
+        actual_openrouter_cost_usd=state.get(
+            "aggregate_actual_openrouter_cost_usd"
+        ),
+    )
+
+
 def project_thread_state(
     *,
     thread_id: str,
@@ -3429,6 +3451,7 @@ def project_thread_state(
         ),
         model_available=model_available,
         model_replacement_required=not model_available,
+        agent_usage=_agent_model_usage(values),
         embedding_startup_status=(
             embedding_startup_status or silent_embedding_startup_status()
         ),
