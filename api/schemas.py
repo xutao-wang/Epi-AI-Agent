@@ -425,6 +425,13 @@ class ActivityRun(BaseModel):
     updated_at: str
 
 
+class AgentUsage(BaseModel):
+    provider: str = Field(min_length=1)
+    served_model_id: str = Field(min_length=1)
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+
+
 class ApiThreadState(BaseModel):
     thread_id: str
     run: RunStatus
@@ -434,6 +441,7 @@ class ApiThreadState(BaseModel):
     datasets: list[DatasetSummary] = Field(default_factory=list)
     file_artifacts: list[FileArtifactSummary] = Field(default_factory=list)
     output: dict[str, Any] = Field(default_factory=dict)
+    agent_usage: AgentUsage | None = None
     diagnostics: dict[str, Any] = Field(default_factory=dict)
     runtime_settings: RuntimeSettings | None = None
     runtime_settings_locked: bool = False

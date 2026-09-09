@@ -39,6 +39,7 @@ from api.auth import AuthenticatedUser, LOCAL_SESSION_ID, RequestIdentity
 from api.schemas import (
     ActiveInterrupt,
     ActivityRun,
+    AgentUsage,
     ApiThreadState,
     AttachmentManifestSummary,
     AttachmentUploadError,
@@ -2663,6 +2664,16 @@ class ReportAgentApiRuntime:
                     model_label=model_label,
                     model_available=thread.model_available,
                     embedding_startup_status=self.embedding_startup_status,
+                    model_provider=(
+                        stored_profile.provider
+                        if stored_profile is not None
+                        else None
+                    ),
+                    served_model_id=(
+                        stored_profile.served_model_id
+                        if stored_profile is not None
+                        else thread.settings.model_name
+                    ),
                 )
             return project_thread_state(
                 thread_id=thread_id,
@@ -2673,6 +2684,14 @@ class ReportAgentApiRuntime:
                 model_label=model_label,
                 model_available=thread.model_available,
                 embedding_startup_status=self.embedding_startup_status,
+                model_provider=(
+                    stored_profile.provider if stored_profile is not None else None
+                ),
+                served_model_id=(
+                    stored_profile.served_model_id
+                    if stored_profile is not None
+                    else thread.settings.model_name
+                ),
             )
         app, runner = self._bound_graph(thread)
         snapshot = app.get_state(
@@ -2702,6 +2721,14 @@ class ReportAgentApiRuntime:
             model_label=model_label,
             model_available=thread.model_available,
             embedding_startup_status=self.embedding_startup_status,
+            model_provider=(
+                stored_profile.provider if stored_profile is not None else None
+            ),
+            served_model_id=(
+                stored_profile.served_model_id
+                if stored_profile is not None
+                else thread.settings.model_name
+            ),
         )
         if projected.active_interrupt is not None:
             self._activity_call(
@@ -2731,6 +2758,14 @@ class ReportAgentApiRuntime:
             model_available=thread.model_available,
             activity_runs=self._activity_runs(thread_id),
             embedding_startup_status=self.embedding_startup_status,
+            model_provider=(
+                stored_profile.provider if stored_profile is not None else None
+            ),
+            served_model_id=(
+                stored_profile.served_model_id
+                if stored_profile is not None
+                else thread.settings.model_name
+            ),
         )
 
     def _dataset_artifact(
@@ -3304,6 +3339,28 @@ def _active_interrupt(snapshot: Any, values: dict[str, Any]) -> ActiveInterrupt 
         return None
 
 
+def _project_agent_usage(
+    values: dict[str, Any],
+    *,
+    model_provider: str | None,
+    served_model_id: str | None,
+) -> AgentUsage | None:
+    output = dict(values.get("model_output_state") or {})
+    telemetry = [
+        item for item in output.get("telemetry") or [] if isinstance(item, dict)
+    ]
+    provider = str(model_provider or "").strip()
+    model = str(served_model_id or "").strip()
+    if not telemetry or not provider or not model:
+        return None
+    return AgentUsage(
+        provider=provider,
+        served_model_id=model,
+        input_tokens=int(output.get("aggregate_input_tokens") or 0),
+        output_tokens=int(output.get("aggregate_output_tokens") or 0),
+    )
+
+
 def project_thread_state(
     *,
     thread_id: str,
@@ -3315,6 +3372,8 @@ def project_thread_state(
     model_available: bool = True,
     activity_runs: list[ActivityRun] | None = None,
     embedding_startup_status: EmbeddingStartupStatus | None = None,
+    model_provider: str | None = None,
+    served_model_id: str | None = None,
 ) -> ApiThreadState:
     values = _projection_values(snapshot)
     snapshot_next = list(getattr(snapshot, "next", None) or [])
@@ -3393,6 +3452,11 @@ def project_thread_state(
         datasets=_datasets(values),
         file_artifacts=_file_artifacts(values),
         output=dict(values.get("output") or {}),
+        agent_usage=_project_agent_usage(
+            values,
+            model_provider=model_provider,
+            served_model_id=served_model_id,
+        ),
         diagnostics={
             "semantic_graph": "epi_agent",
             "checkpoint_scope": "root",
