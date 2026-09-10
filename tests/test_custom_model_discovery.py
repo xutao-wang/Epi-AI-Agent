@@ -441,10 +441,29 @@ def test_shipped_qwen3_next_fp8_profile_uses_model_supplied_format() -> None:
     assert qwen.supports_mid_conversation_system is False
     assert qwen.vllm is not None
     assert qwen.vllm.tensor_parallel_size == 4
-    assert qwen.vllm.max_model_len == 131072
+    assert qwen.vllm.max_model_len == 262144
     assert qwen.vllm.quantization is None
+    assert qwen.vllm.enable_prefix_caching is True
     assert qwen.vllm.tool_call_parser == "hermes"
     assert qwen.vllm.chat_template is None
+
+
+def test_shipped_qwen38_fp8_profile_uses_recommended_vllm_settings() -> None:
+    from utils.model_runtime_profiles import load_compatible_model_profiles
+
+    qwen = load_compatible_model_profiles()["Qwen/Qwen3.8-27B-FP8"]
+
+    assert qwen.label == "Qwen 3.8 27B FP8"
+    assert qwen.supports_vision is True
+    assert qwen.supports_mid_conversation_system is True
+    assert qwen.vllm is not None
+    assert qwen.vllm.tensor_parallel_size == 4
+    assert qwen.vllm.max_model_len == 262144
+    assert qwen.vllm.quantization is None
+    assert qwen.vllm.kv_cache_dtype == "fp8"
+    assert qwen.vllm.enable_auto_tool_choice is True
+    assert qwen.vllm.tool_call_parser == "qwen3_coder"
+    assert qwen.vllm.reasoning_parser == "qwen3"
 
 
 def test_compatible_profile_accepts_valid_vllm_launch_settings() -> None:
@@ -457,6 +476,7 @@ def test_compatible_profile_accepts_valid_vllm_launch_settings() -> None:
                 "max_model_len": 32768,
                 "gpu_memory_utilization": 0.9,
                 "enforce_eager": True,
+                "enable_prefix_caching": True,
                 "enable_auto_tool_choice": True,
                 "tool_call_parser": "gemma4",
                 "reasoning_parser": "gemma4",
@@ -469,6 +489,7 @@ def test_compatible_profile_accepts_valid_vllm_launch_settings() -> None:
 
     assert profile.vllm is not None
     assert profile.vllm.max_model_len == 32768
+    assert profile.vllm.enable_prefix_caching is True
     assert profile.vllm.tool_call_parser == "gemma4"
     assert profile.vllm.reasoning_parser == "gemma4"
     assert profile.vllm.dtype == "auto"
@@ -594,23 +615,86 @@ def test_vllm_launcher_uses_qwen_model_supplied_chat_template(tmp_path) -> None:
     arguments = captured.read_text(encoding="utf-8").splitlines()
     assert "--chat-template" not in arguments
     assert "/vllm_chat_template.jinja" not in arguments
-    assert arguments[-16:] == [
+    assert arguments[-17:] == [
         "vllm",
         "serve",
         "Qwen/Qwen3-Next-80B-A3B-Instruct-FP8",
         "--tensor-parallel-size",
         "4",
         "--max-model-len",
-        "131072",
+        "262144",
         "--gpu-memory-utilization",
         "0.9",
         "--dtype",
         "auto",
         "--kv-cache-dtype",
         "auto",
+        "--enable-prefix-caching",
         "--enable-auto-tool-choice",
         "--tool-call-parser",
         "hermes",
+    ]
+
+
+def test_vllm_launcher_uses_recommended_qwen38_fp8_settings(tmp_path) -> None:
+    project_root = Path(__file__).parents[1]
+    launcher = project_root / "config/vllm_amarel/load_llm_with_vllm.sh"
+    app_root = tmp_path / "apps"
+    image = app_root / "singularity_images/vllm-openai_v0.19.1.sif"
+    image.parent.mkdir(parents=True)
+    image.touch()
+    captured = tmp_path / "apptainer-arguments.txt"
+    fake_apptainer = tmp_path / "apptainer"
+    fake_apptainer.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$@\" > \"$VLLM_LAUNCH_CAPTURE_PATH\"\n",
+        encoding="utf-8",
+    )
+    fake_apptainer.chmod(0o755)
+    environ = {
+        **os.environ,
+        "APPTAINER_BIN": str(fake_apptainer),
+        "VLLM_APP_ROOT": str(app_root),
+        "VLLM_LAUNCH_CAPTURE_PATH": str(captured),
+    }
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(launcher),
+            image.name,
+            "Qwen/Qwen3.8-27B-FP8",
+        ],
+        cwd=project_root,
+        env=environ,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    arguments = captured.read_text(encoding="utf-8").splitlines()
+    assert "--quantization" not in arguments
+    assert "--enforce-eager" not in arguments
+    assert arguments[-18:] == [
+        "vllm",
+        "serve",
+        "Qwen/Qwen3.8-27B-FP8",
+        "--tensor-parallel-size",
+        "4",
+        "--max-model-len",
+        "262144",
+        "--gpu-memory-utilization",
+        "0.9",
+        "--dtype",
+        "auto",
+        "--kv-cache-dtype",
+        "fp8",
+        "--enable-auto-tool-choice",
+        "--tool-call-parser",
+        "qwen3_coder",
+        "--reasoning-parser",
+        "qwen3",
     ]
 
 

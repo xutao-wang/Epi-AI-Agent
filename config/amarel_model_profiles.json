@@ -41,16 +41,17 @@
     "routing_context_char_ceiling": 64000,
     "vllm": {
       "tensor_parallel_size": 4,
-      "max_model_len": 131072,
+      "max_model_len": 262144,
       "gpu_memory_utilization": 0.9,
       "dtype": "auto",
       "kv_cache_dtype": "auto",
+      "enable_prefix_caching": true,
       "enable_auto_tool_choice": true,
       "tool_call_parser": "hermes"
     }
   },
-  "Qwen/Qwen3.8-27B": {
-    "label": "Qwen 3.8 27B Instruct",
+  "Qwen/Qwen3.8-27B-FP8": {
+    "label": "Qwen 3.8 27B FP8",
     "initial_output_tokens": 16384,
     "automatic_output_token_ceiling": 32768,
     "user_output_token_increment": 16384,
@@ -64,14 +65,13 @@
     "routing_context_char_ceiling": 64000,
     "vllm": {
       "tensor_parallel_size": 4,
-      "max_model_len": 132768,
+      "max_model_len": 262144,
       "gpu_memory_utilization": 0.9,
       "dtype": "auto",
-      "quantization": "fp8",
-      "kv_cache_dtype": "auto",
-      "enforce_eager": true,
+      "kv_cache_dtype": "fp8",
       "enable_auto_tool_choice": true,
-      "tool_call_parser": "qwen3_coder"
+      "tool_call_parser": "qwen3_coder",
+      "reasoning_parser": "qwen3"
     }
   }
 }

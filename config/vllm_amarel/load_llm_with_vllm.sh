@@ -64,6 +64,7 @@ allowed_settings = {
     "max_model_len",
     "gpu_memory_utilization",
     "enforce_eager",
+    "enable_prefix_caching",
     "enable_auto_tool_choice",
     "tool_call_parser",
     "reasoning_parser",
@@ -132,6 +133,7 @@ if gpu_memory_utilization is not None and (
 ):
     raise SystemExit("vllm.gpu_memory_utilization must be greater than 0 and at most 1")
 enforce_eager = optional_bool("enforce_eager")
+enable_prefix_caching = optional_bool("enable_prefix_caching")
 enable_auto_tool_choice = optional_bool("enable_auto_tool_choice")
 tool_call_parser = optional_single_line("tool_call_parser")
 reasoning_parser = optional_single_line("reasoning_parser")
@@ -169,6 +171,7 @@ for value in (
     max_model_len,
     gpu_memory_utilization,
     enforce_eager,
+    enable_prefix_caching,
     enable_auto_tool_choice,
     tool_call_parser,
     reasoning_parser,
@@ -182,7 +185,7 @@ print("__VLLM_PROFILE_END__")
 PY
 )
 mapfile -t launch_settings <<<"$profile_values"
-if [[ ${#launch_settings[@]} -ne 12 || ${launch_settings[11]} != "__VLLM_PROFILE_END__" ]]; then
+if [[ ${#launch_settings[@]} -ne 13 || ${launch_settings[12]} != "__VLLM_PROFILE_END__" ]]; then
     echo "Model '$model_name' returned an incomplete vLLM launch configuration." >&2
     exit 65
 fi
@@ -191,13 +194,14 @@ tensor_parallel_size=${launch_settings[0]}
 max_model_len=${launch_settings[1]}
 gpu_memory_utilization=${launch_settings[2]}
 enforce_eager=${launch_settings[3]}
-enable_auto_tool_choice=${launch_settings[4]}
-tool_call_parser=${launch_settings[5]}
-reasoning_parser=${launch_settings[6]}
-chat_template=${launch_settings[7]}
-dtype=${launch_settings[8]}
-quantization=${launch_settings[9]}
-kv_cache_dtype=${launch_settings[10]}
+enable_prefix_caching=${launch_settings[4]}
+enable_auto_tool_choice=${launch_settings[5]}
+tool_call_parser=${launch_settings[6]}
+reasoning_parser=${launch_settings[7]}
+chat_template=${launch_settings[8]}
+dtype=${launch_settings[9]}
+quantization=${launch_settings[10]}
+kv_cache_dtype=${launch_settings[11]}
 
 vllm_args=(serve "$model_name")
 if [[ -n "$tensor_parallel_size" ]]; then
@@ -220,6 +224,9 @@ if [[ -n "$kv_cache_dtype" ]]; then
 fi
 if [[ "$enforce_eager" == "true" ]]; then
     vllm_args+=(--enforce-eager)
+fi
+if [[ "$enable_prefix_caching" == "true" ]]; then
+    vllm_args+=(--enable-prefix-caching)
 fi
 if [[ "$enable_auto_tool_choice" == "true" ]]; then
     vllm_args+=(--enable-auto-tool-choice)

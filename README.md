@@ -59,6 +59,7 @@ endpoint**. The app discovers models from `/models`.
 See [the Amarel vLLM instructions](config/vllm_amarel/load_llm_amarel_instruction.md)
 for single- and multi-node launch guidance.
 
+## Embeddings for semantic search
 Semantic search uses the built-in OpenAI `text-embedding-3-large` model and
 requires `OPENAI_API_KEY`, even when the chat model is Claude. If OpenAI
 embeddings are unavailable, search falls back to lexical matching.

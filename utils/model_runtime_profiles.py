@@ -556,6 +556,7 @@ class VllmLaunchProfile(BaseModel):
     max_model_len: int | None = Field(default=None, gt=0)
     gpu_memory_utilization: float | None = Field(default=None, gt=0, le=1)
     enforce_eager: bool | None = None
+    enable_prefix_caching: bool | None = None
     enable_auto_tool_choice: bool | None = None
     tool_call_parser: str | None = Field(default=None, min_length=1, max_length=80)
     reasoning_parser: str | None = Field(default=None, min_length=1, max_length=80)

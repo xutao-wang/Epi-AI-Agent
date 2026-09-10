@@ -38,6 +38,77 @@ passed to `vllm serve`, and omitted parameters use the installed vLLM version's
 defaults. Unknown or invalid parameters for the selected model are rejected;
 entries for other models are ignored.
 
+## Recommended Qwen profiles
+
+The shipped Qwen profiles follow the model authors' deployment guidance and
+the corresponding vLLM recipes. Both use their native 262,144-token context
+window. This limit includes the prompt, retained conversation, model reasoning,
+and final response.
+
+### Qwen3-Next 80B A3B Instruct FP8
+
+The [Qwen3-Next model card](https://huggingface.co/Qwen/Qwen3-Next-80B-A3B-Instruct-FP8)
+and [vLLM recipe](https://recipes.vllm.ai/Qwen/Qwen3-Next-80B-A3B-Instruct)
+recommend tensor parallelism across four GPUs for the FP8 checkpoint. The
+profile also enables prefix caching and the recommended Hermes tool parser.
+Qwen3-Next Instruct is a non-thinking model, so it does not need a reasoning
+parser.
+
+```bash
+image_name=vllm-openai_v0.19.1.sif
+model_name=Qwen/Qwen3-Next-80B-A3B-Instruct-FP8
+
+bash config/vllm_amarel/load_llm_with_vllm.sh \
+  "$image_name" "$model_name"
+```
+
+Multi-token prediction is optional. Test its memory use and throughput on the
+allocated GPU type before making it a profile default:
+
+```bash
+bash config/vllm_amarel/load_llm_with_vllm.sh \
+  "$image_name" "$model_name" \
+  --speculative-config '{"method":"qwen3_next_mtp","num_speculative_tokens":2}'
+```
+
+If the server cannot allocate the native context window, append
+`--max-model-len 32768` to the launcher command as the model card's conservative
+fallback. Explicit arguments placed after the model name take precedence over
+profile arguments.
+
+### Qwen3.8 27B FP8
+
+Use the official pre-quantized `Qwen/Qwen3.8-27B-FP8` checkpoint. The
+[Qwen3.8 model card](https://huggingface.co/Qwen/Qwen3.8-27B-FP8) documents its
+native vision support and 262,144-token context window. The
+[vLLM recipe](https://recipes.vllm.ai/Qwen/Qwen3.8-27B) recommends the `qwen3`
+reasoning parser and FP8 KV cache for the four-GPU FP8 configuration; the
+profile also enables automatic tool choice with the `qwen3_coder` parser.
+Because the checkpoint already contains FP8 weights, the profile intentionally
+does not pass `--quantization fp8`.
+
+```bash
+image_name=vllm-openai_v0.19.1.sif
+model_name=Qwen/Qwen3.8-27B-FP8
+
+bash config/vllm_amarel/load_llm_with_vllm.sh \
+  "$image_name" "$model_name"
+```
+
+Qwen3.8 thinks by default. For direct non-thinking responses, send
+`{"chat_template_kwargs":{"enable_thinking":false}}` in the request's
+`extra_body`. Its optional built-in MTP draft head can be enabled at launch:
+
+```bash
+bash config/vllm_amarel/load_llm_with_vllm.sh \
+  "$image_name" "$model_name" \
+  --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
+```
+
+The vLLM recipes list vLLM 0.17.0 or newer for both models. The example 0.19.1
+container satisfies that minimum; use a newer image if the installed build
+reports model-architecture or parser compatibility errors.
+
 ## Multiple nodes
 
 For multiple nodes, `salloc` is preferred because the launcher creates the
@@ -102,6 +173,7 @@ PY
 On the vLLM head node, start the application from the project root:
 
 ```bash
+source .venv/bin/activate # activate your virtual env
 python run_fastapi.py
 ```
 
