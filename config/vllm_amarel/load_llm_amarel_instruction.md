@@ -5,10 +5,10 @@ assume four GPUs and 240 GB of RAM per node in the lab partition.
 
 ## Single node
 
-Request an interactive GPU node:
+Request a GPU node:
 
 ```bash
-srun \
+salloc \
   --partition=p_wj183_1 \
   --nodes=1 \
   --job-name=LLM-test \
@@ -17,9 +17,12 @@ srun \
   --gres=gpu:4 \
   --mem=240G \
   --time=2:00:00 \
-  --pty bash
-```
+  --no-shell
 
+# login to the node
+squeue -u $USER -o "%.18i %.9P %.20j %.2t %.10M %.30R"
+srun --jobid=<JOBID> --pty bash -l
+```
 From the project root, launch the configured model:
 
 ```bash
