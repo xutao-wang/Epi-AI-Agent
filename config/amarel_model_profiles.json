@@ -21,7 +21,9 @@
       "kv_cache_dtype": "auto",
       "enforce_eager": true,
       "enable_auto_tool_choice": true,
-      "tool_call_parser": "gemma4"
+      "tool_call_parser": "gemma4",
+      "reasoning_parser": "gemma4",
+      "chat_template": "config/vllm_amarel/tool_chat_template_gemma4.jinja"
     }
   },
   "Qwen/Qwen3-Next-80B-A3B-Instruct-FP8": {

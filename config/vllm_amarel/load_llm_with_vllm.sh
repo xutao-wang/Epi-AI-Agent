@@ -66,6 +66,7 @@ allowed_settings = {
     "enforce_eager",
     "enable_auto_tool_choice",
     "tool_call_parser",
+    "reasoning_parser",
     "chat_template",
     "dtype",
     "quantization",
@@ -133,6 +134,7 @@ if gpu_memory_utilization is not None and (
 enforce_eager = optional_bool("enforce_eager")
 enable_auto_tool_choice = optional_bool("enable_auto_tool_choice")
 tool_call_parser = optional_single_line("tool_call_parser")
+reasoning_parser = optional_single_line("reasoning_parser")
 chat_template = optional_single_line("chat_template")
 dtype = optional_choice(
     "dtype",
@@ -169,6 +171,7 @@ for value in (
     enforce_eager,
     enable_auto_tool_choice,
     tool_call_parser,
+    reasoning_parser,
     chat_template,
     dtype,
     quantization,
@@ -179,7 +182,7 @@ print("__VLLM_PROFILE_END__")
 PY
 )
 mapfile -t launch_settings <<<"$profile_values"
-if [[ ${#launch_settings[@]} -ne 11 || ${launch_settings[10]} != "__VLLM_PROFILE_END__" ]]; then
+if [[ ${#launch_settings[@]} -ne 12 || ${launch_settings[11]} != "__VLLM_PROFILE_END__" ]]; then
     echo "Model '$model_name' returned an incomplete vLLM launch configuration." >&2
     exit 65
 fi
@@ -190,10 +193,11 @@ gpu_memory_utilization=${launch_settings[2]}
 enforce_eager=${launch_settings[3]}
 enable_auto_tool_choice=${launch_settings[4]}
 tool_call_parser=${launch_settings[5]}
-chat_template=${launch_settings[6]}
-dtype=${launch_settings[7]}
-quantization=${launch_settings[8]}
-kv_cache_dtype=${launch_settings[9]}
+reasoning_parser=${launch_settings[6]}
+chat_template=${launch_settings[7]}
+dtype=${launch_settings[8]}
+quantization=${launch_settings[9]}
+kv_cache_dtype=${launch_settings[10]}
 
 vllm_args=(serve "$model_name")
 if [[ -n "$tensor_parallel_size" ]]; then
@@ -222,6 +226,9 @@ if [[ "$enable_auto_tool_choice" == "true" ]]; then
 fi
 if [[ -n "$tool_call_parser" ]]; then
     vllm_args+=(--tool-call-parser "$tool_call_parser")
+fi
+if [[ -n "$reasoning_parser" ]]; then
+    vllm_args+=(--reasoning-parser "$reasoning_parser")
 fi
 
 template_bind_args=()

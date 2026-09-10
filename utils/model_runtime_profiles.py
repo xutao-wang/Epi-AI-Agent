@@ -558,6 +558,7 @@ class VllmLaunchProfile(BaseModel):
     enforce_eager: bool | None = None
     enable_auto_tool_choice: bool | None = None
     tool_call_parser: str | None = Field(default=None, min_length=1, max_length=80)
+    reasoning_parser: str | None = Field(default=None, min_length=1, max_length=80)
     chat_template: str | None = Field(
         default=None,
         min_length=1,

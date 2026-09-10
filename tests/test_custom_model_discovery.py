@@ -459,6 +459,7 @@ def test_compatible_profile_accepts_valid_vllm_launch_settings() -> None:
                 "enforce_eager": True,
                 "enable_auto_tool_choice": True,
                 "tool_call_parser": "gemma4",
+                "reasoning_parser": "gemma4",
                 "dtype": "auto",
                 "quantization": "fp8",
                 "kv_cache_dtype": "auto",
@@ -469,6 +470,7 @@ def test_compatible_profile_accepts_valid_vllm_launch_settings() -> None:
     assert profile.vllm is not None
     assert profile.vllm.max_model_len == 32768
     assert profile.vllm.tool_call_parser == "gemma4"
+    assert profile.vllm.reasoning_parser == "gemma4"
     assert profile.vllm.dtype == "auto"
     assert profile.vllm.quantization == "fp8"
     assert profile.vllm.kv_cache_dtype == "auto"
@@ -521,7 +523,7 @@ def test_vllm_launcher_reads_shipped_gemma_profile(tmp_path) -> None:
 
     assert result.returncode == 0, result.stderr
     arguments = captured.read_text(encoding="utf-8").splitlines()
-    assert arguments[-19:] == [
+    assert arguments[-23:] == [
         "vllm",
         "serve",
         "google/gemma-4-31B-it",
@@ -541,7 +543,15 @@ def test_vllm_launcher_reads_shipped_gemma_profile(tmp_path) -> None:
         "--enable-auto-tool-choice",
         "--tool-call-parser",
         "gemma4",
+        "--reasoning-parser",
+        "gemma4",
+        "--chat-template",
+        "/vllm_chat_template.jinja",
     ]
+    assert (
+        f"{project_root}/config/vllm_amarel/tool_chat_template_gemma4.jinja:"
+        "/vllm_chat_template.jinja:ro"
+    ) in arguments
 
 
 def test_vllm_launcher_uses_qwen_model_supplied_chat_template(tmp_path) -> None:
@@ -615,6 +625,7 @@ def test_vllm_launcher_passes_only_explicit_active_model_overrides(tmp_path) -> 
                     "vllm": {
                         "tensor_parallel_size": 2,
                         "enable_auto_tool_choice": True,
+                        "reasoning_parser": "gemma4",
                     }
                 },
                 "org/offline-model": {
@@ -655,13 +666,15 @@ def test_vllm_launcher_passes_only_explicit_active_model_overrides(tmp_path) -> 
 
     assert result.returncode == 0, result.stderr
     arguments = captured.read_text(encoding="utf-8").splitlines()
-    assert arguments[-6:] == [
+    assert arguments[-8:] == [
         "vllm",
         "serve",
         "org/active-model",
         "--tensor-parallel-size",
         "2",
         "--enable-auto-tool-choice",
+        "--reasoning-parser",
+        "gemma4",
     ]
 
 
