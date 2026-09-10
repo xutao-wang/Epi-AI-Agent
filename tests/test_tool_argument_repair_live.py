@@ -35,7 +35,7 @@ from utils.model_runtime_profiles import (
 
 
 REPO_ROOT = Path(__file__).parents[1]
-MODEL_ID = "openrouter:minimax/minimax-m3"
+MINIMAX_MODEL_ID = "openrouter:minimax/minimax-m3"
 GEMMA_MODEL_ID = "vllm:google/gemma-4-31B-it"
 GEMMA_SERVED_MODEL_ID = "google/gemma-4-31B-it"
 DEFAULT_GEMMA_BASE_URL = "http://127.0.0.1:8000/v1"
@@ -149,9 +149,9 @@ def _minimax_profile(
         environment_root / "config" / "custom_models.json",
         environ=environ,
     )
-    if MODEL_ID not in profiles:
-        pytest.skip(f"{MODEL_ID} is not registered")
-    return profiles[MODEL_ID]
+    if MINIMAX_MODEL_ID not in profiles:
+        pytest.skip(f"{MINIMAX_MODEL_ID} is not registered")
+    return profiles[MINIMAX_MODEL_ID]
 
 
 def _gemma_profile() -> ModelRuntimeProfile:
@@ -184,7 +184,7 @@ def test_real_minimax_repairs_item_wrapped_array_after_validation_message(
         pytest.skip("OPENROUTER_API_KEY is not configured")
     profile = _minimax_profile(environment_root, environ)
     model = build_chat_llm(
-        model_name=MODEL_ID,
+        model_name=MINIMAX_MODEL_ID,
         profile=profile,
         api_key=api_key,
     )
