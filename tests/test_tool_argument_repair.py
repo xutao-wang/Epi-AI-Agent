@@ -27,6 +27,7 @@ from epi_agent.runtime import (
 from epi_agent.studies import StudyRegistry
 from utils.model_runtime_profiles import (
     OPENROUTER_BASE_URL,
+    PROVIDER_OPENAI_COMPATIBLE,
     PROVIDER_OPENROUTER,
     model_runtime_profile,
 )
@@ -345,6 +346,48 @@ def test_openrouter_model_call_receives_inlined_tool_schemas() -> None:
         model_runtime_profile("gpt-5.4"),
         provider=PROVIDER_OPENROUTER,
         base_url=OPENROUTER_BASE_URL,
+    )
+    model = CapturingModel()
+    registry = ToolRegistry(
+        [_StrictTool(name="future_tool", args_model=_NestedArguments)]
+    )
+
+    _call_model(
+        {
+            "messages": [HumanMessage(content="Use the tool")],
+            "artifacts": {},
+            "meta": {},
+        },
+        {"configurable": {"thread_id": "thread-1"}},
+        agent_config=_config(registry, profile=profile),
+        model=model,
+    )
+
+    parameters = model.schemas[0]["function"]["parameters"]
+    assert "$defs" not in parameters
+    assert parameters["properties"]["payload"]["type"] == "object"
+    assert (
+        parameters["properties"]["payload"]["properties"]["items"]["type"]
+        == "array"
+    )
+
+
+def test_openai_compatible_model_call_receives_inlined_tool_schemas() -> None:
+    class CapturingModel:
+        schemas: list[dict[str, Any]] = []
+
+        def bind_tools(self, schemas):
+            self.schemas = schemas
+            return self
+
+        def invoke(self, *_args, **_kwargs):
+            return AIMessage(content="done")
+
+    profile = replace(
+        model_runtime_profile("gpt-5.4"),
+        provider=PROVIDER_OPENAI_COMPATIBLE,
+        base_url="http://127.0.0.1:8000/v1",
+        api_key_required=False,
     )
     model = CapturingModel()
     registry = ToolRegistry(
