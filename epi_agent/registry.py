@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, get_args
 
 from pydantic import ValidationError
+from pydantic_core import ErrorType
 
 from epi_agent.protocol import (
     AgentTool,
@@ -12,6 +13,61 @@ from epi_agent.protocol import (
     ToolResult,
     ToolSpec,
 )
+
+
+_PYDANTIC_ERROR_TYPES = frozenset(get_args(ErrorType))
+_SAFE_FIELD_SCHEMA_KEYS = frozenset(
+    {
+        "exclusiveMaximum",
+        "exclusiveMinimum",
+        "maxItems",
+        "maxLength",
+        "maximum",
+        "minItems",
+        "minLength",
+        "minimum",
+        "multipleOf",
+        "type",
+    }
+)
+
+
+def _resolve_schema_node(
+    root: dict[str, Any], node: Any
+) -> dict[str, Any]:
+    while isinstance(node, dict):
+        reference = node.get("$ref")
+        if not isinstance(reference, str) or not reference.startswith("#/$defs/"):
+            return node
+        node = dict(root.get("$defs") or {}).get(reference.removeprefix("#/$defs/"))
+    return {}
+
+
+def _safe_error_location(
+    schema: dict[str, Any], location: list[Any]
+) -> tuple[list[str | int], dict[str, Any]]:
+    node: Any = schema
+    safe_location: list[str | int] = []
+    for part in location:
+        node = _resolve_schema_node(schema, node)
+        properties = node.get("properties")
+        if (
+            isinstance(part, str)
+            and isinstance(properties, dict)
+            and part in properties
+        ):
+            safe_location.append(part)
+            node = properties[part]
+            continue
+        items = node.get("items")
+        if isinstance(part, int) and isinstance(items, dict):
+            safe_location.append(part)
+            node = items
+            continue
+        safe_location.append("<arguments>")
+        additional = node.get("additionalProperties")
+        node = additional if isinstance(additional, dict) else {}
+    return safe_location or ["<arguments>"], _resolve_schema_node(schema, node)
 
 
 class ToolRegistry:
@@ -40,10 +96,46 @@ class ToolRegistry:
         try:
             validated = tool.spec.args_model.model_validate(arguments)
         except ValidationError as error:
+            schema = tool.spec.args_model.model_json_schema()
+            issues = []
+            for item in error.errors(
+                include_url=True,
+                include_context=True,
+                include_input=False,
+            )[:50]:
+                location = list(item.get("loc") or [])
+                safe_location, field_schema = _safe_error_location(
+                    schema, location
+                )
+                error_type = str(item.get("type") or "")
+                error_url = str(item.get("url") or "")
+                safe_type = (
+                    error_type
+                    if error_type in _PYDANTIC_ERROR_TYPES
+                    and error_url.startswith("https://errors.pydantic.dev/")
+                    else "validation_error"
+                )
+                issue: dict[str, Any] = {
+                    "loc": safe_location,
+                    "msg": "Input does not match the tool schema.",
+                    "type": safe_type,
+                }
+                if safe_type != "validation_error" and isinstance(
+                    field_schema, dict
+                ):
+                    expected = {
+                        key: value
+                        for key, value in field_schema.items()
+                        if key in _SAFE_FIELD_SCHEMA_KEYS
+                    }
+                    if expected:
+                        issue["expected"] = expected
+                issues.append(issue)
             raise ToolExecutionError(
                 "INVALID_ARGUMENTS",
-                f"Invalid arguments for tool {name}: {error}",
+                f"Invalid arguments for tool {name}.",
                 recoverable=True,
+                details={"issues": issues},
             ) from error
 
         return tool.invoke(validated.model_dump(), context)

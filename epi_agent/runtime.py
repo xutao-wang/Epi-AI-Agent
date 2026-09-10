@@ -56,6 +56,8 @@ from utils.runtime_defaults import DEFAULT_EPI_AGENT_MAX_ITERATIONS
 
 
 _REPEATED_FAILURE_LIMIT = 2
+_TOOL_ARGUMENT_REPAIR_REQUIRED_CODE = "TOOL_ARGUMENT_REPAIR_REQUIRED"
+_TOOL_ARGUMENT_REPAIR_EXHAUSTED_CODE = "TOOL_ARGUMENT_REPAIR_EXHAUSTED"
 _SQL_REPAIR_ERROR_CODE = "SQL_REPAIR_REQUIRED"
 _SQL_REPAIR_EXHAUSTED_CODE = "SQL_REPAIR_BUDGET_EXHAUSTED"
 _SQL_REPAIR_TOOL_NAME = "dbrag-validate_and_extract"
@@ -75,6 +77,7 @@ class GenericEpiAgentState(LangChainAgentState):
     final_response: str | None
     iteration_count: int
     failure_signatures: list[str]
+    tool_argument_repair_attempted: NotRequired[bool]
     current_turn_artifact_refs: list[dict[str, Any]]
     current_turn_output_artifact_refs: list[dict[str, Any]]
     analysis_review_feedback_history: list[dict[str, Any]]
@@ -179,7 +182,7 @@ def _sql_repair_budget_exhausted(signatures: list[str]) -> bool:
 def _repeated_failure(signatures: list[str]) -> bool:
     if signatures:
         latest = _failure_record(signatures[-1])
-        if (
+        if latest.get("code") == "INVALID_ARGUMENTS" or (
             latest.get("code") == _SQL_REPAIR_ERROR_CODE
             and latest.get("tool") == _SQL_REPAIR_TOOL_NAME
         ):
@@ -224,6 +227,38 @@ def _consolidate_response_chain(
         usage_metadata=latest.usage_metadata,
         additional_kwargs=dict(latest.additional_kwargs or {}),
         tool_calls=list(tool_calls.values()),
+    )
+
+
+def _invalid_tool_call_feedback(answer: AIMessage) -> SystemMessage:
+    invalid_calls = []
+    for call in list(answer.invalid_tool_calls or []):
+        arguments = call.get("args")
+        if not isinstance(arguments, str):
+            arguments = json.dumps(arguments, default=str, sort_keys=True)
+        invalid_calls.append(
+            {
+                "arguments": arguments[:2_000],
+                "error": str(
+                    call.get("error") or "Malformed tool arguments"
+                )[:1_000],
+                "name": str(call.get("name") or "")[:200],
+            }
+        )
+    return SystemMessage(
+        content=json.dumps(
+            {
+                "code": _TOOL_ARGUMENT_REPAIR_REQUIRED_CODE,
+                "instruction": (
+                    "Call the intended tool once more with valid JSON arguments "
+                    "matching its advertised schema. This is the only repair "
+                    "attempt. Do not repeat the rejected arguments."
+                ),
+                "invalid_calls": invalid_calls,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
     )
 
 
@@ -658,6 +693,30 @@ def _model_answer_patch(
             "model_output_state": output_state,
         }
 
+    if answer.invalid_tool_calls:
+        if state.get("tool_argument_repair_attempted"):
+            return {
+                **_terminal_model_patch(
+                    _terminal_error(
+                        _TOOL_ARGUMENT_REPAIR_EXHAUSTED_CODE,
+                        (
+                            "The model produced malformed tool arguments "
+                            "after its one repair attempt."
+                        ),
+                    )
+                ),
+                "model_output_state": output_state,
+                "tool_argument_repair_attempted": True,
+            }
+        return {
+            "messages": [_invalid_tool_call_feedback(answer)],
+            "iteration_count": iteration_count + 1,
+            "completion_blocked": True,
+            "final_response": None,
+            "model_output_state": output_state,
+            "tool_argument_repair_attempted": True,
+        }
+
     answer = _consolidate_response_chain(
         state,
         answer,
@@ -962,6 +1021,12 @@ def _execute_tools(
     artifact_store = StateArtifactStore.from_state(state)
     context = agent_config.context_factory(state, config, artifact_store)
     failures = list(state.get("failure_signatures") or [])
+    repair_attempted_before_batch = bool(
+        state.get("tool_argument_repair_attempted")
+    )
+    tool_argument_repair_attempted = repair_attempted_before_batch
+    invalid_arguments_seen = False
+    known_tool_call_seen = False
     feedback_history = [
         dict(entry)
         for entry in list(
@@ -1033,6 +1098,7 @@ def _execute_tools(
         try:
             cancellation_point()
             agent_config.registry.spec(name)
+            known_tool_call_seen = True
             activity_started = True
             notify_activity(
                 agent_config.activity_sink,
@@ -1052,6 +1118,39 @@ def _execute_tools(
         except (GraphInterrupt, RunCancelled):
             raise
         except ToolExecutionError as error:
+            if error.code == "INVALID_ARGUMENTS":
+                invalid_arguments_seen = True
+                details = dict(error.details or {})
+                if repair_attempted_before_batch:
+                    details["repair_attempts_remaining"] = 0
+                    error = ToolExecutionError(
+                        _TOOL_ARGUMENT_REPAIR_EXHAUSTED_CODE,
+                        (
+                            "The model produced invalid tool arguments after "
+                            "its one repair attempt."
+                        ),
+                        recoverable=False,
+                        details=details,
+                    )
+                else:
+                    details.update(
+                        {
+                            "instruction": (
+                                "Call this tool once more with arguments "
+                                "matching its advertised schema. Do not "
+                                "repeat the rejected arguments."
+                            ),
+                            "repair_required": True,
+                            "repair_attempts_remaining": 1,
+                        }
+                    )
+                    error = ToolExecutionError(
+                        error.code,
+                        str(error),
+                        recoverable=True,
+                        details=details,
+                    )
+                    tool_argument_repair_attempted = True
             if (
                 name == _SQL_REPAIR_TOOL_NAME
                 and error.code == _SQL_REPAIR_ERROR_CODE
@@ -1228,6 +1327,9 @@ def _execute_tools(
             artifact_refs=refs,
         )
 
+    if known_tool_call_seen and not invalid_arguments_seen:
+        tool_argument_repair_attempted = False
+
     patch: dict[str, Any] = {
         "messages": messages,
         "artifact_ids": artifact_ids,
@@ -1236,6 +1338,7 @@ def _execute_tools(
         "artifacts": event_state["artifacts"],
         "meta": event_state["meta"],
         "failure_signatures": failures,
+        "tool_argument_repair_attempted": tool_argument_repair_attempted,
         "analysis_review_feedback_history": feedback_history,
         **tool_state_patch,
     }
