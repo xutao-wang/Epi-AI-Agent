@@ -426,6 +426,13 @@ class ActivityRun(BaseModel):
     updated_at: str
 
 
+class AgentUsage(BaseModel):
+    provider: str = Field(min_length=1)
+    served_model_id: str = Field(min_length=1)
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+
+
 class AgentModelUsage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -452,7 +459,7 @@ class ApiThreadState(BaseModel):
     model_label: str = ""
     model_available: bool = True
     model_replacement_required: bool = False
-    agent_usage: AgentModelUsage | None = None
+    agent_usage: AgentModelUsage | AgentUsage | None = None
     embedding_startup_status: EmbeddingStartupStatus = Field(
         default_factory=silent_embedding_startup_status
     )
