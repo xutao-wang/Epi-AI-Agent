@@ -70,6 +70,49 @@ def _safe_error_location(
     return safe_location or ["<arguments>"], _resolve_schema_node(schema, node)
 
 
+def _safe_expected_schema(
+    root: dict[str, Any], field_schema: dict[str, Any]
+) -> dict[str, Any]:
+    node = _resolve_schema_node(root, field_schema)
+    expected = {
+        key: value
+        for key, value in node.items()
+        if key in _SAFE_FIELD_SCHEMA_KEYS
+    }
+
+    properties = node.get("properties")
+    if isinstance(properties, dict):
+        declared_properties = {}
+        for name, property_schema in properties.items():
+            if not isinstance(name, str) or not isinstance(property_schema, dict):
+                continue
+            resolved = _resolve_schema_node(root, property_schema)
+            property_expected = {
+                key: value
+                for key, value in resolved.items()
+                if key in _SAFE_FIELD_SCHEMA_KEYS
+            }
+            if property_expected:
+                declared_properties[name] = property_expected
+        if declared_properties:
+            expected["properties"] = declared_properties
+
+        required = node.get("required")
+        if isinstance(required, list):
+            declared_required = [
+                name
+                for name in required
+                if isinstance(name, str) and name in properties
+            ]
+            if declared_required:
+                expected["required"] = declared_required
+
+    if isinstance(node.get("additionalProperties"), bool):
+        expected["additionalProperties"] = node["additionalProperties"]
+
+    return expected
+
+
 class ToolRegistry:
     def __init__(self, tools: Iterable[AgentTool] = ()) -> None:
         self._tools: dict[str, AgentTool] = {}
@@ -123,11 +166,7 @@ class ToolRegistry:
                 if safe_type != "validation_error" and isinstance(
                     field_schema, dict
                 ):
-                    expected = {
-                        key: value
-                        for key, value in field_schema.items()
-                        if key in _SAFE_FIELD_SCHEMA_KEYS
-                    }
+                    expected = _safe_expected_schema(schema, field_schema)
                     if expected:
                         issue["expected"] = expected
                 issues.append(issue)
@@ -143,8 +182,17 @@ class ToolRegistry:
     def spec(self, name: str) -> ToolSpec:
         return self._require_tool(name).spec
 
-    def model_schemas(self) -> list[dict[str, Any]]:
-        return [tool.spec.model_schema() for tool in self._tools.values()]
+    def model_schemas(
+        self,
+        *,
+        inline_local_references: bool = False,
+    ) -> list[dict[str, Any]]:
+        return [
+            tool.spec.model_schema(
+                inline_local_references=inline_local_references,
+            )
+            for tool in self._tools.values()
+        ]
 
     def _require_tool(self, name: str) -> AgentTool:
         tool = self._tools.get(name)

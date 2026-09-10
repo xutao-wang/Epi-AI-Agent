@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from copy import deepcopy
 import json
 import re
 from typing import TYPE_CHECKING, Any, Literal, Protocol
@@ -13,6 +14,54 @@ if TYPE_CHECKING:
 
 
 _TOOL_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+
+
+def _inline_local_json_schema_references(
+    schema: dict[str, Any],
+) -> dict[str, Any]:
+    definitions = schema.get("$defs")
+    if not isinstance(definitions, dict):
+        return deepcopy(schema)
+
+    unresolved_cycle = False
+
+    def expand(value: Any, active: frozenset[str]) -> Any:
+        nonlocal unresolved_cycle
+        if isinstance(value, list):
+            return [expand(item, active) for item in value]
+        if not isinstance(value, dict):
+            return deepcopy(value)
+
+        reference = value.get("$ref")
+        prefix = "#/$defs/"
+        if isinstance(reference, str) and reference.startswith(prefix):
+            definition_name = reference.removeprefix(prefix)
+            definition = definitions.get(definition_name)
+            if isinstance(definition, dict):
+                if reference in active:
+                    unresolved_cycle = True
+                    return deepcopy(value)
+                expanded = expand(definition, active | {reference})
+                if isinstance(expanded, dict):
+                    expanded.update(
+                        {
+                            key: expand(item, active)
+                            for key, item in value.items()
+                            if key != "$ref"
+                        }
+                    )
+                return expanded
+
+        return {
+            key: expand(item, active)
+            for key, item in value.items()
+            if key != "$defs"
+        }
+
+    flattened = expand(schema, frozenset())
+    if unresolved_cycle and isinstance(flattened, dict):
+        flattened["$defs"] = deepcopy(definitions)
+    return flattened
 
 
 @dataclass(frozen=True)
@@ -29,13 +78,20 @@ class ToolSpec:
                 "Tool name must match ^[a-zA-Z0-9_-]{1,64}$"
             )
 
-    def model_schema(self) -> dict[str, Any]:
+    def model_schema(
+        self,
+        *,
+        inline_local_references: bool = False,
+    ) -> dict[str, Any]:
+        parameters = self.args_model.model_json_schema()
+        if inline_local_references:
+            parameters = _inline_local_json_schema_references(parameters)
         return {
             "type": "function",
             "function": {
                 "name": self.name,
                 "description": self.description,
-                "parameters": self.args_model.model_json_schema(),
+                "parameters": parameters,
             },
         }
 

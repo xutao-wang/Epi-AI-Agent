@@ -50,7 +50,7 @@ from graph.conversation_events import (
 )
 from graph.state import LangChainAgentState
 from graph.state import MetaKeys
-from utils.model_runtime_profiles import ModelRuntimeProfile
+from utils.model_runtime_profiles import ModelRuntimeProfile, PROVIDER_OPENROUTER
 from utils.run_cancellation import RunCancelled, cancellation_point
 from utils.runtime_defaults import DEFAULT_EPI_AGENT_MAX_ITERATIONS
 
@@ -505,6 +505,16 @@ def _activity_thread_id(config: RunnableConfig) -> str:
     )
 
 
+def _model_tool_schemas(
+    agent_config: EpiAgentRuntimeConfig,
+) -> list[dict[str, Any]]:
+    return agent_config.registry.model_schemas(
+        inline_local_references=(
+            agent_config.model_profile.provider == PROVIDER_OPENROUTER
+        ),
+    )
+
+
 def _call_model(
     state: dict[str, Any],
     config: RunnableConfig,
@@ -522,7 +532,7 @@ def _call_model(
     thread_id = _activity_thread_id(config)
     notify_activity(agent_config.activity_sink, "model_started", thread_id)
     try:
-        answer = model.bind_tools(agent_config.registry.model_schemas()).invoke(
+        answer = model.bind_tools(_model_tool_schemas(agent_config)).invoke(
             messages,
             config=config,
             **agent_config.model_profile.output_budget_kwargs(budget),
@@ -563,9 +573,7 @@ async def _acall_model(
     thread_id = _activity_thread_id(config)
     notify_activity(agent_config.activity_sink, "model_started", thread_id)
     try:
-        answer = await model.bind_tools(
-            agent_config.registry.model_schemas()
-        ).ainvoke(
+        answer = await model.bind_tools(_model_tool_schemas(agent_config)).ainvoke(
             messages,
             config=config,
             **agent_config.model_profile.output_budget_kwargs(budget),

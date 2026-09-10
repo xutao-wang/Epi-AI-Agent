@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import json
 from typing import Any
 
-from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_core import PydanticCustomError
 import pytest
@@ -19,12 +19,17 @@ from epi_agent.protocol import (
 from epi_agent.registry import ToolRegistry
 from epi_agent.runtime import (
     EpiAgentRuntimeConfig,
+    _call_model,
     _execute_tools,
     _model_answer_patch,
     _prepare_model_request,
 )
 from epi_agent.studies import StudyRegistry
-from utils.model_runtime_profiles import model_runtime_profile
+from utils.model_runtime_profiles import (
+    OPENROUTER_BASE_URL,
+    PROVIDER_OPENROUTER,
+    model_runtime_profile,
+)
 
 
 class _StrictArguments(BaseModel):
@@ -40,6 +45,8 @@ class _BoundedListArguments(BaseModel):
 
 
 class _NestedPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
     items: list[str]
 
 
@@ -119,7 +126,11 @@ class _SecretRejectingTool:
         raise AssertionError("invalid arguments must not execute")
 
 
-def _config(registry: ToolRegistry) -> EpiAgentRuntimeConfig:
+def _config(
+    registry: ToolRegistry,
+    *,
+    profile=None,
+) -> EpiAgentRuntimeConfig:
     studies = StudyRegistry()
     return EpiAgentRuntimeConfig(
         agent_name="test_agent",
@@ -132,7 +143,7 @@ def _config(registry: ToolRegistry) -> EpiAgentRuntimeConfig:
             thread_id="thread-1",
             policy=None,
         ),
-        model_profile=model_runtime_profile("gpt-5.4"),
+        model_profile=profile or model_runtime_profile("gpt-5.4"),
     )
 
 
@@ -244,6 +255,154 @@ def test_nested_declared_field_location_remains_actionable() -> None:
             "expected": {"type": "array"},
         }
     ]
+
+
+def test_object_type_error_exposes_declared_shape() -> None:
+    tool = _StrictTool(name="future_tool", args_model=_NestedArguments)
+
+    with pytest.raises(ToolExecutionError) as caught:
+        ToolRegistry([tool]).invoke(
+            "future_tool",
+            {"payload": "not-an-object"},
+            context=None,  # type: ignore[arg-type]
+        )
+
+    assert caught.value.details["issues"] == [
+        {
+            "loc": ["payload"],
+            "msg": "Input does not match the tool schema.",
+            "type": "model_type",
+            "expected": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["items"],
+                "properties": {
+                    "items": {"type": "array"},
+                },
+            },
+        }
+    ]
+
+
+def test_model_schema_can_inline_nested_local_references() -> None:
+    schema = _StrictTool(
+        name="future_tool",
+        args_model=_NestedArguments,
+    ).spec.model_schema(inline_local_references=True)
+
+    parameters = schema["function"]["parameters"]
+    assert "$defs" not in parameters
+    assert parameters["properties"]["payload"] == {
+        "additionalProperties": False,
+        "properties": {
+            "items": {
+                "items": {"type": "string"},
+                "title": "Items",
+                "type": "array",
+            }
+        },
+        "required": ["items"],
+        "title": "_NestedPayload",
+        "type": "object",
+    }
+
+
+def test_registry_inlines_references_for_every_tool_when_requested() -> None:
+    registry = ToolRegistry(
+        [
+            _StrictTool(name="first_tool", args_model=_NestedArguments),
+            _StrictTool(name="future_tool", args_model=_NestedArguments),
+        ]
+    )
+
+    schemas = registry.model_schemas(inline_local_references=True)
+
+    assert {
+        schema["function"]["name"] for schema in schemas
+    } == {"first_tool", "future_tool"}
+    for schema in schemas:
+        parameters = schema["function"]["parameters"]
+        assert "$defs" not in parameters
+        assert parameters["properties"]["payload"]["type"] == "object"
+        assert (
+            parameters["properties"]["payload"]["properties"]["items"]["type"]
+            == "array"
+        )
+
+
+def test_openrouter_model_call_receives_inlined_tool_schemas() -> None:
+    class CapturingModel:
+        schemas: list[dict[str, Any]] = []
+
+        def bind_tools(self, schemas):
+            self.schemas = schemas
+            return self
+
+        def invoke(self, *_args, **_kwargs):
+            return AIMessage(content="done")
+
+    profile = replace(
+        model_runtime_profile("gpt-5.4"),
+        provider=PROVIDER_OPENROUTER,
+        base_url=OPENROUTER_BASE_URL,
+    )
+    model = CapturingModel()
+    registry = ToolRegistry(
+        [_StrictTool(name="future_tool", args_model=_NestedArguments)]
+    )
+
+    _call_model(
+        {
+            "messages": [HumanMessage(content="Use the tool")],
+            "artifacts": {},
+            "meta": {},
+        },
+        {"configurable": {"thread_id": "thread-1"}},
+        agent_config=_config(registry, profile=profile),
+        model=model,
+    )
+
+    parameters = model.schemas[0]["function"]["parameters"]
+    assert "$defs" not in parameters
+    assert parameters["properties"]["payload"]["type"] == "object"
+    assert (
+        parameters["properties"]["payload"]["properties"]["items"]["type"]
+        == "array"
+    )
+
+
+def test_non_openrouter_model_call_keeps_compact_tool_schemas() -> None:
+    class CapturingModel:
+        schemas: list[dict[str, Any]] = []
+
+        def bind_tools(self, schemas):
+            self.schemas = schemas
+            return self
+
+        def invoke(self, *_args, **_kwargs):
+            return AIMessage(content="done")
+
+    model = CapturingModel()
+    registry = ToolRegistry(
+        [_StrictTool(name="future_tool", args_model=_NestedArguments)]
+    )
+
+    _call_model(
+        {
+            "messages": [HumanMessage(content="Use the tool")],
+            "artifacts": {},
+            "meta": {},
+        },
+        {"configurable": {"thread_id": "thread-1"}},
+        agent_config=_config(registry),
+        model=model,
+    )
+
+    parameters = model.schemas[0]["function"]["parameters"]
+    assert parameters["properties"]["payload"] == {
+        "$ref": "#/$defs/_NestedPayload"
+    }
+    assert "$defs" in parameters
 
 
 def test_dynamic_dictionary_key_is_not_exposed_in_error_location() -> None:
