@@ -105,6 +105,7 @@ export interface ModelOption {
   absolute_output_token_ceiling: number;
   request_timeout_seconds: number;
   workflow_timeout_seconds: number;
+  context_window_tokens?: number | null;
   automatic_output_cost: string | null;
   incremental_output_cost: string | null;
 }

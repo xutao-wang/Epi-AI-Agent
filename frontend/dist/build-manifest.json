@@ -1,5 +1,5 @@
 {
-  "built_at": "2026-09-07T00:31:09.211249+00:00",
+  "built_at": "2026-09-10T01:23:21.749078+00:00",
   "source_sha256": {
     "frontend/index.html": "89f2b276eb183f4ebfe35982a0cac2d863da771436560c61d977e282ee15b07a",
     "frontend/package-lock.json": "a14f127c2e852575ffd49c7e3c4c5e342da58af5f92b45622f0963064b0ad1d5",
@@ -8,7 +8,7 @@
     "frontend/src/AgentActivityTimeline.tsx": "bf11e9be781b4074a276b145e6c3e33130e8014cc0aee5442f63f2b7b1c28427",
     "frontend/src/AnalysisResultReview.test.tsx": "0b48095c202069586a683139bcaa755cc2a589a26c3659acc1a65ed2c48458a4",
     "frontend/src/AnalysisResultReview.tsx": "ab396bb240808398d9804fc70d30bb12591d67c2fdea756e29d740d4b56252ba",
-    "frontend/src/App.test.tsx": "75e9d758fd2e9e103b14c9c15fbb6b9af5099a5b3fb05d72100959d61fdee6bb",
+    "frontend/src/App.test.tsx": "ac1cba1828e8b842712c86928e5f958166cb9f8b1b5af01641cb4640748ebe44",
     "frontend/src/App.tsx": "d2221ce5d5687220ae94e180b67bd209d39f84ace41e07d4b9feb219405f7223",
     "frontend/src/AppShell.test.tsx": "c519044d167bf199bac0332171fa9a2d60a49aaddb20afae98b30f6dc6774489",
     "frontend/src/AppShell.tsx": "08b013bdc959a1da6aa29d3d7d95fa192d48aac342a33d5b024ec790f7479d17",
@@ -24,7 +24,7 @@
     "frontend/src/CodeBlock.tsx": "5ef0a2c50a68cabc4a70d5105a9013a2dd8371b0577c0b246b6206cea5de4868",
     "frontend/src/ConversationHistory.test.tsx": "b5166f541cac039a781230c1562f4d395e120f23ea35431d18ec7de765bb74b7",
     "frontend/src/ConversationHistory.tsx": "9d72ed00cf53e6df017a689df2a8240679e5ca20c5be0f1a3c6d30afdc5562e5",
-    "frontend/src/ConversationMessage.test.tsx": "54135a1e0cb5f2a07d78d9a3680974aceef6a5c48d235e893173e7117c5d3f1d",
+    "frontend/src/ConversationMessage.test.tsx": "c60ba453b2a6f3148d968a123c20e1929f554c4492ed5d230abd8ba20da9c87b",
     "frontend/src/ConversationMessage.tsx": "27fafd38da4f15970cb0afc380f5dc77c3dfa28a18123f19411702270fabaf19",
     "frontend/src/DatasetSchemaView.test.tsx": "ce86f18c15479ce016fe74c7b4fdff61481020382afcc48104e531be51c99322",
     "frontend/src/DatasetSchemaView.tsx": "5822dbbba99a334abe3125304d712fcb3d7edfb2df48e8d629da3d640cff9150",
@@ -50,7 +50,7 @@
     "frontend/src/reviewSelection.test.ts": "3f8b25c1386ac48456de39bebb96c056b9b25fa1e6627abb7c930847a6ec4f99",
     "frontend/src/reviewSelection.ts": "021c79c78e1ac4627a7563c848c59d36521cf227a4f7ee99ff3545ceac4a5d2f",
     "frontend/src/styles.css": "a2b126c40f2182ba66baf43e9445b7f1f231c7fa7baa5451139b2c51fa78b3f0",
-    "frontend/src/types.ts": "644b511672215476e0d0136dc2c2f223b461375bb150a48521ae2fa1290ef3cf",
+    "frontend/src/types.ts": "2670426b35a9a6e0f21867bd4b7d3a495893df694514cc79e454c36d9eb3174c",
     "frontend/src/vite-env.d.ts": "65996936fbb042915f7b74a200fcdde7e410f32a669b1ab9597cfaa4b0faddb5",
     "frontend/tsconfig.json": "a043926a1c02562384a05d174123966c72d6b145b8a89201e673d31a1f024de4",
     "frontend/tsconfig.node.json": "966bcda855805869c0de7ae9f09fd972aa4b948502cf90a6dc3bbcb149d68c85",

@@ -38,6 +38,7 @@ from pydantic import TypeAdapter, ValidationError
 from api.auth import AuthenticatedUser, LOCAL_SESSION_ID, RequestIdentity
 from api.schemas import (
     ActiveInterrupt,
+    AgentModelUsage,
     ActivityRun,
     AgentUsage,
     ApiThreadState,
@@ -2278,6 +2279,8 @@ class ReportAgentApiRuntime:
         self,
         identity: RequestIdentity,
         thread_id: str,
+        *,
+        allow_awaiting_review: bool = False,
     ) -> bool:
         if (
             self.history_store is None
@@ -2288,7 +2291,7 @@ class ReportAgentApiRuntime:
         state = self.state(identity, thread_id)
         if state.run.state == "running":
             raise ThreadAlreadyRunningError(thread_id)
-        if state.active_interrupt is not None:
+        if state.active_interrupt is not None and not allow_awaiting_review:
             raise ThreadAwaitingReviewError(thread_id)
         return True
 
@@ -2338,7 +2341,11 @@ class ReportAgentApiRuntime:
                 session_id=LOCAL_SESSION_ID,
             )
         assert thread_id is not None
-        if not self._assert_conversation_mutable(identity, thread_id):
+        if not self._assert_conversation_mutable(
+            identity,
+            thread_id,
+            allow_awaiting_review=True,
+        ):
             return False
         thread = self._thread(identity, thread_id)
         if thread.app is not None and hasattr(thread.app, "checkpointer"):
@@ -3361,6 +3368,27 @@ def _project_agent_usage(
     )
 
 
+def _agent_model_usage(values: dict[str, Any]) -> AgentModelUsage | None:
+    state = values.get("model_output_state")
+    if not isinstance(state, dict):
+        return None
+    provider = state.get("provider")
+    served_model_id = state.get("served_model_id")
+    if not isinstance(provider, str) or not provider:
+        return None
+    if not isinstance(served_model_id, str) or not served_model_id:
+        return None
+    return AgentModelUsage(
+        provider=provider,
+        served_model_id=served_model_id,
+        input_tokens=state.get("aggregate_input_tokens"),
+        output_tokens=state.get("aggregate_output_tokens"),
+        actual_openrouter_cost_usd=state.get(
+            "aggregate_actual_openrouter_cost_usd"
+        ),
+    )
+
+
 def project_thread_state(
     *,
     thread_id: str,
@@ -3452,7 +3480,7 @@ def project_thread_state(
         datasets=_datasets(values),
         file_artifacts=_file_artifacts(values),
         output=dict(values.get("output") or {}),
-        agent_usage=_project_agent_usage(
+        agent_usage=_agent_model_usage(values) or _project_agent_usage(
             values,
             model_provider=model_provider,
             served_model_id=served_model_id,

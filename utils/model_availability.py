@@ -11,6 +11,8 @@ from utils.model_runtime_profiles import (
     ModelRuntimeProfile,
     PROVIDER_ANTHROPIC,
     PROVIDER_OPENAI,
+    PROVIDER_OPENAI_COMPATIBLE,
+    enabled_custom_endpoint_ids,
     load_custom_model_profiles,
 )
 
@@ -36,10 +38,12 @@ class ModelAvailability:
 
 def registered_model_profiles(
     environ: Mapping[str, str],
+    discovered_profiles: Mapping[str, ModelRuntimeProfile] | None = None,
 ) -> Mapping[str, ModelRuntimeProfile]:
     profiles = {
         **MODEL_RUNTIME_PROFILES,
         **load_custom_model_profiles(environ=environ),
+        **(discovered_profiles or {}),
     }
     return MappingProxyType(profiles)
 
@@ -56,7 +60,13 @@ def configured_provider_endpoints(
     environ: Mapping[str, str],
 ) -> tuple[ProviderEndpoint, ...]:
     endpoints: dict[ProviderEndpoint, None] = {}
+    enabled_custom = set(enabled_custom_endpoint_ids(environ))
     for profile in registered_model_profiles(environ).values():
+        if (
+            profile.provider == PROVIDER_OPENAI_COMPATIBLE
+            and profile.custom_endpoint_id not in enabled_custom
+        ):
+            continue
         has_builtin_key = (
             profile.provider == PROVIDER_OPENAI
             and str(environ.get("OPENAI_API_KEY", "") or "").strip()
@@ -72,8 +82,9 @@ def configured_provider_endpoints(
 def build_model_availability(
     environ: Mapping[str, str],
     verified_endpoints: set[ProviderEndpoint],
+    discovered_profiles: Mapping[str, ModelRuntimeProfile] | None = None,
 ) -> ModelAvailability:
-    profiles = registered_model_profiles(environ)
+    profiles = registered_model_profiles(environ, discovered_profiles)
     available = tuple(
         model_id
         for model_id, profile in profiles.items()

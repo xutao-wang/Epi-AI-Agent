@@ -232,6 +232,8 @@ def _record_model_observation(
     answer: AIMessage,
     *,
     duration_ms: int,
+    provider: str,
+    served_model_id: str,
 ) -> tuple[dict[str, Any], Any]:
     observation = observe_model_response(answer)
     current = dict(model_output_state)
@@ -247,14 +249,47 @@ def _record_model_observation(
     ]
     telemetry.append(record)
     current["telemetry"] = telemetry
-    current["aggregate_input_tokens"] = sum(
-        int(item.get("input_tokens") or 0) for item in telemetry
+    current["provider"] = provider
+    current["served_model_id"] = served_model_id
+
+    tokens_complete = bool(current.get("token_usage_complete", True)) and (
+        observation.input_tokens is not None
+        and observation.output_tokens is not None
     )
-    current["aggregate_output_tokens"] = sum(
-        int(item.get("output_tokens") or 0) for item in telemetry
+    current["token_usage_complete"] = tokens_complete
+    if tokens_complete:
+        current["aggregate_input_tokens"] = int(
+            current.get("aggregate_input_tokens") or 0
+        ) + observation.input_tokens
+        current["aggregate_output_tokens"] = int(
+            current.get("aggregate_output_tokens") or 0
+        ) + observation.output_tokens
+    else:
+        current["aggregate_input_tokens"] = None
+        current["aggregate_output_tokens"] = None
+
+    reasoning_complete = bool(current.get("reasoning_usage_complete", True)) and (
+        observation.reasoning_tokens is not None
     )
-    current["aggregate_reasoning_tokens"] = sum(
-        int(item.get("reasoning_tokens") or 0) for item in telemetry
+    current["reasoning_usage_complete"] = reasoning_complete
+    current["aggregate_reasoning_tokens"] = (
+        int(current.get("aggregate_reasoning_tokens") or 0)
+        + observation.reasoning_tokens
+        if reasoning_complete
+        else None
+    )
+
+    actual_cost_complete = (
+        provider == "openrouter"
+        and bool(current.get("actual_cost_complete", True))
+        and observation.actual_cost_usd is not None
+    )
+    current["actual_cost_complete"] = actual_cost_complete
+    current["aggregate_actual_openrouter_cost_usd"] = (
+        float(current.get("aggregate_actual_openrouter_cost_usd") or 0)
+        + observation.actual_cost_usd
+        if actual_cost_complete
+        else None
     )
     _LOGGER.info(
         "model_response_segment",
@@ -400,6 +435,21 @@ def _prepare_model_request(
         if phase == "authorized"
         else agent_config.model_profile.initial_output_tokens
     )
+    if phase in {"automatic", "authorized"}:
+        remaining_output_tokens = (
+            agent_config.model_profile.absolute_output_token_ceiling
+            - int(output_state.get("chain_output_tokens") or 0)
+        )
+        if remaining_output_tokens <= 0:
+            return _model_output_error_patch(
+                output_state,
+                code="MODEL_OUTPUT_LIMIT_EXHAUSTED",
+                message=(
+                    f"{agent_config.model_profile.label} exhausted its "
+                    "technical output limit."
+                ),
+            )
+        budget = min(budget, remaining_output_tokens)
     messages = _adapt_messages_for_profile(
         [
             SystemMessage(content=agent_config.system_prompt),
@@ -522,6 +572,8 @@ def _model_answer_patch(
             output_state,
             answer,
             duration_ms=duration_ms,
+            provider=agent_config.model_profile.provider,
+            served_model_id=agent_config.model_profile.served_model_id,
         )
     except ModelResponseProtocolError as exc:
         return _model_output_error_patch(
@@ -551,7 +603,19 @@ def _model_answer_patch(
         output_state["chain_response_ids"] = chain_response_ids
         output_state["chain_output_tokens"] = int(
             output_state.get("chain_output_tokens") or 0
-        ) + observation.output_tokens
+        ) + (observation.output_tokens or 0)
+        if (
+            output_state["chain_output_tokens"]
+            >= agent_config.model_profile.absolute_output_token_ceiling
+        ):
+            return _model_output_error_patch(
+                output_state,
+                code="MODEL_OUTPUT_LIMIT_EXHAUSTED",
+                message=(
+                    f"{agent_config.model_profile.label} exhausted its "
+                    "technical output limit."
+                ),
+            )
         if phase == "authorized":
             return _model_output_error_patch(
                 output_state,
@@ -562,6 +626,18 @@ def _model_answer_patch(
                 ),
             )
         if phase == "automatic":
+            if not agent_config.model_profile.output_approval_required:
+                output_state["phase"] = "automatic"
+                output_state["continuation_count"] = int(
+                    output_state.get("continuation_count") or 0
+                ) + 1
+                return {
+                    "messages": [answer],
+                    "iteration_count": iteration_count + 1,
+                    "completion_blocked": True,
+                    "final_response": None,
+                    "model_output_state": output_state,
+                }
             if output_state.get("user_increment_consumed"):
                 return _model_output_error_patch(
                     output_state,

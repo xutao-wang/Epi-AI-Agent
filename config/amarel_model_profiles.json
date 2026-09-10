@@ -1,0 +1,75 @@
+{
+  "google/gemma-4-31B-it": {
+    "label": "Gemma 4 31B Instruct",
+    "initial_output_tokens": 16384,
+    "automatic_output_token_ceiling": 32768,
+    "user_output_token_increment": 16384,
+    "absolute_output_token_ceiling": 49152,
+    "request_timeout_seconds": 180,
+    "workflow_timeout_seconds": 420,
+    "output_usd_per_million": null,
+    "supports_vision": true,
+    "supports_mid_conversation_system": true,
+    "supports_sampling_controls": true,
+    "routing_context_char_ceiling": 64000,
+    "vllm": {
+      "tensor_parallel_size": 4,
+      "max_model_len": 132768,
+      "gpu_memory_utilization": 0.9,
+      "dtype": "auto",
+      "quantization": "fp8",
+      "kv_cache_dtype": "auto",
+      "enforce_eager": true,
+      "enable_auto_tool_choice": true,
+      "tool_call_parser": "gemma4"
+    }
+  },
+  "Qwen/Qwen3-Next-80B-A3B-Instruct-FP8": {
+    "label": "Qwen3-Next 80B A3B Instruct FP8",
+    "initial_output_tokens": 16384,
+    "automatic_output_token_ceiling": 32768,
+    "user_output_token_increment": 16384,
+    "absolute_output_token_ceiling": 49152,
+    "request_timeout_seconds": 180,
+    "workflow_timeout_seconds": 600,
+    "output_usd_per_million": null,
+    "supports_vision": false,
+    "supports_mid_conversation_system": false,
+    "supports_sampling_controls": true,
+    "routing_context_char_ceiling": 64000,
+    "vllm": {
+      "tensor_parallel_size": 4,
+      "max_model_len": 131072,
+      "gpu_memory_utilization": 0.9,
+      "dtype": "auto",
+      "kv_cache_dtype": "auto",
+      "enable_auto_tool_choice": true,
+      "tool_call_parser": "hermes"
+    }
+  },
+  "Qwen/Qwen3.8-27B": {
+    "label": "Qwen 3.8 27B Instruct",
+    "initial_output_tokens": 16384,
+    "automatic_output_token_ceiling": 32768,
+    "user_output_token_increment": 16384,
+    "absolute_output_token_ceiling": 49152,
+    "request_timeout_seconds": 180,
+    "workflow_timeout_seconds": 420,
+    "output_usd_per_million": null,
+    "supports_vision": true,
+    "supports_mid_conversation_system": true,
+    "supports_sampling_controls": true,
+    "routing_context_char_ceiling": 64000,
+    "vllm": {
+      "tensor_parallel_size": 4,
+      "max_model_len": 132768,
+      "gpu_memory_utilization": 0.9,
+      "dtype": "auto",
+      "quantization": "fp8",
+      "kv_cache_dtype": "auto",
+      "enforce_eager": true,
+      "enable_auto_tool_choice": true,
+      "tool_call_parser": "qwen3_coder"
+    }
+  }
+}

@@ -233,12 +233,15 @@ def build_application(
             if profile.provider == "openai"
             else build_chat_llm
         )
-        llm = llm_builder(
+        llm_kwargs = dict(
             model_name=settings.model_name,
             api_key=_provider_key(profile, environ),
             temperature=settings.temperature,
             top_p=settings.top_p,
         )
+        if profile.provider != "openai":
+            llm_kwargs["profile"] = profile
+        llm = llm_builder(**llm_kwargs)
         return build_graph(
             llm,
             model_profile=profile,
@@ -277,6 +280,7 @@ def build_application(
             ConversationTitleGenerator(
                 build_chat_llm(
                     model_name=title_model,
+                    profile=title_profile,
                     api_key=_provider_key(title_profile, environ),
                 )
             )
@@ -309,8 +313,5 @@ def build_application(
     application.state.report_agent_runtime = report_runtime
     return application
 
-app = build_application()
-runtime = app.state.report_agent_runtime
 
-
-__all__ = ["app", "build_application", "runtime"]
+__all__ = ["build_application"]

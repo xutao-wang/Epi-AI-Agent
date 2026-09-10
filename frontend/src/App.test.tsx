@@ -3241,9 +3241,11 @@ describe("App", () => {
         }),
       },
     );
-    expect(
-      screen.getByLabelText("Ask a question about your dataset!"),
-    ).toBeEnabled();
+    await waitFor(() => {
+      expect(
+        screen.getByLabelText("Ask a question about your dataset!"),
+      ).toBeEnabled();
+    });
   });
 
   it("cancels a clarification, pauses, and waits for the next user message", async () => {

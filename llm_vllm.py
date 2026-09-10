@@ -115,7 +115,7 @@ def _build_openrouter_chat_llm(
         api_key=SecretStr(api_key),
         base_url=profile.base_url,
         timeout=profile.request_timeout_seconds,
-        max_retries=0,
+        max_retries=3,
         max_tokens=profile.initial_output_tokens,
     )
     if profile.reasoning is not None:
@@ -131,12 +131,17 @@ def _build_openrouter_chat_llm(
 def build_chat_llm(
     *,
     model_name: str,
+    profile: ModelRuntimeProfile | None = None,
     api_key: str | None = None,
     temperature: float | None = None,
     top_p: float | None = None,
 ):
     """Build the provider-correct LangChain chat model for a profiled model."""
-    profile = model_runtime_profile(model_name)
+    profile = profile or model_runtime_profile(model_name)
+    if profile.model_id != model_name:
+        raise ValueError(
+            f"Model profile {profile.model_id!r} does not match {model_name!r}."
+        )
     resolved_key = resolve_provider_api_key(profile, api_key=api_key)
     if profile.provider == PROVIDER_ANTHROPIC:
         return _build_anthropic_chat_llm(profile, resolved_key)

@@ -90,6 +90,7 @@ class ModelOption(BaseModel):
     absolute_output_token_ceiling: int = Field(gt=0)
     request_timeout_seconds: int = Field(gt=0)
     workflow_timeout_seconds: int = Field(gt=0)
+    context_window_tokens: int | None = Field(default=None, gt=0)
     automatic_output_cost: str | None = None
     incremental_output_cost: str | None = None
 
@@ -432,6 +433,16 @@ class AgentUsage(BaseModel):
     output_tokens: int = Field(ge=0)
 
 
+class AgentModelUsage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str = Field(min_length=1)
+    served_model_id: str = Field(min_length=1)
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    actual_openrouter_cost_usd: float | None = Field(default=None, ge=0)
+
+
 class ApiThreadState(BaseModel):
     thread_id: str
     run: RunStatus
@@ -441,7 +452,6 @@ class ApiThreadState(BaseModel):
     datasets: list[DatasetSummary] = Field(default_factory=list)
     file_artifacts: list[FileArtifactSummary] = Field(default_factory=list)
     output: dict[str, Any] = Field(default_factory=dict)
-    agent_usage: AgentUsage | None = None
     diagnostics: dict[str, Any] = Field(default_factory=dict)
     runtime_settings: RuntimeSettings | None = None
     runtime_settings_locked: bool = False
@@ -449,6 +459,7 @@ class ApiThreadState(BaseModel):
     model_label: str = ""
     model_available: bool = True
     model_replacement_required: bool = False
+    agent_usage: AgentModelUsage | AgentUsage | None = None
     embedding_startup_status: EmbeddingStartupStatus = Field(
         default_factory=silent_embedding_startup_status
     )

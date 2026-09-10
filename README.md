@@ -38,20 +38,26 @@ providers later, run `python run_fastapi.py --reconfigure`.
 
 By default, the application is available at:
 
-<http://127.0.0.1:8000/>
+<http://127.0.0.1:8080/>
 
 ## Model providers
 
-- `OPENAI_API_KEY` enables the registered OpenAI models.
-- `ANTHROPIC_API_KEY` enables the registered Anthropic models.
-- `OPENROUTER_API_KEY` enables the OpenRouter models you register.
+- `OPENAI_API_KEY` enables OpenAI models.
+- `ANTHROPIC_API_KEY` enables Anthropic models.
+- `OPENROUTER_API_KEY` enables registered OpenRouter models. Add them in
+  `config/custom_models.json` (copy `config/custom_models.example.json` first).
 
-OpenRouter ships no built-in model list.
-Copy `config/custom_models.example.json` to `config/custom_models.json` and add
-one entry per model, setting `"provider": "openrouter"` and using the OpenRouter
-slug (for example `anthropic/claude-sonnet-4.5`) as `model`.
-`base_url` and `api_key_env` default to OpenRouter's endpoint and
-`OPENROUTER_API_KEY`; add `"reasoning_effort"` to enable reasoning.
+### Local vLLM models
+
+Run vLLM on its OpenAI-compatible endpoint (default:
+`http://127.0.0.1:8000/v1`), then start the app with
+`python run_fastapi.py --reconfigure` and choose **Connect to a compatible
+endpoint**. The app discovers models from `/models`.
+
+### vLLM on Amarel (optional)
+
+See [the Amarel vLLM instructions](config/vllm_amarel/load_llm_amarel_instruction.md)
+for single- and multi-node launch guidance.
 
 Semantic search uses the built-in OpenAI `text-embedding-3-large` model and
 requires `OPENAI_API_KEY`, even when the chat model is Claude. If OpenAI
