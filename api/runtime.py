@@ -3493,6 +3493,11 @@ def project_thread_state(
             "thread_id": thread_id,
             "run_state": status.state,
             "run_steps": status.steps,
+            "tool_failure": {
+                key: value
+                for key, value in dict(terminal_error.get("tool_failure") or {}).items()
+                if key in {"tool_name", "exception_type"} and isinstance(value, str)
+            } or None,
             "snapshot_next": snapshot_next,
             "interrupt_count": len(raw_interrupts),
             "active_dataset_id": artifacts.get("active_dataset_id"),

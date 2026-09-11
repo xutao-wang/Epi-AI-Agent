@@ -27,12 +27,12 @@ From the project root, launch the configured model:
 
 ```bash
 image_name=vllm-openai_v0.19.1.sif
-model_name=google/gemma-4-31B-it
+model_name=google/gemma-4-31B-it # Refer to config/vllm_amarel/amarel_model_profiles.json for more details
 bash config/vllm_amarel/load_llm_with_vllm.sh \
   "$image_name" "$model_name"
 ```
 
-The matching `config/amarel_model_profiles.json` entry is optional. Its nested
+The matching `config/vllm_amarel/amarel_model_profiles.json` entry is optional. Its nested
 `vllm` object is a set of overrides: only parameters that are present are
 passed to `vllm serve`, and omitted parameters use the installed vLLM version's
 defaults. Unknown or invalid parameters for the selected model are rejected;

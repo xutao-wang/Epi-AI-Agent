@@ -3,7 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 import json
 import re
-from typing import Any, Literal
+from typing import Any, Literal, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -97,6 +97,29 @@ class PlanFieldReference(BaseModel):
     column: str = Field(min_length=1)
 
 
+class PlanFilterReference(TypedDict, total=False):
+    __pydantic_config__ = ConfigDict(extra="allow")
+
+    source: str
+    table: str
+    column: str
+
+
+class PlanFilterValueConstraint(PlanFilterReference, total=False):
+    operator: str
+    value: Any
+    values: list[Any]
+
+
+class PlanFilter(TypedDict, total=False):
+    __pydantic_config__ = ConfigDict(extra="allow")
+
+    description: str
+    predicate: str
+    referenced_columns: list[PlanFilterReference]
+    value_constraints: list[PlanFilterValueConstraint]
+
+
 class PlanAggregate(BaseModel):
     field: PlanFieldReference
     function: Literal["avg", "min", "max", "sum", "count"]
@@ -179,7 +202,7 @@ class DatasetPlan(BaseModel):
             "operations, with both endpoint keys included in plan fields."
         ),
     )
-    filters: list[dict[str, Any]] = Field(
+    filters: list[PlanFilter] = Field(
         default_factory=list,
         description=(
             "Reviewed row filters. Every filter requires a description and "

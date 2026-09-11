@@ -1203,7 +1203,7 @@ def _execute_tools(
                     call["id"],
                 )
             continue
-        except Exception:
+        except Exception as exc:
             _LOGGER.exception(
                 "Unexpected registered tool failure",
                 extra={
@@ -1217,6 +1217,10 @@ def _execute_tools(
             messages.extend(aborted_tool_messages(calls[call_index + 1 :]))
             failures.append(_failure_signature(error.code, name, arguments))
             terminal_error = _terminal_error(error.code, str(error))
+            terminal_error["tool_failure"] = {
+                "tool_name": name,
+                "exception_type": type(exc).__name__,
+            }
             break
 
         notify_activity(
