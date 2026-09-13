@@ -2766,6 +2766,7 @@ class ReportAgentApiRuntime:
             model_label=model_label,
             model_available=thread.model_available,
             activity_runs=self._activity_runs(thread_id),
+            tool_executions=self._activity_call("list_tool_executions", thread_id),
             embedding_startup_status=self.embedding_startup_status,
             model_provider=(
                 stored_profile.provider if stored_profile is not None else None
@@ -3401,6 +3402,7 @@ def project_thread_state(
     model_label: str = "",
     model_available: bool = True,
     activity_runs: list[ActivityRun] | None = None,
+    tool_executions: list[dict[str, Any]] | None = None,
     embedding_startup_status: EmbeddingStartupStatus | None = None,
     model_provider: str | None = None,
     served_model_id: str | None = None,
@@ -3478,6 +3480,8 @@ def project_thread_state(
         run=status,
         conversation=_conversation(values),
         activity_runs=list(activity_runs or []),
+        tool_tracking_version="tool-execution-v1" if tool_executions is not None else None,
+        tool_executions=list(tool_executions or []),
         active_interrupt=interrupt,
         datasets=_datasets(values),
         file_artifacts=_file_artifacts(values),

@@ -75,16 +75,9 @@ class CustomPythonArguments(BaseModel):
 def _runtime_failure(error: PythonRuntimeFailure) -> ToolExecutionError:
     return ToolExecutionError(
         error.code,
-        json.dumps(
-            {
-                "category": error.category,
-                "message": str(error),
-            },
-            ensure_ascii=True,
-            separators=(",", ":"),
-            sort_keys=True,
-        ),
+        str(error),
         recoverable=error.recoverable,
+        details={"category": error.category},
     )
 
 

@@ -448,6 +448,8 @@ class ApiThreadState(BaseModel):
     run: RunStatus
     conversation: list[ConversationMessage] = Field(default_factory=list)
     activity_runs: list[ActivityRun] = Field(default_factory=list)
+    tool_tracking_version: str | None = None
+    tool_executions: list[dict[str, Any]] = Field(default_factory=list)
     active_interrupt: ActiveInterrupt | None = None
     datasets: list[DatasetSummary] = Field(default_factory=list)
     file_artifacts: list[FileArtifactSummary] = Field(default_factory=list)

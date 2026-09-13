@@ -35,6 +35,7 @@ from epi_agent.protocol import (
     serialize_tool_result,
 )
 from epi_agent.registry import ToolRegistry
+from epi_agent.tool_tracking import ToolTracking, record_unexecuted
 from epi_agent.studies import StudyRegistry
 from epi_agent.tool_call_protocol import (
     aborted_tool_messages,
@@ -60,6 +61,7 @@ from utils.runtime_defaults import DEFAULT_EPI_AGENT_MAX_ITERATIONS
 
 
 _REPEATED_FAILURE_LIMIT = 2
+_REPEATED_TOOL_CALL_REJECTED_CODE = "REPEATED_TOOL_CALL_REJECTED"
 _TOOL_ARGUMENT_REPAIR_REQUIRED_CODE = "TOOL_ARGUMENT_REPAIR_REQUIRED"
 _TOOL_ARGUMENT_REPAIR_EXHAUSTED_CODE = "TOOL_ARGUMENT_REPAIR_EXHAUSTED"
 _SQL_REPAIR_ERROR_CODE = "SQL_REPAIR_REQUIRED"
@@ -73,6 +75,16 @@ _DATASET_ARTIFACT_KINDS = {
     "db_rag_result",
     "subset",
 }
+_TOOL_FAILURE_RECOVERY_INSTRUCTION = (
+    "Correct the call, choose another tool, or answer from existing evidence. "
+    "Do not repeat the failed call unchanged."
+)
+_TOOL_FAILURE_FINAL_INSTRUCTION = (
+    "The unchanged failed call was rejected and was not executed again. "
+    "Do not call any tool. Provide the best supported answer from existing "
+    "evidence, clearly state what could not be completed, and do not invent "
+    "unavailable results."
+)
 
 
 class GenericEpiAgentState(LangChainAgentState):
@@ -193,6 +205,55 @@ def _repeated_failure(signatures: list[str]) -> bool:
             return False
     return len(signatures) >= _REPEATED_FAILURE_LIMIT and all(
         item == signatures[-1] for item in signatures[-_REPEATED_FAILURE_LIMIT:]
+    )
+
+
+def _tool_failure_recovery_required(signatures: list[str]) -> bool:
+    return any(
+        _failure_record(signature).get("code")
+        == _REPEATED_TOOL_CALL_REJECTED_CODE
+        for signature in signatures
+    ) or _repeated_failure(signatures)
+
+
+def _canonical_tool_arguments(arguments: dict[str, Any]) -> str:
+    return json.dumps(
+        arguments,
+        default=str,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _matching_failed_call(
+    signatures: list[str],
+    name: str,
+    arguments: dict[str, Any],
+) -> dict[str, Any] | None:
+    candidate = _canonical_tool_arguments(arguments)
+    for signature in reversed(signatures):
+        record = _failure_record(signature)
+        recorded_arguments = record.get("arguments")
+        if (
+            record.get("tool") == name
+            and isinstance(recorded_arguments, dict)
+            and _canonical_tool_arguments(recorded_arguments) == candidate
+        ):
+            return record
+    return None
+
+
+def _with_recovery_instruction(error: ToolExecutionError) -> ToolExecutionError:
+    if not error.recoverable:
+        return error
+    details = dict(error.details or {})
+    details.setdefault("instruction", _TOOL_FAILURE_RECOVERY_INSTRUCTION)
+    return ToolExecutionError(
+        error.code,
+        str(error),
+        recoverable=True,
+        details=details,
     )
 
 
@@ -410,16 +471,10 @@ def _prepare_model_request(
     | tuple[int, dict[str, Any], str, list[Any], int]
 ):
     failures = list(state.get("failure_signatures") or [])
-    if _repeated_failure(failures):
-        return _terminal_model_patch(
-            _terminal_error(
-                "REPEATED_TOOL_FAILURE",
-                "The same tool call failed repeatedly.",
-            )
-        )
+    tool_failure_recovery = _tool_failure_recovery_required(failures)
 
     iteration_count = int(state.get("iteration_count") or 0)
-    if iteration_count >= agent_config.max_iterations:
+    if iteration_count >= agent_config.max_iterations and not tool_failure_recovery:
         return _terminal_model_patch(
             _terminal_error(
                 "MAX_ITERATIONS",
@@ -451,7 +506,20 @@ def _prepare_model_request(
                 content="Continue the same response from where it stopped."
             )
         )
-    if _sql_repair_budget_exhausted(failures):
+    if tool_failure_recovery:
+        continuation_messages.append(
+            SystemMessage(
+                content=json.dumps(
+                    {
+                        "code": "TOOL_FAILURE_RECOVERY",
+                        "instruction": _TOOL_FAILURE_FINAL_INSTRUCTION,
+                    },
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+            )
+        )
+    elif _sql_repair_budget_exhausted(failures):
         continuation_messages.append(
             SystemMessage(
                 content=json.dumps(
@@ -537,7 +605,15 @@ def _call_model(
     thread_id = _activity_thread_id(config)
     notify_activity(agent_config.activity_sink, "model_started", thread_id)
     try:
-        answer = model.bind_tools(_model_tool_schemas(agent_config)).invoke(
+        recovery_required = _tool_failure_recovery_required(
+            list(state.get("failure_signatures") or [])
+        )
+        callable_model = (
+            model
+            if recovery_required
+            else model.bind_tools(_model_tool_schemas(agent_config))
+        )
+        answer = callable_model.invoke(
             messages,
             config=config,
             **agent_config.model_profile.output_budget_kwargs(budget),
@@ -578,7 +654,15 @@ async def _acall_model(
     thread_id = _activity_thread_id(config)
     notify_activity(agent_config.activity_sink, "model_started", thread_id)
     try:
-        answer = await model.bind_tools(_model_tool_schemas(agent_config)).ainvoke(
+        recovery_required = _tool_failure_recovery_required(
+            list(state.get("failure_signatures") or [])
+        )
+        callable_model = (
+            model
+            if recovery_required
+            else model.bind_tools(_model_tool_schemas(agent_config))
+        )
+        answer = await callable_model.ainvoke(
             messages,
             config=config,
             **agent_config.model_profile.output_budget_kwargs(budget),
@@ -615,6 +699,10 @@ def _model_answer_patch(
     if not isinstance(answer, AIMessage):
         raise TypeError("The Epi-Agent model must return an AIMessage")
 
+    tool_failure_recovery = _tool_failure_recovery_required(
+        list(state.get("failure_signatures") or [])
+    )
+
     try:
         output_state, observation = _record_model_observation(
             output_state,
@@ -630,7 +718,22 @@ def _model_answer_patch(
             message=str(exc),
         )
 
-    if observation.status == "incomplete":
+    if (
+        observation.status == "incomplete"
+        and observation.incomplete_reason == "max_output_tokens"
+        and tool_failure_recovery
+        and not str(answer.text).strip()
+    ):
+        return _model_output_error_patch(
+            output_state,
+            code="TOOL_FAILURE_RECOVERY_INCOMPLETE",
+            message="The text-only tool-failure recovery returned no usable text.",
+        )
+
+    if observation.status == "incomplete" and not (
+        tool_failure_recovery
+        and observation.incomplete_reason == "max_output_tokens"
+    ):
         if observation.incomplete_reason != "max_output_tokens":
             return _model_output_error_patch(
                 output_state,
@@ -706,6 +809,22 @@ def _model_answer_patch(
             "model_output_state": output_state,
         }
 
+    if tool_failure_recovery and (
+        answer.tool_calls or answer.invalid_tool_calls
+    ):
+        return {
+            **_terminal_model_patch(
+                _terminal_error(
+                    "TOOL_FAILURE_RECOVERY_FAILED",
+                    (
+                        "The model requested a tool during its text-only "
+                        "recovery response."
+                    ),
+                )
+            ),
+            "model_output_state": output_state,
+        }
+
     if answer.invalid_tool_calls:
         if state.get("tool_argument_repair_attempted"):
             return {
@@ -757,11 +876,15 @@ def _model_answer_patch(
         "model_output_state": output_state,
     }
     if not answer.tool_calls:
-        issues = agent_config.completion_issues(
-            {
-                **state,
-                "candidate_final_response": str(answer.text),
-            }
+        issues = (
+            []
+            if tool_failure_recovery
+            else agent_config.completion_issues(
+                {
+                    **state,
+                    "candidate_final_response": str(answer.text),
+                }
+            )
         )
         if issues:
             patch.update(
@@ -993,11 +1116,18 @@ def _route_model_output_gate(state: dict[str, Any]) -> str:
     return "model"
 
 
-def _batch_error_messages(calls: list[dict[str, Any]]) -> tuple[list[ToolMessage], str]:
-    error = ToolExecutionError(
-        "INVALID_TOOL_BATCH",
-        "Interrupting and state-changing tools must be called alone; only read-only tools may be batched.",
-        recoverable=True,
+def _batch_error_messages(
+    calls: list[dict[str, Any]],
+) -> tuple[list[ToolMessage], str]:
+    error = _with_recovery_instruction(
+        ToolExecutionError(
+            "INVALID_TOOL_BATCH",
+            (
+                "Interrupting and state-changing tools must be called alone; "
+                "only read-only tools may be batched."
+            ),
+            recoverable=True,
+        )
     )
     return (
         [
@@ -1034,6 +1164,9 @@ def _execute_tools(
     artifact_store = StateArtifactStore.from_state(state)
     context = agent_config.context_factory(state, config, artifact_store)
     failures = list(state.get("failure_signatures") or [])
+    failures_before_batch = list(failures)
+    batch_failures: list[str] = []
+    batch_execution_failures: list[str] = []
     repair_attempted_before_batch = bool(
         state.get("tool_argument_repair_attempted")
     )
@@ -1056,6 +1189,10 @@ def _execute_tools(
                 continue
         if any(spec.interrupting or not spec.read_only for spec in specs):
             messages, signature = _batch_error_messages(calls)
+            record_unexecuted(
+                agent_config.activity_sink, thread_id, calls, artifact_store,
+                status="rejected", error=ToolExecutionError("INVALID_TOOL_BATCH", "Invalid batch", recoverable=True),
+            )
             return {
                 "messages": messages,
                 "artifacts": artifact_store.snapshot(),
@@ -1083,9 +1220,33 @@ def _execute_tools(
     tool_state_patch: dict[str, Any] = {}
     for call_index, call in enumerate(calls):
         cancellation_point()
+        tracking = ToolTracking(agent_config.activity_sink, thread_id, call, artifact_store)
         name = call["name"]
         arguments = call["args"]
         activity_started = False
+        previous = _matching_failed_call(
+            [*failures_before_batch, *batch_execution_failures],
+            name,
+            arguments,
+        )
+        if previous is not None:
+            error = ToolExecutionError(
+                _REPEATED_TOOL_CALL_REJECTED_CODE,
+                "This unchanged tool call already failed and was not executed again.",
+                recoverable=False,
+                details={
+                    "previous_error_code": str(
+                        previous.get("code") or "TOOL_EXECUTION_FAILED"
+                    ),
+                    "instruction": _TOOL_FAILURE_FINAL_INSTRUCTION,
+                },
+            )
+            messages.append(error_tool_message(call, error))
+            signature = _failure_signature(error.code, name, arguments)
+            failures.append(signature)
+            batch_failures.append(signature)
+            tracking.finish("rejected", error=error)
+            continue
         if (
             name == _SQL_REPAIR_TOOL_NAME
             and _sql_repair_budget_exhausted(failures)
@@ -1106,6 +1267,8 @@ def _execute_tools(
             )
             messages.append(error_tool_message(call, error))
             messages.extend(aborted_tool_messages(calls[call_index + 1 :]))
+            tracking.finish("rejected", error=error)
+            record_unexecuted(agent_config.activity_sink, thread_id, calls[call_index + 1 :], artifact_store, status="skipped", error=error)
             terminal_error = _terminal_error(error.code, str(error))
             break
         try:
@@ -1121,14 +1284,19 @@ def _execute_tools(
                 name,
             )
             try:
-                result = agent_config.registry.invoke(
-                    name,
-                    arguments,
-                    context=context,
-                )
+                with tracking.capture_reads():
+                    result = agent_config.registry.invoke(
+                        name,
+                        arguments,
+                        context=context,
+                    )
             finally:
                 cancellation_point()
-        except (GraphInterrupt, RunCancelled):
+        except GraphInterrupt:
+            tracking.finish("interrupted")
+            raise
+        except RunCancelled:
+            tracking.finish("cancelled")
             raise
         except ToolExecutionError as error:
             if error.code == "INVALID_ARGUMENTS":
@@ -1187,9 +1355,16 @@ def _execute_tools(
                     recoverable=error.recoverable,
                     details=details,
                 )
+            error = _with_recovery_instruction(error)
             messages.append(error_tool_message(call, error))
-            failures.append(_failure_signature(error.code, name, arguments))
+            signature = _failure_signature(error.code, name, arguments)
+            failures.append(signature)
+            batch_failures.append(signature)
+            if activity_started and error.code != "INVALID_ARGUMENTS":
+                batch_execution_failures.append(signature)
+            tracking.finish("error", error=error)
             if not error.recoverable:
+                record_unexecuted(agent_config.activity_sink, thread_id, calls[call_index + 1 :], artifact_store, status="skipped", error=error)
                 messages.extend(
                     aborted_tool_messages(calls[call_index + 1 :])
                 )
@@ -1213,9 +1388,13 @@ def _execute_tools(
                 },
             )
             error = internal_tool_error()
+            tracking.finish("error", error=error)
+            record_unexecuted(agent_config.activity_sink, thread_id, calls[call_index + 1 :], artifact_store, status="skipped", error=error)
             messages.append(error_tool_message(call, error))
             messages.extend(aborted_tool_messages(calls[call_index + 1 :]))
-            failures.append(_failure_signature(error.code, name, arguments))
+            signature = _failure_signature(error.code, name, arguments)
+            failures.append(signature)
+            batch_failures.append(signature)
             terminal_error = _terminal_error(error.code, str(error))
             terminal_error["tool_failure"] = {
                 "tool_name": name,
@@ -1223,6 +1402,7 @@ def _execute_tools(
             }
             break
 
+        tracking.finish("success", result=result)
         notify_activity(
             agent_config.activity_sink,
             "tool_completed",
@@ -1231,9 +1411,12 @@ def _execute_tools(
             name,
         )
         failures = (
-            []
+            list(batch_failures)
             if name == _SQL_REPAIR_TOOL_NAME
-            else _sql_repair_failure_signatures(failures)
+            else [
+                *_sql_repair_failure_signatures(failures_before_batch),
+                *batch_failures,
+            ]
         )
         reducer_state = {**state, **tool_state_patch}
         tool_state_patch.update(

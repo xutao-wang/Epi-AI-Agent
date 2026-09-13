@@ -549,6 +549,16 @@ def _positive_int_or_none(value: object) -> int | None:
     return parsed if parsed > 0 else None
 
 
+class VllmRopeScaling(BaseModel):
+    """Validated RoPE scaling settings passed to vLLM."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rope_type: Literal["yarn"]
+    factor: float = Field(gt=0)
+    original_max_position_embeddings: int = Field(gt=0)
+
+
 class VllmLaunchProfile(BaseModel):
     """Validated vLLM command-line overrides for one served model."""
 
@@ -556,6 +566,7 @@ class VllmLaunchProfile(BaseModel):
 
     tensor_parallel_size: int | None = Field(default=None, gt=0)
     max_model_len: int | None = Field(default=None, gt=0)
+    rope_scaling: VllmRopeScaling | None = None
     gpu_memory_utilization: float | None = Field(default=None, gt=0, le=1)
     enforce_eager: bool | None = None
     enable_prefix_caching: bool | None = None

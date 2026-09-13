@@ -62,6 +62,7 @@ elif not isinstance(settings, dict):
 allowed_settings = {
     "tensor_parallel_size",
     "max_model_len",
+    "rope_scaling",
     "gpu_memory_utilization",
     "enforce_eager",
     "enable_prefix_caching",
@@ -99,6 +100,45 @@ def optional_bool(name: str) -> bool | None:
     return value
 
 
+def optional_rope_scaling(name: str) -> dict[str, object] | None:
+    value = settings.get(name)
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {
+        "rope_type",
+        "factor",
+        "original_max_position_embeddings",
+    }:
+        raise SystemExit(
+            "vllm.rope_scaling must contain rope_type, factor, and "
+            "original_max_position_embeddings"
+        )
+    if value["rope_type"] != "yarn":
+        raise SystemExit("vllm.rope_scaling.rope_type must be yarn")
+    factor = value["factor"]
+    original_max_position_embeddings = value["original_max_position_embeddings"]
+    if (
+        isinstance(factor, bool)
+        or not isinstance(factor, (int, float))
+        or factor <= 0
+    ):
+        raise SystemExit("vllm.rope_scaling.factor must be greater than 0")
+    if (
+        isinstance(original_max_position_embeddings, bool)
+        or not isinstance(original_max_position_embeddings, int)
+        or original_max_position_embeddings <= 0
+    ):
+        raise SystemExit(
+            "vllm.rope_scaling.original_max_position_embeddings must be a "
+            "positive integer"
+        )
+    return {
+        "rope_type": "yarn",
+        "factor": factor,
+        "original_max_position_embeddings": original_max_position_embeddings,
+    }
+
+
 def optional_single_line(name: str) -> str | None:
     value = settings.get(name)
     if value is None:
@@ -125,6 +165,7 @@ def optional_choice(name: str, allowed: set[str]) -> str | None:
 
 tensor_parallel_size = optional_positive_int("tensor_parallel_size")
 max_model_len = optional_positive_int("max_model_len")
+rope_scaling = optional_rope_scaling("rope_scaling")
 gpu_memory_utilization = settings.get("gpu_memory_utilization")
 if gpu_memory_utilization is not None and (
     isinstance(gpu_memory_utilization, bool)
@@ -163,12 +204,15 @@ def render(value: object) -> str:
         return ""
     if isinstance(value, bool):
         return str(value).lower()
+    if isinstance(value, dict):
+        return json.dumps(value, separators=(",", ":"))
     return str(value)
 
 
 for value in (
     tensor_parallel_size,
     max_model_len,
+    rope_scaling,
     gpu_memory_utilization,
     enforce_eager,
     enable_prefix_caching,
@@ -185,23 +229,24 @@ print("__VLLM_PROFILE_END__")
 PY
 )
 mapfile -t launch_settings <<<"$profile_values"
-if [[ ${#launch_settings[@]} -ne 13 || ${launch_settings[12]} != "__VLLM_PROFILE_END__" ]]; then
+if [[ ${#launch_settings[@]} -ne 14 || ${launch_settings[13]} != "__VLLM_PROFILE_END__" ]]; then
     echo "Model '$model_name' returned an incomplete vLLM launch configuration." >&2
     exit 65
 fi
 
 tensor_parallel_size=${launch_settings[0]}
 max_model_len=${launch_settings[1]}
-gpu_memory_utilization=${launch_settings[2]}
-enforce_eager=${launch_settings[3]}
-enable_prefix_caching=${launch_settings[4]}
-enable_auto_tool_choice=${launch_settings[5]}
-tool_call_parser=${launch_settings[6]}
-reasoning_parser=${launch_settings[7]}
-chat_template=${launch_settings[8]}
-dtype=${launch_settings[9]}
-quantization=${launch_settings[10]}
-kv_cache_dtype=${launch_settings[11]}
+rope_scaling=${launch_settings[2]}
+gpu_memory_utilization=${launch_settings[3]}
+enforce_eager=${launch_settings[4]}
+enable_prefix_caching=${launch_settings[5]}
+enable_auto_tool_choice=${launch_settings[6]}
+tool_call_parser=${launch_settings[7]}
+reasoning_parser=${launch_settings[8]}
+chat_template=${launch_settings[9]}
+dtype=${launch_settings[10]}
+quantization=${launch_settings[11]}
+kv_cache_dtype=${launch_settings[12]}
 
 vllm_args=(serve "$model_name")
 if [[ -n "$tensor_parallel_size" ]]; then
@@ -209,6 +254,9 @@ if [[ -n "$tensor_parallel_size" ]]; then
 fi
 if [[ -n "$max_model_len" ]]; then
     vllm_args+=(--max-model-len "$max_model_len")
+fi
+if [[ -n "$rope_scaling" ]]; then
+    vllm_args+=(--rope-scaling "$rope_scaling")
 fi
 if [[ -n "$gpu_memory_utilization" ]]; then
     vllm_args+=(--gpu-memory-utilization "$gpu_memory_utilization")

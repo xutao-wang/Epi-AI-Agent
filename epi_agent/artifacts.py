@@ -8,6 +8,7 @@ from typing import Any, Literal, TypedDict
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from epi_agent.protocol import ArtifactRef
+from epi_agent.tool_tracking import observe_artifact_read
 from graph.conversation_events import store_thread_artifact
 
 
@@ -258,6 +259,24 @@ class StateArtifactStore:
     def snapshot(self) -> dict[str, Any]:
         return deepcopy(self._artifacts)
 
+    def tracking_manifest(self) -> dict[str, dict[str, Any]]:
+        """Cheap identity/version/status inventory; never copies artifact contents."""
+        records = [
+            item.get("content", {})
+            for item in self._artifacts.get("files", {}).values()
+            if isinstance(item, dict)
+        ] + list(self._artifacts.get("datasets", {}).values())
+        return {
+            str(item["id"]): {
+                "id": str(item["id"]),
+                "kind": str(item.get("kind") or "dataset"),
+                "version": int(item.get("version") or 1),
+                "status": str(item.get("status") or "active"),
+            }
+            for item in records
+            if isinstance(item, dict) and item.get("id")
+        }
+
     def require(self, reference: ArtifactRef | str) -> StoredArtifact:
         artifact_id = reference.id if isinstance(reference, ArtifactRef) else reference
         record = dict(self._artifacts.get("files") or {}).get(artifact_id)
@@ -280,6 +299,7 @@ class StateArtifactStore:
             artifact.kind != reference.kind or artifact.version != reference.version
         ):
             raise KeyError(f"Artifact reference is no longer current: {artifact_id}")
+        observe_artifact_read(artifact)
         return artifact
 
     def list_artifacts(self, *, kind: str | None = None) -> list[StoredArtifact]:

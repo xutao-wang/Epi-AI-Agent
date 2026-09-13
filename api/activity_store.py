@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+import json
 import sqlite3
 from uuid import uuid4
 
@@ -36,6 +37,12 @@ CREATE TABLE IF NOT EXISTS agent_activity_items (
     UNIQUE(run_id, sequence),
     UNIQUE(run_id, tool_call_id)
 );
+CREATE TABLE IF NOT EXISTS agent_tool_executions (
+    execution_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES agent_activity_runs(id) ON DELETE CASCADE,
+    payload TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS tool_executions_by_run ON agent_tool_executions(run_id);
 """
 
 _INTERRUPT_LABELS = {
@@ -483,6 +490,28 @@ class SqliteActivityStore:
                 label="Resuming your request",
                 status="running",
             )
+
+    def tool_execution(self, thread_id: str, record: dict) -> None:
+        with self._connect() as connection:
+            run = self._active_run(connection, thread_id)
+            if run is None:
+                return
+            connection.execute(
+                """INSERT INTO agent_tool_executions(execution_id, run_id, payload)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(execution_id) DO UPDATE SET payload = excluded.payload""",
+                (record["execution_id"], run["id"], json.dumps(record)),
+            )
+
+    def list_tool_executions(self, thread_id: str) -> list[dict]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT e.payload, e.run_id FROM agent_tool_executions e
+                   JOIN agent_activity_runs r ON e.run_id = r.id
+                   WHERE r.thread_id = ? ORDER BY e.rowid""",
+                (thread_id,),
+            ).fetchall()
+        return [{**json.loads(row["payload"]), "run_id": row["run_id"]} for row in rows]
 
     def list_runs(self, thread_id: str) -> list[ActivityRun]:
         with self._connect() as connection:
