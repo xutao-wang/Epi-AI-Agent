@@ -290,6 +290,30 @@ def test_stale_replacement_recovers_as_ordinary_creation(tmp_path, damage):
     assert extract(ctx).artifacts == result.artifacts
 
 
+def test_stale_replacement_discovers_each_exact_family_once(tmp_path, monkeypatch):
+    from epi_agent.db_rag import tools
+
+    boundary, _, feedback, extract = _replacement_boundary(tmp_path)
+    extract()
+    context = boundary[0]
+    snapshot = context.artifact_store.snapshot()
+    del snapshot["files"][feedback.id]
+    ctx = replace(context, artifact_store=StateArtifactStore(snapshot))
+    real_family_ids = tools.dataset_attempt_family_ids
+    discovered_bases: list[str] = []
+
+    def counted_family_ids(*args, **kwargs):
+        discovered_bases.append(str(kwargs["base_dataset_id"]))
+        return real_family_ids(*args, **kwargs)
+
+    monkeypatch.setattr(tools, "dataset_attempt_family_ids", counted_family_ids)
+
+    extract(ctx)
+
+    assert len(discovered_bases) == 2
+    assert discovered_bases[0] != discovered_bases[1]
+
+
 @pytest.mark.parametrize('missing', ['registry', 'both'])
 def test_committed_replacement_restores_without_repeating_supersession(tmp_path, missing):
     boundary, predecessor, feedback, extract = _replacement_boundary(tmp_path)
@@ -447,17 +471,30 @@ def test_committed_replay_verifies_canonical_files_once(
     monkeypatch,
 ) -> None:
     from epi_agent.db_rag import tools
+    from utils import dataset_artifacts
 
     boundary = _boundary(tmp_path)
     first = _extract(boundary)
     real_loader = tools.load_verified_dataset_artifact
+    real_manifest_verifier = dataset_artifacts.verify_dataset_artifact_manifest
     canonical_loads: list[str] = []
+    manifest_verifications = 0
 
     def counted_loader(*args, **kwargs):
         canonical_loads.append(str(kwargs["dataset_id"]))
         return real_loader(*args, **kwargs)
 
+    def counted_manifest_verifier(*args, **kwargs):
+        nonlocal manifest_verifications
+        manifest_verifications += 1
+        return real_manifest_verifier(*args, **kwargs)
+
     monkeypatch.setattr(tools, "load_verified_dataset_artifact", counted_loader)
+    monkeypatch.setattr(
+        dataset_artifacts,
+        "verify_dataset_artifact_manifest",
+        counted_manifest_verifier,
+    )
     monkeypatch.setattr(
         tools,
         "execute_validated_extraction_sql",
@@ -468,3 +505,4 @@ def test_committed_replay_verifies_canonical_files_once(
 
     assert replay.artifacts[0] == first.artifacts[0]
     assert canonical_loads == [first.artifacts[0].id]
+    assert manifest_verifications == 1

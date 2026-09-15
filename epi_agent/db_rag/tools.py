@@ -71,7 +71,6 @@ from utils.dataset_artifacts import (
     load_verified_dataset_artifact,
     load_dataset_persistence_journal,
     promote_staged_dataset_artifact,
-    verify_dataset_artifact_manifest,
     write_dataset_persistence_journal,
 )
 
@@ -3024,26 +3023,6 @@ def _attempt_commit_references(
     )
 
 
-def _verify_attempt_final_files(attempt: dict[str, Any]) -> None:
-    try:
-        verify_dataset_artifact_manifest(
-            paths=dict(attempt.get("expected_final_paths") or {}),
-            manifest=dict(attempt.get("manifest") or {}),
-        )
-    except ValueError as error:
-        raise ToolExecutionError(
-            "DATASET_DURABLE_COLLISION",
-            str(error),
-            recoverable=False,
-        ) from error
-    except OSError as error:
-        raise ToolExecutionError(
-            "DATASET_PERSISTENCE_PENDING",
-            f"Durable manifest could not be read: {type(error).__name__}.",
-            recoverable=True,
-        ) from error
-
-
 def _durable_collision(message: str) -> ToolExecutionError:
     return ToolExecutionError(
         "DATASET_DURABLE_COLLISION",
@@ -3491,7 +3470,6 @@ def _committed_attempt_result(
             "Dataset persistence attempt is not committed.",
             recoverable=False,
         )
-    _verify_attempt_final_files(attempt)
     try:
         dataset = context.artifact_store.require(str(attempt["dataset_id"]))
     except KeyError as error:
@@ -4060,10 +4038,7 @@ def _persist_extraction_result_locked(
                     lineage = {**lineage, "predecessor_dataset_id": None,
                                "predecessor_dataset_version": None}
                     normalized_recovery = True
-                    family = dataset_attempt_family_ids(
-                        runtime_root=runtime_root, base_dataset_id=base_dataset_id,
-                        registered_ids=registered_ids,
-                    )
+                    family = recovery_family
                     dataset_id = family[-1] if family else base_dataset_id
             if attempt is None and family:
                 ordinal = int(dataset_id[len(base_dataset_id) + 7:]) if dataset_id != base_dataset_id else 0

@@ -53,6 +53,9 @@ EXACT_ORIGINAL_QUERY = (
 ALL_CHECKPOINTS_QUERY = "skip all checkpoint, do it again."
 EXTRACTION_TOOL = "dbrag-validate_and_extract"
 PLAN_REVIEW_TOOL = "dbrag-request_dataset_plan_review"
+ALLOWED_RECOVERY_EXTRACTION_ERRORS = frozenset(
+    {"PREDECESSOR_NOT_PENDING_REVIEW"}
+)
 
 
 def _server_command(host: str, port: int) -> list[str]:
@@ -256,6 +259,14 @@ def _result_artifact_ids(payload: dict[str, Any]) -> set[str]:
     }
 
 
+def _result_output_artifact_ids(payload: dict[str, Any]) -> set[str]:
+    return {
+        str(reference["id"])
+        for reference in list(payload.get("output_artifacts") or [])
+        if isinstance(reference, dict) and str(reference.get("id") or "")
+    }
+
+
 def _successful_extraction_results(
     values: dict[str, Any],
     start: int,
@@ -297,6 +308,24 @@ def _assert_recovery(
     }
     if collision_codes & {"DATASET_IDENTITY_COLLISION", "DATASET_DURABLE_COLLISION"}:
         raise AssertionError("Recovery exposed a dataset identity or durable collision.")
+    for call in calls:
+        if call.get("name") != EXTRACTION_TOOL:
+            continue
+        payload = results_by_call.get(str(call.get("id") or ""))
+        if (
+            isinstance(payload, dict)
+            and "error" not in payload
+            and _result_artifact_ids(payload)
+        ):
+            continue
+        error = payload.get("error") if isinstance(payload, dict) else None
+        if not isinstance(error, dict) or (
+            error.get("recoverable") is not True
+            or str(error.get("code") or "") not in ALLOWED_RECOVERY_EXTRACTION_ERRORS
+        ):
+            raise AssertionError(
+                f"Recovery exposed an unexpected extraction failure: {error!r}"
+            )
     successful = _successful_extraction_results(values, message_start)
     if len(successful) != 1:
         raise AssertionError(
@@ -456,6 +485,8 @@ def _assert_active_reuse(
         raise AssertionError("Active reuse did not use the exact approved plan/version.")
     if dataset_id not in _result_artifact_ids(successful_result):
         raise AssertionError("Tool results do not report the exact active reused dataset.")
+    if dataset_id not in _result_output_artifact_ids(successful_result):
+        raise AssertionError("Tool results do not report the active output artifact.")
     artifacts = dict(values.get("artifacts") or {})
     current_ids = set(dict(artifacts.get("datasets") or {}))
     current_ids.update(dict(artifacts.get("files") or {}))

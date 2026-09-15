@@ -46,8 +46,11 @@ def _call(plan_id: str = "plan-1", version: int = 2) -> AIMessage:
 
 
 def _result(dataset_id: str, status: str) -> ToolMessage:
+    payload = {"artifact": {"id": dataset_id}, "status": status}
+    if status == "active":
+        payload["output_artifacts"] = [{"id": dataset_id}]
     return ToolMessage(
-        content=json.dumps({"artifact": {"id": dataset_id}, "status": status}),
+        content=json.dumps(payload),
         tool_call_id="call-1",
     )
 
@@ -258,6 +261,50 @@ def test_recovery_rejects_two_successful_dataset_creations(
         )
 
 
+def test_recovery_rejects_unrelated_extraction_failure_before_success(
+    tmp_path: Path,
+) -> None:
+    old = _record(tmp_path, "subset-agent-old", "cancelled")
+    fresh = _record(tmp_path, "subset-agent-fresh", "pending_review")
+    failed_call = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": EXTRACTION_TOOL,
+                "args": {"plan_id": "plan-1", "plan_version": 2},
+                "id": "failed-call",
+                "type": "tool_call",
+            }
+        ],
+    )
+    values = {
+        "messages": [
+            failed_call,
+            ToolMessage(
+                tool_call_id="failed-call",
+                content=json.dumps(
+                    {"error": {"code": "SQL_REPAIR_REQUIRED", "recoverable": True}}
+                ),
+            ),
+            _call(),
+            _result(fresh["id"], "pending_review"),
+        ],
+        "artifacts": {"datasets": {old["id"]: old, fresh["id"]: fresh}},
+    }
+
+    with pytest.raises(AssertionError, match="unexpected extraction failure"):
+        _assert_recovery(
+            values,
+            message_start=0,
+            old_dataset_id=old["id"],
+            old_record=old,
+            old_file_hashes=_file_hashes(old),
+            plan_id="plan-1",
+            plan_version=2,
+            expected_new_id=fresh["id"],
+        )
+
+
 def test_active_reuse_accepts_production_artifact_result(
     tmp_path: Path,
 ) -> None:
@@ -270,6 +317,9 @@ def test_active_reuse_accepts_production_artifact_result(
                 content=json.dumps(
                     {
                         "artifacts": [
+                            {"id": active["id"], "kind": "subset", "version": 1}
+                        ],
+                        "output_artifacts": [
                             {"id": active["id"], "kind": "subset", "version": 1}
                         ],
                         "message": "Reused validated SQL status=active.",
@@ -290,3 +340,36 @@ def test_active_reuse_accepts_production_artifact_result(
         plan_version=2,
         expected_dataset_ids={active["id"]},
     )
+
+
+def test_active_reuse_requires_production_output_artifact(tmp_path: Path) -> None:
+    active = _record(tmp_path, "subset-agent-active", "active")
+    values = {
+        "messages": [
+            _call(),
+            ToolMessage(
+                tool_call_id="call-1",
+                content=json.dumps(
+                    {
+                        "artifacts": [
+                            {"id": active["id"], "kind": "subset", "version": 1}
+                        ],
+                        "message": "Reused validated SQL status=pending_review.",
+                    }
+                ),
+            ),
+        ],
+        "artifacts": {"datasets": {active["id"]: active}},
+    }
+
+    with pytest.raises(AssertionError, match="active output artifact"):
+        _assert_active_reuse(
+            values,
+            message_start=0,
+            dataset_id=active["id"],
+            dataset_record=active,
+            dataset_file_hashes=_file_hashes(active),
+            plan_id="plan-1",
+            plan_version=2,
+            expected_dataset_ids={active["id"]},
+        )
