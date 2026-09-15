@@ -3801,14 +3801,41 @@ def _resume_existing_dataset(
             if dataset_id in records and journal.get("state") in {"promoted", "committed"}:
                 if dataset_storage_content(existing.content) != dataset_storage_content(journal["dataset"]):
                     raise _durable_collision("Registered dataset content differs from canonical persistence evidence.")
-            attempt = _sync_attempt_from_journal(
-                context, methods=methods, attempt=attempt, journal=journal,
-                runtime_root=runtime_root,
-            )
+            try:
+                attempt = _sync_attempt_from_journal(
+                    context,
+                    methods=methods,
+                    attempt=attempt,
+                    journal=journal,
+                    runtime_root=runtime_root,
+                )
+            except (KeyError, TypeError, ValueError) as error:
+                raise ToolExecutionError(
+                    "DATASET_PERSISTENCE_PENDING",
+                    (
+                        "Persistence journal hydration could not update the "
+                        f"checkpoint after {type(error).__name__}; replay the "
+                        "exact tool call."
+                    ),
+                    recoverable=True,
+                ) from error
             if journal.get("state") == "committed" and dataset_id not in records:
                 # A verified committed journal proves saving completed, never
                 # human approval. Restore its canonical pending-review record.
-                context.artifact_store.save_dataset(journal["dataset"], make_active=False)
+                try:
+                    context.artifact_store.save_dataset(
+                        journal["dataset"],
+                        make_active=False,
+                    )
+                except (KeyError, TypeError, ValueError) as error:
+                    raise ToolExecutionError(
+                        "DATASET_PERSISTENCE_PENDING",
+                        (
+                            "Verified dataset registry restoration failed after "
+                            f"{type(error).__name__}; replay the exact tool call."
+                        ),
+                        recoverable=True,
+                    ) from error
             if journal.get("state") == "committed":
                 # Keep completed storage semantics while the graph catches up.
                 attempt = {**attempt, "state": "committed"}
@@ -3875,7 +3902,7 @@ def _persist_extraction_result(
                 arguments, context, stored_plan=stored_plan, plan=plan,
                 sql_artifact=sql_artifact, validated=validated, execution=execution,
             )
-    except (OSError, KeyError, TypeError, ValueError) as error:
+    except OSError as error:
         raise ToolExecutionError(
             "DATASET_PERSISTENCE_PENDING",
             f"Dataset persistence is temporarily unavailable: {type(error).__name__}.",

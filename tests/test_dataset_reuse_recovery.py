@@ -389,3 +389,54 @@ def test_reserved_ordinary_recovery_remains_current_after_feedback_is_restored(t
     ctx = replace(context, artifact_store=StateArtifactStore(snapshot))
     assert recovered != original
     assert extract(ctx).artifacts[0] == recovered
+
+
+def test_current_hydration_failure_does_not_select_a_fresh_identity(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    boundary = _boundary(tmp_path)
+    first = _extract(boundary)
+    context = boundary[0]
+    snapshot = context.artifact_store.snapshot()
+    snapshot["dataset_persistence_attempts"] = {}
+
+    class HydrationFailingStore(StateArtifactStore):
+        def __init__(self, artifacts):
+            super().__init__(artifacts)
+            self.begin_ids: list[str] = []
+
+        def begin_dataset_persistence_attempt(self, attempt):
+            self.begin_ids.append(str(attempt["dataset_id"]))
+            raise ValueError("current checkpoint write failed")
+
+    store = HydrationFailingStore(snapshot)
+    context = replace(context, artifact_store=store)
+    monkeypatch.setattr(
+        "epi_agent.db_rag.tools.execute_validated_extraction_sql",
+        lambda *args, **kwargs: pytest.fail("hydration failure started SQL"),
+    )
+
+    with pytest.raises(ToolExecutionError) as raised:
+        _extract((context, *boundary[1:]))
+
+    assert raised.value.code == "DATASET_PERSISTENCE_PENDING"
+    assert store.begin_ids == [first.artifacts[0].id]
+
+
+def test_programming_error_is_not_reported_as_persistence_unavailable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    boundary = _boundary(tmp_path)
+
+    def implementation_defect(*args, **kwargs):
+        raise TypeError("implementation defect")
+
+    monkeypatch.setattr(
+        "epi_agent.db_rag.tools._persist_extraction_result_locked",
+        implementation_defect,
+    )
+
+    with pytest.raises(TypeError, match="implementation defect"):
+        _extract(boundary)
