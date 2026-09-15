@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from epi_agent.dataset_reuse import dataset_storage_content
 from epi_agent.protocol import ArtifactRef
 from graph.conversation_events import store_thread_artifact
 
@@ -731,41 +732,25 @@ class StateArtifactStore:
             raise ValueError(
                 "Dataset persistence commit requires exact approved plan lineage"
             )
-        if attempt.get("state") == "committed":
-            existing = self.require(dataset_id)
-            if existing.content != record:
-                raise ValueError("Committed dataset registry collision")
-            if (
-                predecessor_ref is not None
-                and self.require(predecessor_ref).status != "superseded"
-            ):
-                raise ValueError(
-                    "Committed replacement predecessor is not superseded"
-                )
-            return ArtifactRef(
-                id=existing.id,
-                kind=existing.kind,
-                version=existing.version,
-            )
-        if attempt.get("state") != "promoted":
-            raise ValueError(
-                "Dataset persistence commit requires state=promoted"
-            )
-
+        if attempt.get("state") not in {"committed", "promoted"}:
+            raise ValueError("Dataset persistence commit requires promoted or committed state")
         transaction = StateArtifactStore(self._artifacts)
-        if predecessor_ref is None:
-            if dataset_id in dict(
-                transaction._artifacts.get("datasets") or {}
+        if dataset_id in dict(transaction._artifacts.get("datasets") or {}):
+            existing = transaction.require(dataset_id)
+            if (
+                existing.status not in {"pending_review", "active"}
+                or dataset_storage_content(existing.content) != dataset_storage_content(record)
             ):
-                raise ValueError("Dataset registry identity collision")
+                raise ValueError("Committed dataset registry collision")
+            reference = ArtifactRef(id=existing.id, kind=existing.kind, version=existing.version)
+        elif predecessor_ref is None or attempt.get("state") == "committed":
+            # Storage recovery restores the canonical pending record. It cannot
+            # reconstruct a lost review decision or repeat predecessor changes.
             reference = transaction.save_dataset(record, make_active=False)
         else:
             reference = transaction.save_replacement_dataset(
-                record,
-                predecessor_ref=predecessor_ref,
-                plan_ref=plan_ref,
-                feedback_ref=feedback_ref,
-                provenance=provenance,
+                record, predecessor_ref=predecessor_ref, plan_ref=plan_ref,
+                feedback_ref=feedback_ref, provenance=provenance,
             )
         attempts = dict(
             transaction._artifacts.get("dataset_persistence_attempts") or {}
