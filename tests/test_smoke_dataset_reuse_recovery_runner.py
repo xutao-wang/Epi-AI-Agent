@@ -47,8 +47,6 @@ def _call(plan_id: str = "plan-1", version: int = 2) -> AIMessage:
 
 def _result(dataset_id: str, status: str) -> ToolMessage:
     payload = {"artifact": {"id": dataset_id}, "status": status}
-    if status == "active":
-        payload["output_artifacts"] = [{"id": dataset_id}]
     return ToolMessage(
         content=json.dumps(payload),
         tool_call_id="call-1",
@@ -114,6 +112,7 @@ def test_active_reuse_rejects_new_dataset_identity(tmp_path: Path) -> None:
     unexpected = _record(tmp_path, "subset-agent-unexpected", "pending_review")
     state = {
         "messages": [_call(), _result("subset-agent-active", "active")],
+        "current_turn_output_artifact_refs": [{"id": "subset-agent-active"}],
         "artifacts": {
             "files": {
                 "subset-agent-old": {"content": old},
@@ -319,14 +318,12 @@ def test_active_reuse_accepts_production_artifact_result(
                         "artifacts": [
                             {"id": active["id"], "kind": "subset", "version": 1}
                         ],
-                        "output_artifacts": [
-                            {"id": active["id"], "kind": "subset", "version": 1}
-                        ],
                         "message": "Reused validated SQL status=active.",
                     }
                 ),
             ),
         ],
+        "current_turn_output_artifact_refs": [{"id": active["id"]}],
         "artifacts": {"datasets": {active["id"]: active}},
     }
 

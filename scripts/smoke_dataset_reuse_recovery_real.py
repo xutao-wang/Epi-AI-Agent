@@ -259,10 +259,10 @@ def _result_artifact_ids(payload: dict[str, Any]) -> set[str]:
     }
 
 
-def _result_output_artifact_ids(payload: dict[str, Any]) -> set[str]:
+def _current_output_artifact_ids(values: dict[str, Any]) -> set[str]:
     return {
         str(reference["id"])
-        for reference in list(payload.get("output_artifacts") or [])
+        for reference in list(values.get("current_turn_output_artifact_refs") or [])
         if isinstance(reference, dict) and str(reference.get("id") or "")
     }
 
@@ -485,8 +485,8 @@ def _assert_active_reuse(
         raise AssertionError("Active reuse did not use the exact approved plan/version.")
     if dataset_id not in _result_artifact_ids(successful_result):
         raise AssertionError("Tool results do not report the exact active reused dataset.")
-    if dataset_id not in _result_output_artifact_ids(successful_result):
-        raise AssertionError("Tool results do not report the active output artifact.")
+    if dataset_id not in _current_output_artifact_ids(values):
+        raise AssertionError("Turn state does not report the active output artifact.")
     artifacts = dict(values.get("artifacts") or {})
     current_ids = set(dict(artifacts.get("datasets") or {}))
     current_ids.update(dict(artifacts.get("files") or {}))
