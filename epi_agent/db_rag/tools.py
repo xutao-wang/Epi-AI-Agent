@@ -3427,7 +3427,7 @@ def _prepare_journal_for_hydration(
     expected_final_paths: dict[str, str],
     expected_staging_paths: dict[str, str],
     runtime_root: Any,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], bool]:
     _validate_attempt_replacement_control(
         context,
         attempt=journal,
@@ -3435,7 +3435,7 @@ def _prepare_journal_for_hydration(
     )
     state = str(journal.get("state") or "")
     if state == "begun":
-        return journal
+        return journal, False
     if state == "staged":
         try:
             promote_staged_dataset_artifact(
@@ -3466,13 +3466,16 @@ def _prepare_journal_for_hydration(
             runtime_root=runtime_root,
             attempt=promoted,
         )
-        return promoted
-    return _verify_canonical_attempt_dataset(
-        context,
-        attempt=journal,
-        lineage=lineage,
-        validated_sql=validated_sql,
-        runtime_root=runtime_root,
+        return promoted, True
+    return (
+        _verify_canonical_attempt_dataset(
+            context,
+            attempt=journal,
+            lineage=lineage,
+            validated_sql=validated_sql,
+            runtime_root=runtime_root,
+        ),
+        True,
     )
 
 
@@ -3614,6 +3617,7 @@ def _reconcile_persistence_attempt(
     runtime_root: Any,
     plan_id: str,
     plan_version: int,
+    canonical_verified: bool = False,
 ) -> ToolResult | None:
     _require_attempt_identity(
         attempt,
@@ -3628,26 +3632,45 @@ def _reconcile_persistence_attempt(
     )
     state = str(attempt.get("state") or "")
     if state == "committed":
-        attempt = _verify_canonical_attempt_dataset(
-            context,
-            attempt=attempt,
-            lineage=lineage,
-            validated_sql=validated_sql,
-            runtime_root=runtime_root,
-        )
+        if not canonical_verified:
+            attempt = _verify_canonical_attempt_dataset(
+                context,
+                attempt=attempt,
+                lineage=lineage,
+                validated_sql=validated_sql,
+                runtime_root=runtime_root,
+            )
+        try:
+            context.artifact_store.require(str(attempt["dataset_id"]))
+        except KeyError:
+            try:
+                context.artifact_store.save_dataset(
+                    dict(attempt["dataset"]),
+                    make_active=False,
+                )
+            except (KeyError, TypeError, ValueError) as error:
+                raise ToolExecutionError(
+                    "DATASET_PERSISTENCE_PENDING",
+                    (
+                        "Verified dataset registry restoration failed after "
+                        f"{type(error).__name__}; replay the exact tool call."
+                    ),
+                    recoverable=True,
+                ) from error
         return _commit_persistence_attempt(
             context, methods=methods, attempt=attempt,
             plan_id=plan_id, plan_version=plan_version, reused=True,
             runtime_root=runtime_root,
         )
     if state == "promoted":
-        attempt = _verify_canonical_attempt_dataset(
-            context,
-            attempt=attempt,
-            lineage=lineage,
-            validated_sql=validated_sql,
-            runtime_root=runtime_root,
-        )
+        if not canonical_verified:
+            attempt = _verify_canonical_attempt_dataset(
+                context,
+                attempt=attempt,
+                lineage=lineage,
+                validated_sql=validated_sql,
+                runtime_root=runtime_root,
+            )
         return _commit_persistence_attempt(
             context,
             methods=methods,
@@ -3767,6 +3790,7 @@ def _resume_existing_dataset(
     )
     final_paths = {key: str(final[key]) for key in ("path", "schema_path", "metadata_path")}
     staging_paths = {key: str(staging[key]) for key in ("path", "schema_path", "metadata_path")}
+    canonical_verified = False
     try:
         records = context.artifact_store.snapshot().get("datasets") or {}
         if dataset_id in records:
@@ -3793,7 +3817,7 @@ def _resume_existing_dataset(
                 if any(value != attempt.get(key) for key, value in journal.items() if key != "state"):
                     raise _durable_collision("Committed graph and journal evidence disagree.")
                 journal = dict(attempt)
-            journal = _prepare_journal_for_hydration(
+            journal, canonical_verified = _prepare_journal_for_hydration(
                 context, journal=journal, lineage=lineage, validated_sql=validated_sql,
                 expected_final_paths=final_paths, expected_staging_paths=staging_paths,
                 runtime_root=runtime_root,
@@ -3819,36 +3843,12 @@ def _resume_existing_dataset(
                     ),
                     recoverable=True,
                 ) from error
-            if journal.get("state") == "committed" and dataset_id not in records:
-                # A verified committed journal proves saving completed, never
-                # human approval. Restore its canonical pending-review record.
-                try:
-                    context.artifact_store.save_dataset(
-                        journal["dataset"],
-                        make_active=False,
-                    )
-                except (KeyError, TypeError, ValueError) as error:
-                    raise ToolExecutionError(
-                        "DATASET_PERSISTENCE_PENDING",
-                        (
-                            "Verified dataset registry restoration failed after "
-                            f"{type(error).__name__}; replay the exact tool call."
-                        ),
-                        recoverable=True,
-                    ) from error
             if journal.get("state") == "committed":
                 # Keep completed storage semantics while the graph catches up.
                 attempt = {**attempt, "state": "committed"}
         if attempt is None:
             raise _durable_collision("Existing dataset has no persistence evidence.")
         _validate_attempt_replacement_control(context, attempt=attempt, lineage=lineage)
-        if attempt.get("state") in {"committed", "promoted"}:
-            _verify_canonical_attempt_dataset(
-                context, attempt=attempt, lineage=lineage,
-                validated_sql=validated_sql, runtime_root=runtime_root,
-            )
-            if dataset_id in records and dataset_storage_content(existing.content) != dataset_storage_content(attempt["dataset"]):
-                raise _durable_collision("Registered dataset differs from verified persistence content.")
     except (KeyError, TypeError, ValueError) as error:
         raise _durable_collision(
             f"Existing dataset persistence evidence is incompatible: {type(error).__name__}."
@@ -3868,6 +3868,7 @@ def _resume_existing_dataset(
             validated_sql=validated_sql, expected_final_paths=final_paths,
             expected_staging_paths=staging_paths, runtime_root=runtime_root,
             plan_id=plan_id, plan_version=plan_version,
+            canonical_verified=canonical_verified,
         )
     except (KeyError, TypeError, ValueError) as error:
         raise ToolExecutionError(

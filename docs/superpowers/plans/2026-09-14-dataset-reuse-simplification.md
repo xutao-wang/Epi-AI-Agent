@@ -72,11 +72,11 @@ Expected: all pass.
 - Consumes: verified journal preparation and `_reconcile_persistence_attempt`.
 - Produces: at most one `load_verified_dataset_artifact` call for a committed replay; one committed-registry restoration path.
 
-- [ ] **Step 1: Add a failing verification-count regression**
+- [x] **Step 1: Add a failing verification-count regression**
 
 Wrap the real `load_verified_dataset_artifact`, replay a committed pending dataset, and assert it is called exactly once while SQL is not executed.
 
-- [ ] **Step 2: Run the test and verify RED**
+- [x] **Step 2: Run the test and verify RED**
 
 Run:
 
@@ -86,15 +86,15 @@ Run:
 
 Expected: failure showing repeated canonical loads.
 
-- [ ] **Step 3: Carry an explicit verified-canonical result into reconciliation**
+- [x] **Step 3: Carry an explicit verified-canonical result into reconciliation**
 
 Have journal preparation report whether it verified canonical content. Pass that fact to reconciliation so committed/promoted paths do not rehash the same files. Graph-only attempts still verify before reuse or commit.
 
-- [ ] **Step 4: Centralize committed registry restoration**
+- [x] **Step 4: Centralize committed registry restoration**
 
 Restore a missing committed registry record only after canonical verification in the committed reconciliation path. Keep `StateArtifactStore.commit_dataset_persistence_attempt` responsible for atomic normal commits and idempotent comparison, not for discovering recovery policy.
 
-- [ ] **Step 5: Run replacement, journal-lag, and missing-state tests**
+- [x] **Step 5: Run replacement, journal-lag, and missing-state tests**
 
 Run:
 

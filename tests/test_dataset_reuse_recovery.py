@@ -440,3 +440,31 @@ def test_programming_error_is_not_reported_as_persistence_unavailable(
 
     with pytest.raises(TypeError, match="implementation defect"):
         _extract(boundary)
+
+
+def test_committed_replay_verifies_canonical_files_once(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from epi_agent.db_rag import tools
+
+    boundary = _boundary(tmp_path)
+    first = _extract(boundary)
+    real_loader = tools.load_verified_dataset_artifact
+    canonical_loads: list[str] = []
+
+    def counted_loader(*args, **kwargs):
+        canonical_loads.append(str(kwargs["dataset_id"]))
+        return real_loader(*args, **kwargs)
+
+    monkeypatch.setattr(tools, "load_verified_dataset_artifact", counted_loader)
+    monkeypatch.setattr(
+        tools,
+        "execute_validated_extraction_sql",
+        lambda *args, **kwargs: pytest.fail("committed replay repeated SQL"),
+    )
+
+    replay = _extract(boundary)
+
+    assert replay.artifacts[0] == first.artifacts[0]
+    assert canonical_loads == [first.artifacts[0].id]
