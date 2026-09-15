@@ -3897,7 +3897,7 @@ def _persist_extraction_result(
     try:
         with dataset_persistence_lock(
             runtime_root=_dataset_root(context), base_dataset_id=base_id,
-            cancelled=cancellation_point,
+            cancellation_point=cancellation_point,
         ):
             return _persist_extraction_result_locked(
                 arguments, context, stored_plan=stored_plan, plan=plan,
@@ -4065,22 +4065,6 @@ def _persist_extraction_result_locked(
                         registered_ids=registered_ids,
                     )
                     dataset_id = family[-1] if family else base_dataset_id
-                    if family:
-                        try:
-                            attempt, result = _resume_existing_dataset(
-                                context, methods=methods, dataset_id=dataset_id,
-                                lineage=lineage, validated_sql=validated_sql,
-                                runtime_root=runtime_root, plan_id=plan_id,
-                                plan_version=plan_version,
-                            )
-                            if result is not None:
-                                return result
-                        except ToolExecutionError as recovery_error:
-                            if recovery_error.code not in {
-                                "DATASET_IDENTITY_COLLISION", "DATASET_DURABLE_COLLISION",
-                            }:
-                                raise
-                            attempt = None
             if attempt is None and family:
                 ordinal = int(dataset_id[len(base_dataset_id) + 7:]) if dataset_id != base_dataset_id else 0
                 dataset_id = f"{base_dataset_id}-retry-{ordinal + 1}"

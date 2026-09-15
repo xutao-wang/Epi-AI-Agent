@@ -732,21 +732,11 @@ class StateArtifactStore:
             raise ValueError(
                 "Dataset persistence commit requires exact approved plan lineage"
             )
-        if attempt.get("state") == "committed":
-            existing = self.require(dataset_id)
-            if (
-                existing.status not in {"pending_review", "active"}
-                or dataset_storage_content(existing.content)
-                != dataset_storage_content(record)
-            ):
-                raise ValueError("Committed dataset registry collision")
-            return ArtifactRef(
-                id=existing.id,
-                kind=existing.kind,
-                version=existing.version,
+        attempt_state = attempt.get("state")
+        if attempt_state not in {"committed", "promoted"}:
+            raise ValueError(
+                "Dataset persistence commit requires promoted or committed state"
             )
-        if attempt.get("state") != "promoted":
-            raise ValueError("Dataset persistence commit requires state=promoted")
         transaction = StateArtifactStore(self._artifacts)
         if dataset_id in dict(transaction._artifacts.get("datasets") or {}):
             existing = transaction.require(dataset_id)
@@ -756,6 +746,8 @@ class StateArtifactStore:
             ):
                 raise ValueError("Committed dataset registry collision")
             reference = ArtifactRef(id=existing.id, kind=existing.kind, version=existing.version)
+        elif attempt_state == "committed":
+            raise KeyError(f"Committed dataset registry is missing: {dataset_id}")
         elif predecessor_ref is None:
             reference = transaction.save_dataset(record, make_active=False)
         else:

@@ -116,11 +116,11 @@ Expected: all pass, including committed replacement restoration without repeated
 - Consumes: the family lock and existing exact-ID family discovery.
 - Produces: one selection path for ordinary recovery and smoke validation based on one successful artifact-producing extraction.
 
-- [ ] **Step 1: Add a failing smoke assertion regression**
+- [x] **Step 1: Add a failing smoke assertion regression**
 
 Construct messages containing a recoverable `PREDECESSOR_NOT_PENDING_REVIEW` tool result followed by one successful extraction result. Assert that `_assert_recovery` accepts the sequence and still rejects two successful dataset creations.
 
-- [ ] **Step 2: Run the smoke assertion test and verify RED**
+- [x] **Step 2: Run the smoke assertion test and verify RED**
 
 Run:
 
@@ -130,15 +130,15 @@ Run:
 
 Expected: failure from the current exact tool-call-count assertion.
 
-- [ ] **Step 3: Remove unreachable recovery-family rediscovery**
+- [x] **Step 3: Remove unreachable recovery-family rediscovery**
 
 Delete the second family lookup and nested `_resume_existing_dataset` call. Under the held family lock, an existing recovery family was already selected before the original family is reconciled.
 
-- [ ] **Step 4: Count successful extraction results**
+- [x] **Step 4: Count successful extraction results**
 
 Match extraction calls to their tool results by exact `tool_call_id`. Require exactly one result containing the expected fresh artifact ID, allow preceding recoverable validation failures, and reject identity-collision errors or multiple successful artifacts.
 
-- [ ] **Step 5: Run all selected branch tests**
+- [x] **Step 5: Run all selected branch tests**
 
 Run:
 
@@ -148,6 +148,6 @@ Run:
 
 Expected: all pass.
 
-- [ ] **Step 6: Review the final diff**
+- [x] **Step 6: Review the final diff**
 
-Confirm production code is smaller than the base implementation, `git diff --check` passes, and no prompt, UI, schema, model, dependency, fixture, or Demo file changed. Do not run another real smoke without explicit authorization.
+Confirm the production recovery decision surface is smaller than the base implementation: duplicate family selection and the parallel cancellation protocol are removed, while the added lines make mutation failures and canonical-verification ownership explicit. Confirm `git diff --check` passes and no prompt, UI, schema, model, dependency, fixture, or Demo file changed. Do not run another real smoke without explicit authorization.

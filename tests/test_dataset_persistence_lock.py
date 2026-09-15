@@ -7,11 +7,11 @@ import time
 import pytest
 
 from utils.dataset_artifacts import (
-    DatasetPersistenceLockCancelled,
     DatasetPersistenceLockTimeout,
     dataset_attempt_family_ids,
     dataset_persistence_lock,
 )
+from utils.run_cancellation import RunCancelled
 
 
 def _hold_lock(dataset_root: str, ready: multiprocessing.synchronize.Event) -> None:
@@ -57,20 +57,21 @@ def test_persistence_lock_excludes_an_independent_process(tmp_path: Path) -> Non
 def test_persistence_lock_stops_waiting_when_cancelled(tmp_path: Path) -> None:
     checks = 0
 
-    def cancelled() -> bool:
+    def check_cancellation() -> None:
         nonlocal checks
         checks += 1
-        return checks >= 2
+        if checks >= 2:
+            raise RunCancelled("cancelled")
 
     with dataset_persistence_lock(
         runtime_root=tmp_path,
         base_dataset_id="subset-agent-family",
     ):
-        with pytest.raises(DatasetPersistenceLockCancelled):
+        with pytest.raises(RunCancelled):
             with dataset_persistence_lock(
                 runtime_root=tmp_path,
                 base_dataset_id="subset-agent-family",
-                cancelled=cancelled,
+                cancellation_point=check_cancellation,
                 timeout_seconds=1,
                 poll_interval_seconds=0.01,
             ):

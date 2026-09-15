@@ -107,10 +107,6 @@ class DatasetPersistenceLockTimeout(TimeoutError):
     """Raised when a dataset-family persistence lock cannot be acquired in time."""
 
 
-class DatasetPersistenceLockCancelled(RuntimeError):
-    """Raised when cancellation is requested while acquiring a persistence lock."""
-
-
 def _storage_root(value: str | Path | ThreadStorageScope) -> Path:
     if isinstance(value, ThreadStorageScope):
         return value.datasets
@@ -151,7 +147,7 @@ def dataset_persistence_lock(
     *,
     runtime_root: str | Path | ThreadStorageScope,
     base_dataset_id: str,
-    cancelled: Callable[[], bool] | None = None,
+    cancellation_point: Callable[[], None] | None = None,
     timeout_seconds: float = 30.0,
     poll_interval_seconds: float = 0.05,
 ) -> Iterator[Path]:
@@ -185,10 +181,8 @@ def dataset_persistence_lock(
     deadline = time.monotonic() + timeout
     try:
         while True:
-            if cancelled is not None and cancelled():
-                raise DatasetPersistenceLockCancelled(
-                    f"Dataset persistence lock acquisition cancelled for {base!r}"
-                )
+            if cancellation_point is not None:
+                cancellation_point()
             try:
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 acquired = True

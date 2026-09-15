@@ -228,8 +228,11 @@ def _tool_calls(values: dict[str, Any], start: int) -> list[dict[str, Any]]:
     return calls
 
 
-def _tool_results(values: dict[str, Any], start: int) -> list[dict[str, Any]]:
-    results: list[dict[str, Any]] = []
+def _tool_results_by_call_id(
+    values: dict[str, Any],
+    start: int,
+) -> dict[str, dict[str, Any]]:
+    results: dict[str, dict[str, Any]] = {}
     for message in list(values.get("messages") or [])[start:]:
         if not isinstance(message, ToolMessage):
             continue
@@ -238,8 +241,38 @@ def _tool_results(values: dict[str, Any], start: int) -> list[dict[str, Any]]:
         except (TypeError, json.JSONDecodeError):
             continue
         if isinstance(payload, dict):
-            results.append(payload)
+            results[str(message.tool_call_id)] = payload
     return results
+
+
+def _result_artifact_ids(payload: dict[str, Any]) -> set[str]:
+    references: list[Any] = list(payload.get("artifacts") or [])
+    if isinstance(payload.get("artifact"), dict):
+        references.append(payload["artifact"])
+    return {
+        str(reference["id"])
+        for reference in references
+        if isinstance(reference, dict) and str(reference.get("id") or "")
+    }
+
+
+def _successful_extraction_results(
+    values: dict[str, Any],
+    start: int,
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    results_by_call = _tool_results_by_call_id(values, start)
+    successful: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for call in _tool_calls(values, start):
+        if call.get("name") != EXTRACTION_TOOL:
+            continue
+        payload = results_by_call.get(str(call.get("id") or ""))
+        if (
+            isinstance(payload, dict)
+            and "error" not in payload
+            and _result_artifact_ids(payload)
+        ):
+            successful.append((call, payload))
+    return successful
 
 
 def _assert_recovery(
@@ -256,20 +289,28 @@ def _assert_recovery(
     calls = _tool_calls(values, message_start)
     if any(call.get("name") == PLAN_REVIEW_TOOL for call in calls):
         raise AssertionError("Replay created another plan review instead of using the approved plan.")
-    extraction_calls = [call for call in calls if call.get("name") == EXTRACTION_TOOL]
-    if len(extraction_calls) != 1:
-        raise AssertionError(f"Expected exactly one extraction tool call, got {extraction_calls!r}")
-    args = dict(extraction_calls[0].get("args") or {})
+    results_by_call = _tool_results_by_call_id(values, message_start)
+    collision_codes = {
+        str(dict(payload.get("error") or {}).get("code") or "")
+        for payload in results_by_call.values()
+        if isinstance(payload.get("error"), dict)
+    }
+    if collision_codes & {"DATASET_IDENTITY_COLLISION", "DATASET_DURABLE_COLLISION"}:
+        raise AssertionError("Recovery exposed a dataset identity or durable collision.")
+    successful = _successful_extraction_results(values, message_start)
+    if len(successful) != 1:
+        raise AssertionError(
+            f"Expected exactly one successful extraction result, got {successful!r}"
+        )
+    successful_call, successful_result = successful[0]
+    args = dict(successful_call.get("args") or {})
     if (
         args.get("plan_id") != plan_id
         or int(args.get("plan_version") or 0) != plan_version
     ):
         raise AssertionError("Extraction did not use the exact historically approved plan/version.")
-    serialized_results = json.dumps(_tool_results(values, message_start), sort_keys=True)
-    if expected_new_id not in serialized_results:
+    if expected_new_id not in _result_artifact_ids(successful_result):
         raise AssertionError("Tool results do not identify the fresh dataset under review.")
-    if "INTERNAL_TOOL_ERROR" in serialized_results or "IDENTITY_COLLISION" in serialized_results:
-        raise AssertionError("Recovery exposed the historical terminal collision.")
     if _artifact_record(values, old_dataset_id) != old_record:
         raise AssertionError("Fresh recovery changed the old cancelled dataset record.")
     if _file_hashes(old_record) != old_file_hashes:
@@ -401,19 +442,19 @@ def _assert_active_reuse(
     calls = _tool_calls(values, message_start)
     if any(call.get("name") == PLAN_REVIEW_TOOL for call in calls):
         raise AssertionError("Active reuse incorrectly requested another plan review.")
-    extraction_calls = [call for call in calls if call.get("name") == EXTRACTION_TOOL]
-    if len(extraction_calls) != 1:
+    successful = _successful_extraction_results(values, message_start)
+    if len(successful) != 1:
         raise AssertionError(
-            f"Active reuse requires exactly one extraction tool call: {extraction_calls!r}"
+            f"Active reuse requires exactly one successful extraction: {successful!r}"
         )
-    arguments = dict(extraction_calls[0].get("args") or {})
+    successful_call, successful_result = successful[0]
+    arguments = dict(successful_call.get("args") or {})
     if (
         arguments.get("plan_id") != plan_id
         or int(arguments.get("plan_version") or 0) != plan_version
     ):
         raise AssertionError("Active reuse did not use the exact approved plan/version.")
-    results = json.dumps(_tool_results(values, message_start), sort_keys=True)
-    if dataset_id not in results or '"status": "active"' not in results:
+    if dataset_id not in _result_artifact_ids(successful_result):
         raise AssertionError("Tool results do not report the exact active reused dataset.")
     artifacts = dict(values.get("artifacts") or {})
     current_ids = set(dict(artifacts.get("datasets") or {}))

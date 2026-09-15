@@ -142,3 +142,151 @@ def test_server_command_resolves_the_real_application_factory() -> None:
     target = command[command.index("uvicorn") + 1]
     assert import_from_string(target) is build_application
     assert "--factory" in command
+
+
+def test_recovery_accepts_rejected_precondition_then_one_success(
+    tmp_path: Path,
+) -> None:
+    old = _record(tmp_path, "subset-agent-old", "cancelled")
+    fresh = _record(tmp_path, "subset-agent-fresh", "pending_review")
+    rejected_call = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": EXTRACTION_TOOL,
+                "args": {
+                    "plan_id": "plan-1",
+                    "plan_version": 2,
+                    "predecessor_dataset_id": old["id"],
+                    "predecessor_dataset_version": 1,
+                },
+                "id": "rejected-call",
+                "type": "tool_call",
+            }
+        ],
+    )
+    rejected_result = ToolMessage(
+        tool_call_id="rejected-call",
+        content=json.dumps(
+            {
+                "error": {
+                    "code": "PREDECESSOR_NOT_PENDING_REVIEW",
+                    "recoverable": True,
+                }
+            }
+        ),
+    )
+    values = {
+        "messages": [
+            rejected_call,
+            rejected_result,
+            _call(),
+            _result(fresh["id"], "pending_review"),
+        ],
+        "artifacts": {
+            "datasets": {
+                old["id"]: old,
+                fresh["id"]: fresh,
+            }
+        },
+    }
+
+    _assert_recovery(
+        values,
+        message_start=0,
+        old_dataset_id=old["id"],
+        old_record=old,
+        old_file_hashes=_file_hashes(old),
+        plan_id="plan-1",
+        plan_version=2,
+        expected_new_id=fresh["id"],
+    )
+
+
+def test_recovery_rejects_two_successful_dataset_creations(
+    tmp_path: Path,
+) -> None:
+    old = _record(tmp_path, "subset-agent-old", "cancelled")
+    fresh = _record(tmp_path, "subset-agent-fresh", "pending_review")
+    second = _record(tmp_path, "subset-agent-second", "pending_review")
+    second_call = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": EXTRACTION_TOOL,
+                "args": {"plan_id": "plan-1", "plan_version": 2},
+                "id": "call-2",
+                "type": "tool_call",
+            }
+        ],
+    )
+    values = {
+        "messages": [
+            _call(),
+            _result(fresh["id"], "pending_review"),
+            second_call,
+            ToolMessage(
+                tool_call_id="call-2",
+                content=json.dumps(
+                    {
+                        "artifacts": [
+                            {"id": second["id"], "kind": "subset", "version": 1}
+                        ]
+                    }
+                ),
+            ),
+        ],
+        "artifacts": {
+            "datasets": {
+                old["id"]: old,
+                fresh["id"]: fresh,
+                second["id"]: second,
+            }
+        },
+    }
+
+    with pytest.raises(AssertionError, match="successful extraction"):
+        _assert_recovery(
+            values,
+            message_start=0,
+            old_dataset_id=old["id"],
+            old_record=old,
+            old_file_hashes=_file_hashes(old),
+            plan_id="plan-1",
+            plan_version=2,
+            expected_new_id=fresh["id"],
+        )
+
+
+def test_active_reuse_accepts_production_artifact_result(
+    tmp_path: Path,
+) -> None:
+    active = _record(tmp_path, "subset-agent-active", "active")
+    values = {
+        "messages": [
+            _call(),
+            ToolMessage(
+                tool_call_id="call-1",
+                content=json.dumps(
+                    {
+                        "artifacts": [
+                            {"id": active["id"], "kind": "subset", "version": 1}
+                        ],
+                        "message": "Reused validated SQL status=active.",
+                    }
+                ),
+            ),
+        ],
+        "artifacts": {"datasets": {active["id"]: active}},
+    }
+
+    _assert_active_reuse(
+        values,
+        message_start=0,
+        dataset_id=active["id"],
+        dataset_record=active,
+        dataset_file_hashes=_file_hashes(active),
+        plan_id="plan-1",
+        plan_version=2,
+        expected_dataset_ids={active["id"]},
+    )
