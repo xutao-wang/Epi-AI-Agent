@@ -34,12 +34,15 @@ from db_rag.service.sql_service import (
     execute_validated_extraction_sql,
     validate_extraction_sql,
 )
+from utils.run_cancellation import cancellation_point
+
 from epi_agent.artifacts import (
     DatasetPlan,
     PlanField,
     dataset_plan_from_artifact,
 )
 from epi_agent.db_rag import persistence as db_rag_persistence
+from epi_agent.dataset_reuse import dataset_storage_content
 from epi_agent.db_rag.references import FieldRef, TableRef
 from epi_agent.db_rag.sql_compiler import compile_dataset_plan_sql
 from epi_agent.db_rag.quality import inspect_dataset as inspect_dataset_artifact
@@ -61,12 +64,13 @@ from epi_agent.registry import ToolRegistry
 from epi_agent.studies import StudySourceUnavailableError
 from utils.dataset_artifacts import (
     cleanup_dataset_staging,
+    dataset_attempt_family_ids,
+    dataset_persistence_lock,
     generated_dataset_artifact_paths,
     generated_dataset_staging_paths,
     load_verified_dataset_artifact,
     load_dataset_persistence_journal,
     promote_staged_dataset_artifact,
-    verify_dataset_artifact_manifest,
     write_dataset_persistence_journal,
 )
 
@@ -2707,6 +2711,7 @@ def _validate_and_extract(
     return ToolResult(
         message=result.message,
         artifacts=(*result.artifacts, sql_reference),
+        output_artifacts=result.output_artifacts,
         terminal_control=result.terminal_control,
     )
 
@@ -2949,16 +2954,17 @@ def _dataset_result(
     if replacement:
         suffix = (
             f" predecessor_dataset_id={replacement['predecessor_id']} "
-            f"predecessor_status=superseded reused={str(reused).lower()}."
+            f"reused={str(reused).lower()}."
         )
     return ToolResult(
         message=(
             f"{'Reused' if reused else 'Executed'} validated SQL "
             f"dataset_id={dataset.id} version={dataset.version} "
-            f"status=pending_review rows={dataset.content.get('row_count', 0)} "
+            f"status={dataset.status} rows={dataset.content.get('row_count', 0)} "
             f"columns={dataset.content.get('column_count', 0)}{suffix}"
         ),
         artifacts=(reference,),
+        output_artifacts=(reference,) if dataset.status == "active" else (),
     )
 
 
@@ -3015,26 +3021,6 @@ def _attempt_commit_references(
             version=int(replacement["feedback_version"]),
         ),
     )
-
-
-def _verify_attempt_final_files(attempt: dict[str, Any]) -> None:
-    try:
-        verify_dataset_artifact_manifest(
-            paths=dict(attempt.get("expected_final_paths") or {}),
-            manifest=dict(attempt.get("manifest") or {}),
-        )
-    except ValueError as error:
-        raise ToolExecutionError(
-            "DATASET_DURABLE_COLLISION",
-            str(error),
-            recoverable=False,
-        ) from error
-    except OSError as error:
-        raise ToolExecutionError(
-            "DATASET_PERSISTENCE_PENDING",
-            f"Durable manifest could not be read: {type(error).__name__}.",
-            recoverable=True,
-        ) from error
 
 
 def _durable_collision(message: str) -> ToolExecutionError:
@@ -3098,7 +3084,10 @@ def _validate_attempt_replacement_control(
         predecessor.id != predecessor_id
         or predecessor.version != predecessor_version
         or predecessor.kind != replacement.get("predecessor_kind")
-        or predecessor.status not in {"pending_review", "superseded"}
+        or (
+            attempt.get("state") != "committed"
+            and predecessor.status != "pending_review"
+        )
         or predecessor_provenance.get("plan_id") != lineage.get("plan_id")
         or predecessor_provenance.get("plan_version")
         != lineage.get("plan_version")
@@ -3217,8 +3206,14 @@ def _verify_canonical_attempt_dataset(
             expected_version=1,
             expected_status="pending_review",
         )
-    except (OSError, ValueError) as error:
+    except (FileNotFoundError, ValueError) as error:
         raise _durable_collision(str(error)) from error
+    except OSError as error:
+        raise ToolExecutionError(
+            "DATASET_PERSISTENCE_PENDING",
+            f"Canonical dataset could not be read: {type(error).__name__}.",
+            recoverable=True,
+        ) from error
     if canonical != dict(attempt.get("dataset") or {}):
         raise _durable_collision(
             "Persistence journal dataset snapshot does not match canonical metadata."
@@ -3411,7 +3406,7 @@ def _prepare_journal_for_hydration(
     expected_final_paths: dict[str, str],
     expected_staging_paths: dict[str, str],
     runtime_root: Any,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], bool]:
     _validate_attempt_replacement_control(
         context,
         attempt=journal,
@@ -3419,7 +3414,7 @@ def _prepare_journal_for_hydration(
     )
     state = str(journal.get("state") or "")
     if state == "begun":
-        return journal
+        return journal, False
     if state == "staged":
         try:
             promote_staged_dataset_artifact(
@@ -3450,13 +3445,16 @@ def _prepare_journal_for_hydration(
             runtime_root=runtime_root,
             attempt=promoted,
         )
-        return promoted
-    return _verify_canonical_attempt_dataset(
-        context,
-        attempt=journal,
-        lineage=lineage,
-        validated_sql=validated_sql,
-        runtime_root=runtime_root,
+        return promoted, True
+    return (
+        _verify_canonical_attempt_dataset(
+            context,
+            attempt=journal,
+            lineage=lineage,
+            validated_sql=validated_sql,
+            runtime_root=runtime_root,
+        ),
+        True,
     )
 
 
@@ -3472,7 +3470,6 @@ def _committed_attempt_result(
             "Dataset persistence attempt is not committed.",
             recoverable=False,
         )
-    _verify_attempt_final_files(attempt)
     try:
         dataset = context.artifact_store.require(str(attempt["dataset_id"]))
     except KeyError as error:
@@ -3481,30 +3478,19 @@ def _committed_attempt_result(
             "Committed persistence attempt has no registered dataset.",
             recoverable=False,
         ) from error
-    if (
-        dataset.content != dict(attempt.get("dataset") or {})
-        or dataset.status != "pending_review"
-    ):
+    try:
+        content_matches = dataset_storage_content(dataset.content) == dataset_storage_content(
+            dict(attempt.get("dataset") or {})
+        )
+    except ValueError:
+        content_matches = False
+    if not content_matches or dataset.status not in {"pending_review", "active"}:
         raise ToolExecutionError(
             "DATASET_IDENTITY_COLLISION",
             "Committed dataset registry does not match its persistence attempt.",
             recoverable=False,
         )
     replacement = attempt.get("replacement")
-    if isinstance(replacement, dict):
-        predecessor = context.artifact_store.require(
-            ArtifactRef(
-                id=str(replacement["predecessor_id"]),
-                kind=str(replacement["predecessor_kind"]),
-                version=int(replacement["predecessor_version"]),
-            )
-        )
-        if predecessor.status != "superseded":
-            raise ToolExecutionError(
-                "DATASET_IDENTITY_COLLISION",
-                "Committed replacement did not supersede its predecessor.",
-                recoverable=False,
-            )
     return _dataset_result(
         dataset,
         reused=reused,
@@ -3609,6 +3595,7 @@ def _reconcile_persistence_attempt(
     runtime_root: Any,
     plan_id: str,
     plan_version: int,
+    canonical_verified: bool = False,
 ) -> ToolResult | None:
     _require_attempt_identity(
         attempt,
@@ -3623,26 +3610,45 @@ def _reconcile_persistence_attempt(
     )
     state = str(attempt.get("state") or "")
     if state == "committed":
-        attempt = _verify_canonical_attempt_dataset(
-            context,
-            attempt=attempt,
-            lineage=lineage,
-            validated_sql=validated_sql,
+        if not canonical_verified:
+            attempt = _verify_canonical_attempt_dataset(
+                context,
+                attempt=attempt,
+                lineage=lineage,
+                validated_sql=validated_sql,
+                runtime_root=runtime_root,
+            )
+        try:
+            context.artifact_store.require(str(attempt["dataset_id"]))
+        except KeyError:
+            try:
+                context.artifact_store.save_dataset(
+                    dict(attempt["dataset"]),
+                    make_active=False,
+                )
+            except (KeyError, TypeError, ValueError) as error:
+                raise ToolExecutionError(
+                    "DATASET_PERSISTENCE_PENDING",
+                    (
+                        "Verified dataset registry restoration failed after "
+                        f"{type(error).__name__}; replay the exact tool call."
+                    ),
+                    recoverable=True,
+                ) from error
+        return _commit_persistence_attempt(
+            context, methods=methods, attempt=attempt,
+            plan_id=plan_id, plan_version=plan_version, reused=True,
             runtime_root=runtime_root,
-        )
-        return _committed_attempt_result(
-            context,
-            attempt=attempt,
-            reused=True,
         )
     if state == "promoted":
-        attempt = _verify_canonical_attempt_dataset(
-            context,
-            attempt=attempt,
-            lineage=lineage,
-            validated_sql=validated_sql,
-            runtime_root=runtime_root,
-        )
+        if not canonical_verified:
+            attempt = _verify_canonical_attempt_dataset(
+                context,
+                attempt=attempt,
+                lineage=lineage,
+                validated_sql=validated_sql,
+                runtime_root=runtime_root,
+            )
         return _commit_persistence_attempt(
             context,
             methods=methods,
@@ -3742,7 +3748,148 @@ def _reconcile_persistence_attempt(
     )
 
 
+def _resume_existing_dataset(
+    context: ToolContext,
+    *,
+    methods: dict[str, Callable[..., Any]],
+    dataset_id: str,
+    lineage: dict[str, Any],
+    validated_sql: str,
+    runtime_root: Any,
+    plan_id: str,
+    plan_version: int,
+) -> tuple[dict[str, Any], ToolResult | None]:
+    """Validate and reconcile one old identity before considering new work."""
+    final = generated_dataset_artifact_paths(
+        dataset_root=context.thread_storage.datasets, dataset_id=dataset_id,
+    )
+    staging = generated_dataset_staging_paths(
+        dataset_root=context.thread_storage.datasets, dataset_id=dataset_id,
+    )
+    final_paths = {key: str(final[key]) for key in ("path", "schema_path", "metadata_path")}
+    staging_paths = {key: str(staging[key]) for key in ("path", "schema_path", "metadata_path")}
+    canonical_verified = False
+    try:
+        records = context.artifact_store.snapshot().get("datasets") or {}
+        if dataset_id in records:
+            existing = context.artifact_store.require(dataset_id)
+            if existing.status not in {"pending_review", "active"}:
+                raise _durable_collision("Existing dataset is no longer reusable.")
+            dataset_storage_content(existing.content)
+        attempt = methods["get_dataset_persistence_attempt"](dataset_id)
+        # Scope and identity must be checked before reading or promoting files.
+        if attempt is not None:
+            _require_attempt_identity(
+                attempt, lineage=lineage, expected_final_paths=final_paths,
+                expected_staging_paths=staging_paths,
+            )
+        journal = _load_attempt_journal(context, runtime_root=runtime_root, dataset_id=dataset_id)
+        if journal is not None:
+            _require_attempt_identity(
+                journal, lineage=lineage, expected_final_paths=final_paths,
+                expected_staging_paths=staging_paths,
+            )
+            if attempt is not None and attempt.get("state") == "committed":
+                # A completed graph transaction can precede its journal write.
+                # Require agreement on every recorded immutable field first.
+                if any(value != attempt.get(key) for key, value in journal.items() if key != "state"):
+                    raise _durable_collision("Committed graph and journal evidence disagree.")
+                journal = dict(attempt)
+            journal, canonical_verified = _prepare_journal_for_hydration(
+                context, journal=journal, lineage=lineage, validated_sql=validated_sql,
+                expected_final_paths=final_paths, expected_staging_paths=staging_paths,
+                runtime_root=runtime_root,
+            )
+            if dataset_id in records and journal.get("state") in {"promoted", "committed"}:
+                if dataset_storage_content(existing.content) != dataset_storage_content(journal["dataset"]):
+                    raise _durable_collision("Registered dataset content differs from canonical persistence evidence.")
+            try:
+                attempt = _sync_attempt_from_journal(
+                    context,
+                    methods=methods,
+                    attempt=attempt,
+                    journal=journal,
+                    runtime_root=runtime_root,
+                )
+            except (KeyError, TypeError, ValueError) as error:
+                raise ToolExecutionError(
+                    "DATASET_PERSISTENCE_PENDING",
+                    (
+                        "Persistence journal hydration could not update the "
+                        f"checkpoint after {type(error).__name__}; replay the "
+                        "exact tool call."
+                    ),
+                    recoverable=True,
+                ) from error
+            if journal.get("state") == "committed":
+                # Keep completed storage semantics while the graph catches up.
+                attempt = {**attempt, "state": "committed"}
+        if attempt is None:
+            raise _durable_collision("Existing dataset has no persistence evidence.")
+        _validate_attempt_replacement_control(context, attempt=attempt, lineage=lineage)
+    except (KeyError, TypeError, ValueError) as error:
+        raise _durable_collision(
+            f"Existing dataset persistence evidence is incompatible: {type(error).__name__}."
+        ) from error
+    except OSError as error:
+        raise ToolExecutionError(
+            "DATASET_PERSISTENCE_PENDING",
+            f"Existing persistence state could not be accessed: {type(error).__name__}.",
+            recoverable=True,
+        ) from error
+
+    # Validation is complete. A commit/result failure is an interrupted save,
+    # not evidence that another SQL execution should be started.
+    try:
+        result = _reconcile_persistence_attempt(
+            context, methods=methods, attempt=attempt, lineage=lineage,
+            validated_sql=validated_sql, expected_final_paths=final_paths,
+            expected_staging_paths=staging_paths, runtime_root=runtime_root,
+            plan_id=plan_id, plan_version=plan_version,
+            canonical_verified=canonical_verified,
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise ToolExecutionError(
+            "DATASET_PERSISTENCE_PENDING",
+            f"Persistence reconciliation response failed: {type(error).__name__}; replay the exact tool call.",
+            recoverable=True,
+        ) from error
+    return attempt, result
+
+
 def _persist_extraction_result(
+    arguments: dict[str, Any],
+    context: ToolContext,
+    *,
+    stored_plan: Any,
+    plan: DatasetPlan,
+    sql_artifact: Any,
+    validated: ValidatedExtractionSql,
+    execution: SqlExecutionResult | None,
+) -> ToolResult:
+    base_id = _deterministic_agent_dataset_id(
+        thread_id=context.thread_id, plan_id=arguments["plan_id"],
+        plan_version=int(arguments["plan_version"]), sql_id=sql_artifact.id,
+        sql_version=sql_artifact.version, predecessor=_predecessor_identity(arguments),
+    )
+    try:
+        with dataset_persistence_lock(
+            runtime_root=_dataset_root(context), base_dataset_id=base_id,
+            cancellation_point=cancellation_point,
+        ):
+            return _persist_extraction_result_locked(
+                arguments, context, stored_plan=stored_plan, plan=plan,
+                sql_artifact=sql_artifact, validated=validated, execution=execution,
+            )
+    except OSError as error:
+        raise ToolExecutionError(
+            "DATASET_PERSISTENCE_PENDING",
+            f"Dataset persistence is temporarily unavailable: {type(error).__name__}.",
+            recoverable=True,
+        ) from error
+
+
+def _persist_extraction_result_locked(
     arguments: dict[str, Any],
     context: ToolContext,
     *,
@@ -3771,7 +3918,7 @@ def _persist_extraction_result(
             "Validated SQL and its dataset plan identify different studies.",
             recoverable=False,
         )
-    dataset_id = _deterministic_agent_dataset_id(
+    base_dataset_id = _deterministic_agent_dataset_id(
         thread_id=context.thread_id,
         plan_id=plan_id,
         plan_version=plan_version,
@@ -3814,106 +3961,131 @@ def _persist_extraction_result(
         predecessor=predecessor_identity,
     )
     runtime_root = _dataset_root(context)
+    snapshot = context.artifact_store.snapshot()
+    registered_ids = tuple(
+        {
+            *dict(snapshot.get("dataset_persistence_attempts") or {}),
+            *dict(snapshot.get("datasets") or {}),
+        }
+    )
+    family = dataset_attempt_family_ids(
+        runtime_root=runtime_root,
+        base_dataset_id=base_dataset_id,
+        registered_ids=registered_ids,
+    )
+    dataset_id = family[-1] if family else base_dataset_id
+    normalized_recovery = False
+    recovery_base = None
+    if predecessor_identity is not None:
+        ordinary_base = _deterministic_agent_dataset_id(
+            thread_id=context.thread_id, plan_id=plan_id,
+            plan_version=plan_version, sql_id=sql_artifact.id,
+            sql_version=sql_artifact.version, predecessor=None,
+        )
+        digest = hashlib.sha256(json.dumps(
+            {"ordinary_base": ordinary_base, "failed_replacement_base": base_dataset_id},
+            sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        recovery_base = f"subset-agent-{digest[:20]}"
+        recovery_family = dataset_attempt_family_ids(
+            runtime_root=runtime_root, base_dataset_id=recovery_base,
+            registered_ids=registered_ids,
+        )
+        if recovery_family:
+            # Once recovery is reserved, repairing old evidence cannot select
+            # the older result again or abandon an interrupted fresh attempt.
+            base_dataset_id = recovery_base
+            family = recovery_family
+            dataset_id = family[-1]
+            predecessor_identity = None
+            lineage = {**lineage, "predecessor_dataset_id": None,
+                       "predecessor_dataset_version": None}
+            normalized_recovery = True
+    replacement_control = None
+    attempt = None
+
+    # Reconciliation is the only boundary that may select a fresh identity.
+    # SQL execution and new writes below cannot recursively start another retry.
+    if family:
+        try:
+            attempt, result = _resume_existing_dataset(
+                context, methods=methods, dataset_id=dataset_id,
+                lineage=lineage, validated_sql=validated_sql,
+                runtime_root=runtime_root, plan_id=plan_id,
+                plan_version=plan_version,
+            )
+            if result is not None:
+                return result
+        except ToolExecutionError as error:
+            if error.code not in {
+                "DATASET_IDENTITY_COLLISION", "DATASET_DURABLE_COLLISION",
+            }:
+                raise
+            attempt = None
+            if predecessor_identity is not None:
+                # Recovery is ordinary creation when replacement control is no
+                # longer actionable. Derive its family from exact identities.
+                try:
+                    replacement = _replacement_predecessor(
+                        arguments, context, plan_id=plan_id,
+                        plan_version=plan_version,
+                    )
+                except (ToolExecutionError, KeyError, TypeError, ValueError):
+                    replacement = None
+                if replacement is None:
+                    base_dataset_id = recovery_base
+                    predecessor_identity = None
+                    lineage = {**lineage, "predecessor_dataset_id": None,
+                               "predecessor_dataset_version": None}
+                    normalized_recovery = True
+                    family = recovery_family
+                    dataset_id = family[-1] if family else base_dataset_id
+            if attempt is None and family:
+                ordinal = int(dataset_id[len(base_dataset_id) + 7:]) if dataset_id != base_dataset_id else 0
+                dataset_id = f"{base_dataset_id}-retry-{ordinal + 1}"
+
     final_paths = generated_dataset_artifact_paths(
-        dataset_root=context.thread_storage.datasets,
-        dataset_id=dataset_id,
+        dataset_root=context.thread_storage.datasets, dataset_id=dataset_id,
     )
     staging_paths = generated_dataset_staging_paths(
-        dataset_root=context.thread_storage.datasets,
-        dataset_id=dataset_id,
+        dataset_root=context.thread_storage.datasets, dataset_id=dataset_id,
     )
-    expected_final_paths = {
-        key: str(final_paths[key])
-        for key in ("path", "schema_path", "metadata_path")
-    }
-    expected_staging_paths = {
-        key: str(staging_paths[key])
-        for key in ("path", "schema_path", "metadata_path")
-    }
-    attempt = methods["get_dataset_persistence_attempt"](dataset_id)
-    journal = _load_attempt_journal(
-        context,
-        runtime_root=runtime_root,
-        dataset_id=dataset_id,
-    )
-    if journal is not None:
-        _require_attempt_identity(
-            journal,
-            lineage=lineage,
-            expected_final_paths=expected_final_paths,
-            expected_staging_paths=expected_staging_paths,
-        )
-        journal = _prepare_journal_for_hydration(
-            context,
-            journal=journal,
-            lineage=lineage,
-            validated_sql=validated_sql,
-            expected_final_paths=expected_final_paths,
-            expected_staging_paths=expected_staging_paths,
-            runtime_root=runtime_root,
-        )
+    expected_final_paths = {key: str(final_paths[key]) for key in ("path", "schema_path", "metadata_path")}
+    expected_staging_paths = {key: str(staging_paths[key]) for key in ("path", "schema_path", "metadata_path")}
+    if attempt is not None:
+        replacement_control = attempt.get("replacement")
+    elif not normalized_recovery:
+        replacement_control = _replacement_control(_replacement_predecessor(
+            arguments, context, plan_id=plan_id, plan_version=plan_version,
+        ))
+    if attempt is None:
+        attempt_record = {
+            "dataset_id": dataset_id,
+            "state": "begun",
+            "lineage": lineage,
+            "expected_final_paths": expected_final_paths,
+            "expected_staging_paths": expected_staging_paths,
+        }
+        if replacement_control is not None:
+            attempt_record["replacement"] = replacement_control
         try:
-            attempt = _sync_attempt_from_journal(
-                context,
-                methods=methods,
-                attempt=attempt if isinstance(attempt, dict) else None,
-                journal=journal,
-                runtime_root=runtime_root,
-            )
-        except ToolExecutionError:
-            raise
+            attempt = methods["begin_dataset_persistence_attempt"](attempt_record)
         except Exception as error:
-            raise ToolExecutionError(
-                "DATASET_IDENTITY_COLLISION",
-                f"Persistence journal hydration failed: {type(error).__name__}.",
-                recoverable=False,
-            ) from error
-    elif isinstance(attempt, dict):
-        _write_attempt_journal(
-            context,
-            runtime_root=runtime_root,
-            attempt=attempt,
-        )
-    replacement: tuple[Any, ArtifactRef] | None = None
-    replacement_control: dict[str, Any] | None = None
-    if isinstance(attempt, dict):
-        reconciled = _reconcile_persistence_attempt(
-            context,
-            methods=methods,
-            attempt=attempt,
-            lineage=lineage,
-            validated_sql=validated_sql,
-            expected_final_paths=expected_final_paths,
-            expected_staging_paths=expected_staging_paths,
-            runtime_root=runtime_root,
-            plan_id=plan_id,
-            plan_version=plan_version,
-        )
-        if reconciled is not None:
-            return reconciled
-        replacement_control = (
-            dict(attempt["replacement"])
-            if isinstance(attempt.get("replacement"), dict)
-            else None
-        )
-    else:
-        try:
-            context.artifact_store.require(dataset_id)
-        except KeyError:
-            pass
-        else:
-            raise ToolExecutionError(
-                "DATASET_IDENTITY_COLLISION",
-                "Deterministic dataset exists without a persistence attempt.",
-                recoverable=False,
-            )
-        replacement = _replacement_predecessor(
-            arguments,
-            context,
-            plan_id=plan_id,
-            plan_version=plan_version,
-        )
-        replacement_control = _replacement_control(replacement)
+            refreshed = methods["get_dataset_persistence_attempt"](dataset_id)
+            if isinstance(refreshed, dict) and refreshed != attempt_record:
+                raise ToolExecutionError(
+                    "DATASET_IDENTITY_COLLISION",
+                    "Persistence begin collided with different attempt metadata.",
+                    recoverable=False,
+                ) from error
+            if refreshed != attempt_record:
+                raise ToolExecutionError(
+                    "DATASET_PERSISTENCE_PENDING",
+                    f"Persistence begin response was ambiguous after {type(error).__name__}; replay the exact tool call.",
+                    recoverable=True,
+                ) from error
+            attempt = refreshed
+    _write_attempt_journal(context, runtime_root=runtime_root, attempt=attempt)
     if execution is None:
         try:
             execution = execute_validated_extraction_sql(
@@ -3966,43 +4138,6 @@ def _persist_extraction_result(
         "row_filters": candidate.row_filters,
         "protected_columns": candidate.protected_columns,
     }
-    if attempt is None:
-        attempt_record = {
-            "dataset_id": dataset_id,
-            "state": "begun",
-            "lineage": lineage,
-            "expected_final_paths": expected_final_paths,
-            "expected_staging_paths": expected_staging_paths,
-        }
-        if replacement_control is not None:
-            attempt_record["replacement"] = replacement_control
-        try:
-            attempt = methods["begin_dataset_persistence_attempt"](
-                attempt_record
-            )
-        except Exception as error:
-            refreshed = methods["get_dataset_persistence_attempt"](dataset_id)
-            if isinstance(refreshed, dict) and refreshed != attempt_record:
-                raise ToolExecutionError(
-                    "DATASET_IDENTITY_COLLISION",
-                    "Persistence begin collided with different attempt metadata.",
-                    recoverable=False,
-                ) from error
-            if refreshed != attempt_record:
-                raise ToolExecutionError(
-                    "DATASET_PERSISTENCE_PENDING",
-                    (
-                        f"Persistence begin response was ambiguous after "
-                        f"{type(error).__name__}; replay the exact tool call."
-                    ),
-                    recoverable=True,
-                ) from error
-            attempt = refreshed
-        _write_attempt_journal(
-            context,
-            runtime_root=runtime_root,
-            attempt=attempt,
-        )
     try:
         _state, artifact, staged = (
             db_rag_persistence.persist_sql_subset_artifact(

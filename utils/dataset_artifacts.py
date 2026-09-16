@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import errno
+import fcntl
 import hashlib
 import json
 import os
@@ -9,7 +12,8 @@ from pathlib import Path
 import re
 import shutil
 import tempfile
-from typing import Any
+import time
+from typing import Any, Callable, Iterator
 
 import pandas as pd
 import pyarrow.parquet as parquet
@@ -17,6 +21,7 @@ from utils.user_storage import ThreadStorageScope
 
 
 _PERSISTENCE_JOURNAL_DIRECTORY = ".persistence_attempts"
+_PERSISTENCE_LOCK_DIRECTORY = ".locks"
 _PERSISTENCE_STATES = {"begun", "staged", "promoted", "committed"}
 _PERSISTENCE_PATH_KEYS = {"path", "schema_path", "metadata_path"}
 _PERSISTENCE_LINEAGE_KEYS = {
@@ -98,6 +103,10 @@ _DATASET_SCHEMA_COLUMN_KEYS = {
 }
 
 
+class DatasetPersistenceLockTimeout(TimeoutError):
+    """Raised when a dataset-family persistence lock cannot be acquired in time."""
+
+
 def _storage_root(value: str | Path | ThreadStorageScope) -> Path:
     if isinstance(value, ThreadStorageScope):
         return value.datasets
@@ -115,6 +124,83 @@ def _safe_path_component(value: str, *, label: str) -> str:
     ):
         raise ValueError(f"{label} must be one safe path component")
     return component
+
+
+def _persistence_journal_root(
+    runtime_root: str | Path | ThreadStorageScope,
+) -> Path:
+    configured_root = _storage_root(runtime_root).resolve()
+    journal_root = configured_root / _PERSISTENCE_JOURNAL_DIRECTORY
+    if journal_root.is_symlink():
+        raise ValueError(
+            "Persistence journal must remain under the configured dataset root"
+        )
+    if journal_root.exists() and journal_root.resolve().parent != configured_root:
+        raise ValueError(
+            "Persistence journal must remain under the configured dataset root"
+        )
+    return journal_root
+
+
+@contextmanager
+def dataset_persistence_lock(
+    *,
+    runtime_root: str | Path | ThreadStorageScope,
+    base_dataset_id: str,
+    cancellation_point: Callable[[], None] | None = None,
+    timeout_seconds: float = 30.0,
+    poll_interval_seconds: float = 0.05,
+) -> Iterator[Path]:
+    """Exclusively serialize persistence work for one dataset attempt family."""
+
+    timeout = float(timeout_seconds)
+    poll_interval = float(poll_interval_seconds)
+    if timeout <= 0 or timeout > 30:
+        raise ValueError("timeout_seconds must be greater than zero and at most 30")
+    if poll_interval <= 0:
+        raise ValueError("poll_interval_seconds must be greater than zero")
+    base = _safe_path_component(base_dataset_id, label="base_dataset_id")
+    journal_root = _persistence_journal_root(runtime_root)
+    journal_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if journal_root.is_symlink() or journal_root.resolve() != journal_root:
+        raise ValueError(
+            "Persistence journal must remain under the configured dataset root"
+        )
+    lock_root = journal_root / _PERSISTENCE_LOCK_DIRECTORY
+    if lock_root.is_symlink():
+        raise ValueError("Persistence lock must be under the configured dataset root")
+    lock_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if lock_root.is_symlink() or lock_root.resolve().parent != journal_root:
+        raise ValueError("Persistence lock must be under the configured dataset root")
+    lock_path = lock_root / f"{base}.lock"
+    if lock_path.resolve().parent != lock_root:
+        raise ValueError("Persistence lock must be under the configured dataset root")
+
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    acquired = False
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            if cancellation_point is not None:
+                cancellation_point()
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except OSError as exc:
+                if exc.errno not in {errno.EACCES, errno.EAGAIN}:
+                    raise
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise DatasetPersistenceLockTimeout(
+                    f"Timed out acquiring dataset persistence lock for {base!r}"
+                )
+            time.sleep(min(poll_interval, remaining))
+        yield lock_path
+    finally:
+        if acquired:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
 
 
 def _validate_attachment_provenance(
@@ -224,6 +310,30 @@ def generated_dataset_persistence_journal_path(
     if journal_path.resolve().parent != journal_root:
         raise ValueError("Persistence journal must be under the configured dataset root")
     return journal_path
+
+
+def dataset_attempt_family_ids(
+    *,
+    runtime_root: str | Path | ThreadStorageScope,
+    base_dataset_id: str,
+    registered_ids: tuple[str, ...] | list[str] = (),
+) -> tuple[str, ...]:
+    base = _safe_path_component(base_dataset_id, label="base_dataset_id")
+    pattern = re.compile(rf"^{re.escape(base)}(?:-retry-([1-9][0-9]*))?$")
+    candidates = {str(value) for value in registered_ids if pattern.fullmatch(str(value))}
+    journal_root = _persistence_journal_root(runtime_root)
+    if journal_root.is_dir():
+        candidates.update(
+            path.stem
+            for path in journal_root.iterdir()
+            if path.is_file() and path.suffix == ".json" and pattern.fullmatch(path.stem)
+        )
+
+    def order(value: str) -> int:
+        match = pattern.fullmatch(value)
+        return int(match.group(1)) if match and match.group(1) else 0
+
+    return tuple(sorted(candidates, key=order))
 
 
 def _normalized_path_map(paths: dict[str, Any]) -> dict[str, Path]:
