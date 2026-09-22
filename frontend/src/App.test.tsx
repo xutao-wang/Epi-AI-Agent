@@ -259,6 +259,10 @@ function modelOption(
 const runtimeOptions: RuntimeOptions = {
   defaults: defaultRuntimeSettings,
   capabilities: {
+    python_execution: {
+      status: "available",
+      message: "Generated Python is available in Guarded Local mode.",
+    },
     publication_knowledge: {
       status: "available",
       message: "Publication knowledge is available.",

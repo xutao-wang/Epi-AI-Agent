@@ -65,7 +65,14 @@ _SPECIFICATION_KEYS = {
     "time_to_event",
     "timepoint",
 }
-_RUNTIME_KEYS = {"image", "language", "packages", "version"}
+_RUNTIME_KEYS = {
+    "execution_mode",
+    "image",
+    "language",
+    "packages",
+    "security_boundary",
+    "version",
+}
 
 
 class RequestAnalysisResultReviewArguments(BaseModel):

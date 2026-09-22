@@ -85,6 +85,8 @@ def test_runtime_executes_against_only_the_selected_dataset(tmp_path):
     assert result.output_text.strip() == "5"
     assert result.figure_png == b""
     assert result.runtime.language == "Python"
+    assert result.runtime.execution_mode == "guarded_local"
+    assert result.runtime.security_boundary == "none"
     assert list(tmp_path.iterdir()) == []
 
 

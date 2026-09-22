@@ -21,6 +21,8 @@ class PythonRuntimeManifest(BaseModel):
     language: Literal["Python"] = "Python"
     version: str = Field(min_length=1)
     packages: list[RuntimePackage] = Field(default_factory=list)
+    execution_mode: Literal["guarded_local"] = "guarded_local"
+    security_boundary: Literal["none"] = "none"
 
 
 class PythonExecutionResult(BaseModel):

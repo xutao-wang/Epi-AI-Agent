@@ -65,6 +65,15 @@ class RuntimeCapabilities(BaseModel):
 
     publication_knowledge: RuntimeCapability
     db_rag_dataset: RuntimeCapability
+    python_execution: RuntimeCapability = Field(
+        default_factory=lambda: RuntimeCapability(
+            status="available",
+            message=(
+                "Generated Python is available in Guarded Local mode with "
+                "host permissions and no operating-system security boundary."
+            ),
+        )
+    )
     study_design: RuntimeCapability = Field(
         default_factory=lambda: RuntimeCapability(
             status="available",

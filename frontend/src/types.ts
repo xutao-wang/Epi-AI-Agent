@@ -67,6 +67,7 @@ export interface RuntimeCapability {
 export interface RuntimeCapabilities {
   publication_knowledge: RuntimeCapability;
   db_rag_dataset: RuntimeCapability;
+  python_execution: RuntimeCapability;
 }
 
 export type EmbeddingRetrievalMode =

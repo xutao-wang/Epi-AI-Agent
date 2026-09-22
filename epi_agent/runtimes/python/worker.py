@@ -165,6 +165,8 @@ def execute(input_dir: Path, output_dir: Path) -> int:
                     "language": "Python",
                     "version": platform.python_version(),
                     "packages": _package_manifest(),
+                    "execution_mode": "guarded_local",
+                    "security_boundary": "none",
                 },
                 "has_figure": bool(figure_png),
             },

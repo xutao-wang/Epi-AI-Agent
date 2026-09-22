@@ -286,6 +286,13 @@ def build_application(
             )
         ),
         capabilities=RuntimeCapabilities(
+            python_execution=RuntimeCapability(
+                status="available",
+                message=(
+                    "Generated Python is available in Guarded Local mode with "
+                    "host permissions and no operating-system security boundary."
+                ),
+            ),
             publication_knowledge=_capability(
                 studies,
                 "knowledge",
