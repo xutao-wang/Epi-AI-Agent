@@ -7,7 +7,7 @@ import os
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable, MutableMapping, Sequence
+from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from pathlib import Path
 
 from api.deployment import (
@@ -57,10 +57,63 @@ _DEPRECATED_LOCAL_ENV_KEYS = {
     "REPORT_AGENT_TITLE_MODEL",
     "REPORT_AGENT_CHECKPOINT_DB_PATH",
 }
+GUARDED_PYTHON_ACK_ENV = "REPORT_AGENT_GUARDED_PYTHON_ACKNOWLEDGED"
+_GUARDED_PYTHON_WARNING = (
+    "Generated Python runs with your local user-account permissions. "
+    "Epi-AI-Agent applies policy checks and resource limits, but this is "
+    "not an operating-system sandbox."
+)
 
 
 class StartupConfigurationError(RuntimeError):
     """A startup problem the participant can correct without a traceback."""
+
+
+def ensure_guarded_python_acknowledgement(
+    *,
+    project_root: str | Path = PROJECT_ROOT,
+    environ: MutableMapping[str, str] = os.environ,
+    input_fn: Callable[[str], str] = input,
+    persist_fn: Callable[
+        [str | Path, dict[str, str]],
+        None,
+    ] = persist_local_env_values,
+    interactive: bool | None = None,
+) -> None:
+    if environ.get(GUARDED_PYTHON_ACK_ENV, "").strip() == "1":
+        return
+
+    is_interactive = sys.stdin.isatty() if interactive is None else interactive
+    error_message = (
+        f"{_GUARDED_PYTHON_WARNING} Set {GUARDED_PYTHON_ACK_ENV}=1 "
+        "after reviewing this warning."
+    )
+    if not is_interactive:
+        raise StartupConfigurationError(error_message)
+    try:
+        answer = input_fn(
+            f"{_GUARDED_PYTHON_WARNING}\nContinue? [y/N]: "
+        ).strip().casefold()
+    except (EOFError, KeyboardInterrupt) as error:
+        raise StartupConfigurationError(error_message) from error
+    if answer not in {"y", "yes"}:
+        raise StartupConfigurationError(error_message)
+
+    environ[GUARDED_PYTHON_ACK_ENV] = "1"
+    persist_fn(project_root, {GUARDED_PYTHON_ACK_ENV: "1"})
+
+
+def load_startup_environment(
+    *,
+    project_root: str | Path = PROJECT_ROOT,
+    environ: Mapping[str, str] = os.environ,
+) -> None:
+    load_app_environment(
+        project_root,
+        local_api_keys_only=(
+            environ.get("REPORT_AGENT_CONTAINER", "").strip() != "1"
+        ),
+    )
 
 
 def normalize_secret_input(value: str) -> str:
@@ -484,8 +537,16 @@ def ensure_active_provider_credential(
         return
 
 
-def _loopback_host(value: str) -> str:
+def deployment_host(
+    value: str,
+    environ: Mapping[str, str] = os.environ,
+) -> str:
     host = value.strip()
+    if (
+        host == "0.0.0.0"
+        and environ.get("REPORT_AGENT_CONTAINER", "").strip() == "1"
+    ):
+        return host
     if host.casefold() == "localhost":
         return host
     try:
@@ -505,7 +566,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Start the Epidemiology Research Agent demo."
     )
-    parser.add_argument("--host", type=_loopback_host, default="127.0.0.1")
+    parser.add_argument("--host", type=deployment_host, default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument(
         "--reconfigure",
@@ -649,10 +710,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     try:
         validate_python_version()
-        load_app_environment(
-            PROJECT_ROOT,
-            local_api_keys_only=True,
-        )
+        load_startup_environment()
+        ensure_guarded_python_acknowledgement()
         configure_native_runtime()
         prepare_environment()
         model_availability = configure_and_verify_providers(
