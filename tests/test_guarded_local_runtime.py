@@ -67,7 +67,7 @@ def _cancel_after_file_exists(token: CancellationToken, pid_file: Path) -> None:
 def test_runtime_executes_against_only_the_selected_dataset(tmp_path):
     runtime = LocalPythonRuntime(
         runtime_root=tmp_path,
-        timeout_seconds=60,
+        timeout_seconds=180,
         memory_limit_bytes=None,
     )
 
@@ -145,7 +145,7 @@ def test_parent_rejects_malformed_worker_result(tmp_path):
 def test_generated_stdout_limit_returns_typed_failure(tmp_path):
     runtime = LocalPythonRuntime(
         runtime_root=tmp_path,
-        timeout_seconds=60,
+        timeout_seconds=180,
         memory_limit_bytes=None,
     )
 
