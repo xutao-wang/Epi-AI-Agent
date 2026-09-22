@@ -68,6 +68,10 @@ _SQL_REPAIR_ERROR_CODE = "SQL_REPAIR_REQUIRED"
 _SQL_REPAIR_EXHAUSTED_CODE = "SQL_REPAIR_BUDGET_EXHAUSTED"
 _SQL_REPAIR_TOOL_NAME = "dbrag-validate_and_extract"
 _SQL_REPAIR_CANDIDATE_LIMIT = 5
+_PYTHON_TOOL_NAME = "analysis-run_custom_python"
+_PYTHON_POLICY_BLOCKED_CODE = "POLICY_BLOCKED"
+_PYTHON_POLICY_EXHAUSTED_CODE = "POLICY_REPAIR_EXHAUSTED"
+_PYTHON_POLICY_REPAIR_LIMIT = 1
 _LOGGER = logging.getLogger(__name__)
 _DATASET_ARTIFACT_KINDS = {
     "analysis_dataset",
@@ -195,12 +199,79 @@ def _sql_repair_budget_exhausted(signatures: list[str]) -> bool:
     return _sql_repair_attempts(signatures) >= _SQL_REPAIR_CANDIDATE_LIMIT
 
 
+def _python_policy_failure_signatures(signatures: list[str]) -> list[str]:
+    matching: list[str] = []
+    for signature in signatures:
+        record = _failure_record(signature)
+        if (
+            record.get("tool") == _PYTHON_TOOL_NAME
+            and record.get("code")
+            in {_PYTHON_POLICY_BLOCKED_CODE, _PYTHON_POLICY_EXHAUSTED_CODE}
+        ):
+            matching.append(signature)
+    return matching
+
+
+def _python_policy_repair_attempts(signatures: list[str]) -> int:
+    return sum(
+        _failure_record(signature).get("code") == _PYTHON_POLICY_BLOCKED_CODE
+        for signature in _python_policy_failure_signatures(signatures)
+    )
+
+
+def _python_policy_repair_exhausted(signatures: list[str]) -> bool:
+    return any(
+        _failure_record(signature).get("code") == _PYTHON_POLICY_EXHAUSTED_CODE
+        for signature in _python_policy_failure_signatures(signatures)
+    )
+
+
+def _persistent_failure_signatures(signatures: list[str]) -> list[str]:
+    sql_signatures = set(_sql_repair_failure_signatures(signatures))
+    python_signatures = set(_python_policy_failure_signatures(signatures))
+    return [
+        signature
+        for signature in signatures
+        if signature in sql_signatures or signature in python_signatures
+    ]
+
+
+def _python_policy_exhausted_error(
+    *,
+    details: dict[str, Any] | None = None,
+    executed: bool,
+) -> ToolExecutionError:
+    selected_details = dict(details or {})
+    selected_details.update(
+        {
+            "executed": executed,
+            "instruction": (
+                "Do not call custom Python again in this user run. Use another "
+                "permitted evidence tool or answer from existing evidence "
+                "without inventing results."
+            ),
+            "python_available": False,
+            "repair_attempts_remaining": 0,
+        }
+    )
+    return ToolExecutionError(
+        _PYTHON_POLICY_EXHAUSTED_CODE,
+        "Custom Python policy correction is exhausted for this user run.",
+        recoverable=True,
+        details=selected_details,
+    )
+
+
 def _repeated_failure(signatures: list[str]) -> bool:
     if signatures:
         latest = _failure_record(signatures[-1])
         if latest.get("code") == "INVALID_ARGUMENTS" or (
             latest.get("code") == _SQL_REPAIR_ERROR_CODE
             and latest.get("tool") == _SQL_REPAIR_TOOL_NAME
+        ) or (
+            latest.get("tool") == _PYTHON_TOOL_NAME
+            and latest.get("code")
+            in {_PYTHON_POLICY_BLOCKED_CODE, _PYTHON_POLICY_EXHAUSTED_CODE}
         ):
             return False
     return len(signatures) >= _REPEATED_FAILURE_LIMIT and all(
@@ -235,11 +306,20 @@ def _matching_failed_call(
     for signature in reversed(signatures):
         record = _failure_record(signature)
         recorded_arguments = record.get("arguments")
-        if (
-            record.get("tool") == name
-            and isinstance(recorded_arguments, dict)
-            and _canonical_tool_arguments(recorded_arguments) == candidate
+        if record.get("tool") != name or not isinstance(
+            recorded_arguments,
+            dict,
         ):
+            continue
+        if (
+            name == _PYTHON_TOOL_NAME
+            and record.get("code")
+            in {_PYTHON_POLICY_BLOCKED_CODE, _PYTHON_POLICY_EXHAUSTED_CODE}
+            and isinstance(arguments.get("code"), str)
+            and recorded_arguments.get("code") == arguments["code"]
+        ):
+            return record
+        if _canonical_tool_arguments(recorded_arguments) == candidate:
             return record
     return None
 
@@ -537,6 +617,28 @@ def _prepare_model_request(
                 )
             )
         )
+    if (
+        _python_policy_repair_exhausted(failures)
+        and not tool_failure_recovery
+        and not _sql_repair_budget_exhausted(failures)
+    ):
+        continuation_messages.append(
+            SystemMessage(
+                content=json.dumps(
+                    {
+                        "code": _PYTHON_POLICY_EXHAUSTED_CODE,
+                        "instruction": (
+                            "Custom Python is unavailable for the remainder of "
+                            "this user run. Use another permitted evidence tool "
+                            "or answer from existing evidence; do not invent "
+                            "unavailable results."
+                        ),
+                    },
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+            )
+        )
     budget = (
         agent_config.model_profile.user_output_token_increment
         if phase == "authorized"
@@ -579,13 +681,23 @@ def _activity_thread_id(config: RunnableConfig) -> str:
 
 def _model_tool_schemas(
     agent_config: EpiAgentRuntimeConfig,
+    state: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    return agent_config.registry.model_schemas(
+    schemas = agent_config.registry.model_schemas(
         inline_local_references=(
             agent_config.model_profile.provider
             in {PROVIDER_OPENAI_COMPATIBLE, PROVIDER_OPENROUTER}
         ),
     )
+    if not _python_policy_repair_exhausted(
+        list(state.get("failure_signatures") or [])
+    ):
+        return schemas
+    return [
+        schema
+        for schema in schemas
+        if dict(schema.get("function") or {}).get("name") != _PYTHON_TOOL_NAME
+    ]
 
 
 def _call_model(
@@ -611,7 +723,7 @@ def _call_model(
         callable_model = (
             model
             if recovery_required
-            else model.bind_tools(_model_tool_schemas(agent_config))
+            else model.bind_tools(_model_tool_schemas(agent_config, state))
         )
         answer = callable_model.invoke(
             messages,
@@ -660,7 +772,7 @@ async def _acall_model(
         callable_model = (
             model
             if recovery_required
-            else model.bind_tools(_model_tool_schemas(agent_config))
+            else model.bind_tools(_model_tool_schemas(agent_config, state))
         )
         answer = await callable_model.ainvoke(
             messages,
@@ -1229,6 +1341,20 @@ def _execute_tools(
             name,
             arguments,
         )
+        if name == _PYTHON_TOOL_NAME and (
+            _python_policy_repair_exhausted(failures)
+            or (
+                previous is not None
+                and previous.get("code") == _PYTHON_POLICY_BLOCKED_CODE
+            )
+        ):
+            error = _python_policy_exhausted_error(executed=False)
+            messages.append(error_tool_message(call, error))
+            signature = _failure_signature(error.code, name, arguments)
+            failures.append(signature)
+            batch_failures.append(signature)
+            tracking.finish("rejected", error=error)
+            continue
         if previous is not None:
             error = ToolExecutionError(
                 _REPEATED_TOOL_CALL_REJECTED_CODE,
@@ -1299,6 +1425,36 @@ def _execute_tools(
             tracking.finish("cancelled")
             raise
         except ToolExecutionError as error:
+            if (
+                name == _PYTHON_TOOL_NAME
+                and error.code == _PYTHON_POLICY_BLOCKED_CODE
+            ):
+                details = dict(error.details or {})
+                if (
+                    _python_policy_repair_attempts(failures)
+                    >= _PYTHON_POLICY_REPAIR_LIMIT
+                ):
+                    error = _python_policy_exhausted_error(
+                        details=details,
+                        executed=False,
+                    )
+                else:
+                    details.update(
+                        {
+                            "instruction": (
+                                "Remove every reported policy violation, then "
+                                "submit one changed corrected-code call."
+                            ),
+                            "repair_attempts_remaining": 1,
+                            "repair_required": True,
+                        }
+                    )
+                    error = ToolExecutionError(
+                        error.code,
+                        str(error),
+                        recoverable=True,
+                        details=details,
+                    )
             if error.code == "INVALID_ARGUMENTS":
                 invalid_arguments_seen = True
                 details = dict(error.details or {})
@@ -1411,10 +1567,13 @@ def _execute_tools(
             name,
         )
         failures = (
-            list(batch_failures)
+            [
+                *_python_policy_failure_signatures(failures_before_batch),
+                *batch_failures,
+            ]
             if name == _SQL_REPAIR_TOOL_NAME
             else [
-                *_sql_repair_failure_signatures(failures_before_batch),
+                *_persistent_failure_signatures(failures_before_batch),
                 *batch_failures,
             ]
         )
