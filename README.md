@@ -5,7 +5,7 @@ on macOS and Linux with Python 3.12 and an OpenAI or Anthropic API key.
 
 [Watch the demo video](https://drive.google.com/file/d/1A-N8pTOn6tKcZ_D6DLPc62EWvb2e_68E/view?usp=sharing)
 
-## Start the demo
+## Native setup: macOS and Linux/HPC
 
 ```bash
 # Install uv if needed (macOS/Linux)
@@ -33,12 +33,55 @@ python run_fastapi.py
 ```
 
 The installer prompts for a study-package folder. On first startup, choose a
-runtime-data folder and configure OpenAI, Anthropic, or OpenRouter. To change
+runtime-data folder and configure OpenAI, Anthropic, or OpenRouter. Startup also
+shows the Guarded Local warning described below. Accepting it once records
+`REPORT_AGENT_GUARDED_PYTHON_ACKNOWLEDGED=1` in the local `.env`. To change
 providers later, run `python run_fastapi.py --reconfigure`.
+
+For a non-interactive native launch, read the warning under
+[Generated Python](#generated-python-guarded-local), then set the acknowledgement
+explicitly:
+
+```bash
+export REPORT_AGENT_GUARDED_PYTHON_ACKNOWLEDGED=1
+python run_fastapi.py
+```
 
 By default, the application is available at:
 
 <http://127.0.0.1:8080/>
+
+## Optional Docker deployment
+
+Docker is optional. Use it when you want the whole Epi-AI-Agent application
+separated from the host outside explicitly mounted storage. Docker Desktop on
+macOS or a Docker Engine/Compose installation on Linux can run the same image.
+
+After reading the Guarded Local warning below, supply the acknowledgement and
+at least one provider credential at container runtime:
+
+```bash
+export REPORT_AGENT_GUARDED_PYTHON_ACKNOWLEDGED=1
+export OPENAI_API_KEY="replace-with-provider-key"
+docker compose up --build
+```
+
+Open <http://127.0.0.1:8080/>. Compose publishes no non-loopback host port. A
+named volume persists the SQLite checkpoint, conversations, uploads, and
+generated artifacts at `/app/runtime` across container replacement. Provider
+keys and the acknowledgement are runtime environment values and are not copied
+into the image.
+
+To expose one existing study-data directory, mount only that directory as
+read-only with the supplied override:
+
+```bash
+export REPORT_AGENT_STUDY_DATA="/absolute/path/to/study_data"
+docker compose -f compose.yaml -f compose.study-data.yaml up --build
+```
+
+The default configuration does not mount the source checkout, host home,
+credential directories, root filesystem, or container-engine socket.
 
 ## Model providers
 
@@ -64,7 +107,30 @@ Semantic search uses the built-in OpenAI `text-embedding-3-large` model and
 requires `OPENAI_API_KEY`, even when the chat model is Claude. If OpenAI
 embeddings are unavailable, search falls back to lexical matching.
 
-## Safety note
+## Generated Python: Guarded Local
 
-Local Python analysis is not a security sandbox. Use the demo only with files
-and requests you trust.
+Generated analyses always use **Guarded Local**. A fresh worker receives one
+approved table as the in-memory `dataset`, a clean allowlisted environment,
+private temporary directories, ordinary operating-system resource limits, a
+wall timeout, bounded output, and process-group cleanup. Static checks block
+common filesystem, network, environment, process-control, dynamic-execution,
+interactive-input, and package-installation operations. Results are staged for
+human review.
+
+Guarded Local runs with the same host permissions as the application. These
+controls reduce accidental misuse and runaway execution, but they are not an
+operating-system sandbox and cannot safely contain deliberately adversarial
+Python. Use the native application only with requests and dependencies you
+trust.
+
+Docker adds a boundary between the whole application and the host; it does not
+create a separate boundary between generated Python and the rest of the
+application container. Application networking remains enabled for model
+providers and trusted tools, while generated Python remains offline by static
+policy.
+
+The installed scientific package set is fixed by `requirements.txt`. Generated
+code cannot install packages with pip, Conda, uv, system package managers, or
+source builds. Missing imports return `DEPENDENCY_NOT_AVAILABLE`. See the
+[generated Python execution policy](tools/python_execution_policy.md) for the
+complete contract and stable policy rule IDs.

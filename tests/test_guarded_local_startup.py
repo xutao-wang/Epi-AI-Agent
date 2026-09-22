@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 import pytest
 
@@ -176,3 +177,20 @@ def test_container_startup_preserves_runtime_provider_credentials(
     assert calls == [
         (tmp_path, {"local_api_keys_only": local_api_keys_only})
     ]
+
+
+def test_documentation_names_guarded_local_and_explains_the_boundary():
+    readme = Path("README.md").read_text(encoding="utf-8")
+    policy = Path("tools/python_execution_policy.md").read_text(
+        encoding="utf-8"
+    )
+    combined = readme + "\n" + policy
+
+    assert "Guarded Local" in combined
+    assert "REPORT_AGENT_GUARDED_PYTHON_ACKNOWLEDGED=1" in combined
+    assert "docker compose up --build" in readme
+    assert "host permissions" in combined
+    assert "fixed" in combined.casefold()
+    assert "package" in combined.casefold()
+    assert "REPORT_AGENT_PYTHON_ANALYSIS_RUNTIME" not in combined
+    assert "Bubblewrap" not in combined
