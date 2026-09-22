@@ -4,6 +4,7 @@ import json
 import math
 import os
 from pathlib import Path
+import selectors
 import signal
 import subprocess
 import sys
@@ -24,6 +25,8 @@ from utils.run_cancellation import RunCancelled, cancellation_point
 
 
 MAX_STDOUT_BYTES = 100_000
+MAX_CHILD_STDOUT_BYTES = 100_000
+MAX_CHILD_STDERR_BYTES = 100_000
 MAX_RESULT_BYTES = 1_000_000
 MAX_FIGURE_BYTES = 10_000_000
 _DEFAULT_TIMEOUT_SECONDS = 60.0
@@ -32,6 +35,35 @@ _ALLOWED_ENVIRONMENT = ("PATH", "LANG", "LC_ALL", "PYTHONUTF8")
 _NPROC_HEADROOM = 128
 _NPROC_FLOOR = 256
 _NPROC_FALLBACK = 4096
+
+
+class _NativeOutputLimit(RuntimeError):
+    pass
+
+
+def _child_environment(run_dir: Path) -> dict[str, str]:
+    environment = {
+        name: os.environ[name]
+        for name in _ALLOWED_ENVIRONMENT
+        if name in os.environ
+    }
+    environment.update(
+        {
+            "PYTHONUTF8": "1",
+            "MPLBACKEND": "Agg",
+            "MPLCONFIGDIR": str(run_dir / "matplotlib"),
+            "OPENBLAS_NUM_THREADS": "1",
+            "OMP_NUM_THREADS": "1",
+            "MKL_NUM_THREADS": "1",
+            "NUMEXPR_NUM_THREADS": "1",
+            "VECLIB_MAXIMUM_THREADS": "1",
+        }
+    )
+    return environment
+
+
+def _worker_command() -> list[str]:
+    return [sys.executable, str(Path(__file__).with_name("worker.py"))]
 
 
 def _failure(
@@ -173,6 +205,44 @@ def _terminate_process_group(process: Any) -> None:
     except ProcessLookupError:
         return
     process.wait(timeout=2)
+
+
+def _communicate_bounded(
+    process: subprocess.Popen[bytes],
+    *,
+    deadline: float,
+) -> tuple[bytes, bytes]:
+    streams: dict[str, tuple[Any, bytearray, int]] = {
+        "stdout": (process.stdout, bytearray(), MAX_CHILD_STDOUT_BYTES),
+        "stderr": (process.stderr, bytearray(), MAX_CHILD_STDERR_BYTES),
+    }
+    selector = selectors.DefaultSelector()
+    try:
+        for name, (stream, _buffer, _limit) in streams.items():
+            if stream is None:
+                continue
+            os.set_blocking(stream.fileno(), False)
+            selector.register(stream, selectors.EVENT_READ, data=name)
+
+        while selector.get_map() or process.poll() is None:
+            cancellation_point()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(process.args, 0)
+            for key, _mask in selector.select(min(0.1, remaining)):
+                chunk = os.read(key.fd, 65_536)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                _stream, buffer, limit = streams[str(key.data)]
+                buffer.extend(chunk)
+                if len(buffer) > limit:
+                    raise _NativeOutputLimit(str(key.data))
+
+        process.wait(timeout=max(0.0, deadline - time.monotonic()))
+        return bytes(streams["stdout"][1]), bytes(streams["stderr"][1])
+    finally:
+        selector.close()
 
 
 def _parse_result(output_dir: Path, *, duration_seconds: float) -> PythonExecutionResult:
@@ -343,27 +413,8 @@ class LocalPythonRuntime:
                     recoverable=False,
                 ) from exc
 
-            environment = {
-                name: os.environ[name]
-                for name in _ALLOWED_ENVIRONMENT
-                if name in os.environ
-            }
-            environment.update(
-                {
-                    "PYTHONUTF8": "1",
-                    "MPLBACKEND": "Agg",
-                    "MPLCONFIGDIR": str(run_dir / "matplotlib"),
-                    "OPENBLAS_NUM_THREADS": "1",
-                    "OMP_NUM_THREADS": "1",
-                    "MKL_NUM_THREADS": "1",
-                    "NUMEXPR_NUM_THREADS": "1",
-                    "VECLIB_MAXIMUM_THREADS": "1",
-                }
-            )
-            command = [
-                sys.executable,
-                str(Path(__file__).with_name("worker.py")),
-            ]
+            environment = _child_environment(run_dir)
+            command = _worker_command()
             command.extend(
                 [
                     "--input-dir",
@@ -373,6 +424,7 @@ class LocalPythonRuntime:
                 ]
             )
             started = time.monotonic()
+            process: subprocess.Popen[bytes] | None = None
             try:
                 process = subprocess.Popen(
                     command,
@@ -388,27 +440,26 @@ class LocalPythonRuntime:
                     ),
                 )
                 deadline = started + self._timeout_seconds
-                while True:
-                    cancellation_point()
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise subprocess.TimeoutExpired(
-                            command,
-                            self._timeout_seconds,
-                        )
-                    try:
-                        _child_stdout, child_stderr = process.communicate(
-                            timeout=min(0.1, remaining),
-                        )
-                        cancellation_point()
-                        break
-                    except subprocess.TimeoutExpired:
-                        continue
+                _child_stdout, child_stderr = _communicate_bounded(
+                    process,
+                    deadline=deadline,
+                )
             except RunCancelled:
-                _terminate_process_group(process)
+                if process is not None:
+                    _terminate_process_group(process)
                 raise
+            except _NativeOutputLimit as exc:
+                if process is not None:
+                    _terminate_process_group(process)
+                raise _failure(
+                    "PROCESS_OUTPUT_TOO_LARGE",
+                    "Python worker stdout or stderr exceeded its size limit.",
+                    category="invalid_output",
+                    recoverable=True,
+                ) from exc
             except subprocess.TimeoutExpired as exc:
-                _terminate_process_group(process)
+                if process is not None:
+                    _terminate_process_group(process)
                 raise _failure(
                     "EXECUTION_TIMEOUT",
                     (
@@ -419,6 +470,8 @@ class LocalPythonRuntime:
                     recoverable=True,
                 ) from exc
             except (OSError, subprocess.SubprocessError) as exc:
+                if process is not None:
+                    _terminate_process_group(process)
                 raise _failure(
                     "PROCESS_START_FAILED",
                     "Unable to start the local Python runtime.",
@@ -427,6 +480,7 @@ class LocalPythonRuntime:
                 ) from exc
 
             duration_seconds = time.monotonic() - started
+            assert process is not None
             if process.returncode != 0:
                 detail = child_stderr.decode(
                     "utf-8",
