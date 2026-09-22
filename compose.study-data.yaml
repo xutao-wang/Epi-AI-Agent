@@ -1,0 +1,4 @@
+services:
+  epi-agent:
+    volumes:
+      - "${REPORT_AGENT_STUDY_DATA:?Set REPORT_AGENT_STUDY_DATA to one study-data directory}:/app/study_data:ro"

@@ -1,0 +1,27 @@
+services:
+  epi-agent:
+    build:
+      context: .
+      target: runtime
+    init: true
+    environment:
+      REPORT_AGENT_CONTAINER: "1"
+      REPORT_AGENT_GUARDED_PYTHON_ACKNOWLEDGED: "${REPORT_AGENT_GUARDED_PYTHON_ACKNOWLEDGED:?Set REPORT_AGENT_GUARDED_PYTHON_ACKNOWLEDGED=1 after reading the Guarded Local warning}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - epi-agent-runtime:/app/runtime
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 4g
+    restart: unless-stopped
+
+volumes:
+  epi-agent-runtime:
+
