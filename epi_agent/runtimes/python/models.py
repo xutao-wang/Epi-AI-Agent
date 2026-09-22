@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Literal
+import json
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -44,8 +45,14 @@ class PythonRuntimeFailure(RuntimeError):
         *,
         category: str,
         recoverable: bool,
+        details: dict[str, Any] | None = None,
     ) -> None:
         self.code = code
         self.category = category
         self.recoverable = recoverable
+        self.details = (
+            json.loads(json.dumps(details, allow_nan=False))
+            if details is not None
+            else None
+        )
         super().__init__(message)

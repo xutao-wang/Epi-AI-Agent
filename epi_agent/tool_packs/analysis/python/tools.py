@@ -63,7 +63,8 @@ class CustomPythonArguments(BaseModel):
         description=(
             "Python analysis code. The exact approved input is available as "
             "the already-loaded pandas.DataFrame `dataset`; analyze it "
-            "directly and do not load attachment files or discover paths."
+            "directly and do not load attachment files or discover paths. "
+            "Do not use files, network, host environment, or subprocesses."
         )
     )
     code_summary: Description
@@ -73,11 +74,12 @@ class CustomPythonArguments(BaseModel):
 
 
 def _runtime_failure(error: PythonRuntimeFailure) -> ToolExecutionError:
+    details = {**dict(error.details or {}), "category": error.category}
     return ToolExecutionError(
         error.code,
         str(error),
         recoverable=error.recoverable,
-        details={"category": error.category},
+        details=details,
     )
 
 
@@ -104,7 +106,8 @@ class RunCustomPythonTool:
             "Run bounded custom Python against one exact approved dataset, "
             "exposed to generated code as the already-loaded pandas.DataFrame "
             "`dataset`. Execution does not pause for code review; its exact "
-            "result is staged for human review before publication."
+            "result is staged for human review before publication. "
+            "Package installation is unavailable during generated-code execution."
         ),
         args_model=CustomPythonArguments,
         read_only=False,

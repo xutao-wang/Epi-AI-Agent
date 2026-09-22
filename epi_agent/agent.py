@@ -49,6 +49,7 @@ from utils.dataset_artifacts import is_selectable_dataset_artifact
 from utils.model_runtime_profiles import ModelRuntimeProfile
 from utils.runtime_defaults import DEFAULT_EPI_AGENT_MAX_ITERATIONS
 from utils.user_storage import UserStorageLayout
+from tools.execution_policy import PYTHON_EXECUTION_POLICY_GUIDANCE
 
 
 _MAX_CARD_COLUMNS = 100
@@ -153,6 +154,7 @@ def build_general_system_prompt(
 ) -> str:
     sections = [
         GENERAL_CORE_INSTRUCTIONS,
+        PYTHON_EXECUTION_POLICY_GUIDANCE,
         STUDY_ROUTING_SYSTEM_PROMPT,
         build_publication_system_prompt(
             include_pubmed=is_pubmed_configured(),

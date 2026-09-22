@@ -40,12 +40,14 @@ def _failure(
     *,
     category: str,
     recoverable: bool,
+    details: dict[str, object] | None = None,
 ) -> PythonRuntimeFailure:
     return PythonRuntimeFailure(
         code,
         message,
         category=category,
         recoverable=recoverable,
+        details=details,
     )
 
 
@@ -277,13 +279,18 @@ class LocalPythonRuntime:
         request: PythonExecutionRequest,
         datasets: Mapping[str, pd.DataFrame],
     ) -> PythonExecutionResult:
-        policy_error = validate_generated_code(request.code)
-        if policy_error is not None:
+        validation = validate_generated_code(request.code)
+        if validation.failure_code is not None:
             raise _failure(
-                "POLICY_BLOCKED",
-                policy_error["message"],
-                category="policy_blocked",
+                validation.failure_code,
+                validation.message,
+                category=(
+                    "policy_blocked"
+                    if validation.failure_code == "POLICY_BLOCKED"
+                    else "invalid_syntax"
+                ),
                 recoverable=True,
+                details=validation.as_details(),
             )
         if request.selected_dataset_id not in datasets:
             raise _failure(
