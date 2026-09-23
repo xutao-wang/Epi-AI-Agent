@@ -397,40 +397,13 @@ git commit -m "test: keep missing dependency failures nonfatal"
 **Files:**
 - Modify: `README.md:132-135`
 - Modify: `tools/python_execution_policy.md:76-86`
-- Modify: `tests/test_guarded_local_startup.py:182-197`
 
 **Interfaces:**
 - Consumes: fixed, pinned dependencies declared in `requirements.txt`.
 - Produces: one native operator procedure and one Docker operator procedure, both ending with import verification and application restart.
 - Produces: a documented retry contract requiring a new user message after the environment update.
 
-- [ ] **Step 1: Strengthen the documentation contract test**
-
-Extend `test_documentation_names_guarded_local_and_explains_the_boundary` in `tests/test_guarded_local_startup.py` with:
-
-```python
-    assert "Package “<module>” isn’t installed." in combined
-    assert "distribution==version" in combined
-    assert "uv pip install -r requirements.txt" in readme
-    assert "docker compose build" in readme
-    assert "docker compose exec epi-agent python -c" in readme
-    assert "sklearn" in combined
-    assert "scikit-learn" in combined
-    assert "running container" in combined
-    assert "new request" in combined
-```
-
-- [ ] **Step 2: Run the documentation test and confirm it fails**
-
-Run:
-
-```bash
-../../.venv/bin/python -m pytest -q tests/test_guarded_local_startup.py::test_documentation_names_guarded_local_and_explains_the_boundary
-```
-
-Expected: FAIL because the operator procedures are not documented yet.
-
-- [ ] **Step 3: Add the operator workflow to the README**
+- [ ] **Step 1: Add the operator workflow to the README**
 
 After the fixed-package paragraph in `README.md`, add a section named `### Adding an approved Python package` that states:
 
@@ -471,7 +444,7 @@ container is replaced. After verification, send a new request to retry the
 analysis. Failed generated code is never replayed automatically.
 ````
 
-- [ ] **Step 4: Make the policy normative**
+- [ ] **Step 2: Make the policy normative**
 
 Expand `## Network and packages` in `tools/python_execution_policy.md` with the same requirements, without duplicating all shell commands:
 
@@ -491,7 +464,14 @@ user sends a new request after the update; the application does not replay the
 failed code automatically.
 ```
 
-- [ ] **Step 5: Run the documentation and policy tests**
+- [ ] **Step 3: Review the rendered instructions against the specification**
+
+Read both updated sections together and verify that they cover the native
+procedure, Docker procedure, exact version pinning, import/distribution-name
+differences, restart requirement, and new-request retry behavior without
+offering generated Python an installation command.
+
+- [ ] **Step 4: Run the existing documentation and policy tests**
 
 Run:
 
@@ -503,10 +483,10 @@ Run:
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit the operator workflow**
+- [ ] **Step 5: Commit the operator workflow**
 
 ```bash
-git add README.md tools/python_execution_policy.md tests/test_guarded_local_startup.py
+git add README.md tools/python_execution_policy.md
 git commit -m "docs: define approved Python package updates"
 ```
 
