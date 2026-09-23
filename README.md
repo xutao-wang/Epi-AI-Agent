@@ -134,3 +134,40 @@ code cannot install packages with pip, Conda, uv, system package managers, or
 source builds. Missing imports return `DEPENDENCY_NOT_AVAILABLE`. See the
 [generated Python execution policy](tools/python_execution_policy.md) for the
 complete contract and stable policy rule IDs.
+
+### Adding an approved Python package
+
+If an analysis imports an unavailable module, the run stops with
+`Package “<module>” isn’t installed.` The application remains available. Retry
+with an installed library, or update the environment before sending a new
+request.
+
+Package changes are operator-managed. Do not copy the import name directly
+into an installer command: imports and distributions can differ, such as
+`sklearn` and `scikit-learn`. Review the package, select an exact version, and
+add `distribution==version` to `requirements.txt`.
+
+For a native installation, stop Epi-AI-Agent and run:
+
+```bash
+source .venv/bin/activate
+uv pip install -r requirements.txt
+python -c "import xxx"
+python run_fastapi.py
+```
+
+Replace `xxx` with the verified import name. Installing while the service is
+running is unsupported.
+
+For Docker, stop the service and rebuild from the updated requirements:
+
+```bash
+docker compose down
+docker compose build
+docker compose up -d
+docker compose exec epi-agent python -c "import xxx"
+```
+
+Do not install into a running container; that change disappears when the
+container is replaced. After verification, send a new request to retry the
+analysis. Failed generated code is never replayed automatically.

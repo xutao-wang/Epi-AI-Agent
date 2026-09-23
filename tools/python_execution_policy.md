@@ -81,9 +81,20 @@ is no temporary prompt that grants arbitrary network access.
 
 The scientific package set is fixed by `requirements.txt`. Generated code
 cannot invoke pip, Conda, uv, operating-system package managers, source builds,
-or other installers. An unavailable import returns the controlled
-`DEPENDENCY_NOT_AVAILABLE` failure. Persistent dynamic package installation is
-not part of this release.
+or other installers. An unavailable import returns `DEPENDENCY_NOT_AVAILABLE`
+with `Package “<module>” isn’t installed.` and structured `missing_module`
+detail. The current analysis run ends; the application and later user requests
+remain available.
+
+Adding a dependency is a trusted operator action. The operator must identify
+the correct distribution, review it, add an exact `distribution==version` pin
+to `requirements.txt`, rebuild or reinstall the complete environment, verify
+the import, and restart the application. Import and distribution names may
+differ, such as `sklearn` and `scikit-learn`. Installing while the native
+service is running or directly into a running container is unsupported. The
+user sends a new request after the update; the application does not replay the
+failed code automatically. Persistent dynamic package installation is not part
+of this release.
 
 ## Docker deployment boundary
 
@@ -112,4 +123,3 @@ Every analysis runtime manifest reports:
 
 These values describe the Python process itself. Docker deployment is a
 separate whole-application host boundary.
-
