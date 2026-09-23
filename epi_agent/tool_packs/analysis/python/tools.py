@@ -75,7 +75,11 @@ class CustomPythonArguments(BaseModel):
 
 
 def _runtime_failure(error: PythonRuntimeFailure) -> ToolExecutionError:
-    details = {**dict(error.details or {}), "category": error.category}
+    details = {
+        **dict(error.details or {}),
+        "category": error.category,
+        "execution_started": error.execution_started,
+    }
     return ToolExecutionError(
         error.code,
         str(error),
@@ -109,7 +113,10 @@ class RunCustomPythonTool:
             "`dataset`. Execution does not pause for code review; its exact "
             "result is staged for human review before publication. "
             "Generated code must import every library it uses explicitly. "
-            "Package installation is unavailable during generated-code execution."
+            "Package installation is unavailable during generated-code execution. "
+            "After a missing import, retry only once and only with a "
+            "scientifically equivalent installed alternative; otherwise report "
+            "that no result was produced."
         ),
         args_model=CustomPythonArguments,
         read_only=False,
@@ -174,6 +181,7 @@ class RunCustomPythonTool:
                     "a Matplotlib figure."
                 ),
                 recoverable=True,
+                details={"execution_started": True},
             )
         figure_references = ()
         if execution.figure_png:

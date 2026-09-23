@@ -260,8 +260,14 @@ def test_missing_dependency_returns_concise_structured_failure(tmp_path):
     assert caught.value.code == "DEPENDENCY_NOT_AVAILABLE"
     assert str(caught.value) == f"Package “{missing_module}” isn’t installed."
     assert caught.value.category == "unsupported_runtime"
-    assert caught.value.recoverable is False
-    assert caught.value.details == {"missing_module": missing_module}
+    assert caught.value.recoverable is True
+    assert caught.value.execution_started is True
+    assert caught.value.details["missing_module"] == missing_module
+    assert all(
+        isinstance(package, str)
+        for package in caught.value.details["available_packages"]
+    )
+    assert "pandas" in caught.value.details["available_packages"]
     assert list(tmp_path.iterdir()) == []
 
 

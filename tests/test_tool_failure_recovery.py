@@ -312,7 +312,10 @@ def test_python_runtime_failure_is_not_double_encoded():
     )
 
     assert str(error) == "Column 'age' was not found."
-    assert error.details == {"category": "retryable_code"}
+    assert error.details == {
+        "category": "retryable_code",
+        "execution_started": False,
+    }
 
 
 def test_missing_dependency_ends_only_the_current_agent_run():

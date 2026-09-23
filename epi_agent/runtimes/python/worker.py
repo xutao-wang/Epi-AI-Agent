@@ -186,8 +186,13 @@ def execute(input_dir: Path, output_dir: Path) -> int:
             code="DEPENDENCY_NOT_AVAILABLE",
             message=f"Package “{missing_module}” isn’t installed.",
             category="unsupported_runtime",
-            recoverable=False,
-            details={"missing_module": missing_module},
+            recoverable=True,
+            details={
+                "available_packages": [
+                    package["name"] for package in _package_manifest()
+                ],
+                "missing_module": missing_module,
+            },
         )
     except _GeneratedDatasetInputError as exc:
         sys.stdout = previous_stdout

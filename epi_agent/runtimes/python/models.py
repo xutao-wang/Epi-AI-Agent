@@ -47,11 +47,13 @@ class PythonRuntimeFailure(RuntimeError):
         *,
         category: str,
         recoverable: bool,
+        execution_started: bool = False,
         details: dict[str, Any] | None = None,
     ) -> None:
         self.code = code
         self.category = category
         self.recoverable = recoverable
+        self.execution_started = bool(execution_started)
         self.details = (
             json.loads(json.dumps(details, allow_nan=False))
             if details is not None

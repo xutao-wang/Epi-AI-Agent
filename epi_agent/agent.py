@@ -106,6 +106,14 @@ Analysis rules:
   `dataset`; analyze `dataset` directly.
 - Import every library you use explicitly in the generated code; only `dataset`
   is preloaded.
+- Prefer the installed scientific packages. If a package is unavailable, make
+  at most one changed-code retry and only with a scientifically equivalent
+  installed alternative. Do not force an unsuitable workaround, silently
+  change the requested method, or make up results. Do not invent a result.
+- If no valid installed alternative exists, give a concise package warning:
+  explain why the package is needed, tell the user to add the correct pinned
+  dependency to requirements.txt and restart Epi-AI-Agent before retrying, and
+  state: `No result was produced.`
 - Never load attachment files from generated Python, discover file paths, or
   select a different dataset inside generated code.
 - Generated Python must print the requested human-readable tables,

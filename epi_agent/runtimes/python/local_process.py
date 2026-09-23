@@ -72,6 +72,7 @@ def _failure(
     *,
     category: str,
     recoverable: bool,
+    execution_started: bool = False,
     details: dict[str, object] | None = None,
 ) -> PythonRuntimeFailure:
     return PythonRuntimeFailure(
@@ -79,6 +80,7 @@ def _failure(
         message,
         category=category,
         recoverable=recoverable,
+        execution_started=execution_started,
         details=details,
     )
 
@@ -465,6 +467,7 @@ class LocalPythonRuntime:
                     "Python worker stdout or stderr exceeded its size limit.",
                     category="invalid_output",
                     recoverable=True,
+                    execution_started=True,
                 ) from exc
             except subprocess.TimeoutExpired as exc:
                 if process is not None:
@@ -477,6 +480,7 @@ class LocalPythonRuntime:
                     ),
                     category="timeout",
                     recoverable=True,
+                    execution_started=True,
                 ) from exc
             except (OSError, subprocess.SubprocessError) as exc:
                 if process is not None:
@@ -500,8 +504,19 @@ class LocalPythonRuntime:
                     detail or "The local Python runtime process failed.",
                     category="infrastructure",
                     recoverable=False,
+                    execution_started=True,
                 )
-            return _parse_result(
-                output_dir,
-                duration_seconds=duration_seconds,
-            )
+            try:
+                return _parse_result(
+                    output_dir,
+                    duration_seconds=duration_seconds,
+                )
+            except PythonRuntimeFailure as error:
+                raise _failure(
+                    error.code,
+                    str(error),
+                    category=error.category,
+                    recoverable=error.recoverable,
+                    execution_started=True,
+                    details=error.details,
+                ) from error

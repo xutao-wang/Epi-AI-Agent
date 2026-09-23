@@ -142,9 +142,12 @@ complete contract and stable policy rule IDs.
 ### Adding an approved Python package
 
 If an analysis imports an unavailable module, the run stops with
-`Package “<module>” isn’t installed.` The application remains available. Retry
-with an installed library, or update the environment before sending a new
-request.
+`Package “<module>” isn’t installed.` The agent may make one changed-code retry
+with installed packages, but only when the alternative is scientifically
+equivalent. It does not force a workaround, change the requested method, or
+invent a result. If no valid alternative works, Python is disabled only for
+the rest of that user turn and the agent returns a nonfatal package warning;
+the application, other tools, and later requests remain available.
 
 Package changes are operator-managed. Do not copy the import name directly
 into an installer command: imports and distributions can differ, such as

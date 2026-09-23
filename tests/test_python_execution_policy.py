@@ -149,6 +149,7 @@ def test_runtime_rejects_before_worker_setup(
 
     assert caught.value.code == expected_code
     assert caught.value.details
+    assert caught.value.execution_started is False
 
 
 def test_runtime_adapter_preserves_policy_details():
@@ -157,6 +158,7 @@ def test_runtime_adapter_preserves_policy_details():
         "Generated Python violates the execution policy.",
         category="policy_blocked",
         recoverable=True,
+        execution_started=False,
         details={
             "violations": [
                 {
@@ -176,6 +178,7 @@ def test_runtime_adapter_preserves_policy_details():
 
     assert tool_error.details == {
         "category": "policy_blocked",
+        "execution_started": False,
         "violations": [
             {
                 "rule_id": "PY_FILESYSTEM_ACCESS",
@@ -195,17 +198,23 @@ def test_runtime_adapter_preserves_missing_dependency_details():
         "DEPENDENCY_NOT_AVAILABLE",
         "Package “sklearn” isn’t installed.",
         category="unsupported_runtime",
-        recoverable=False,
-        details={"missing_module": "sklearn"},
+        recoverable=True,
+        execution_started=True,
+        details={
+            "available_packages": ["numpy", "pandas", "statsmodels"],
+            "missing_module": "sklearn",
+        },
     )
 
     tool_error = _runtime_failure(runtime_error)
 
     assert tool_error.code == "DEPENDENCY_NOT_AVAILABLE"
     assert str(tool_error) == "Package “sklearn” isn’t installed."
-    assert tool_error.recoverable is False
+    assert tool_error.recoverable is True
     assert tool_error.details == {
+        "available_packages": ["numpy", "pandas", "statsmodels"],
         "category": "unsupported_runtime",
+        "execution_started": True,
         "missing_module": "sklearn",
     }
 
@@ -216,6 +225,10 @@ def test_system_prompt_contains_python_policy():
     assert "preloaded dataset" in prompt
     assert "Import every library you use explicitly" in prompt
     assert "single corrected-code attempt" in prompt
+    assert "scientifically equivalent" in prompt
+    assert "Do not force an unsuitable workaround" in prompt
+    assert "do not invent a result" in prompt.casefold()
+    assert "No result was produced" in prompt
     assert "Do not read, write, or discover files" in prompt
 
 
@@ -229,3 +242,7 @@ def test_python_schema_contains_pre_call_restrictions():
     )
     assert "Import every library you use explicitly" in description
     assert "Package installation is unavailable" in RunCustomPythonTool.spec.description
+    assert (
+        "scientifically equivalent installed alternative"
+        in RunCustomPythonTool.spec.description
+    )

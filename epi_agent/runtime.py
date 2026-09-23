@@ -72,6 +72,9 @@ _PYTHON_TOOL_NAME = "analysis-run_custom_python"
 _PYTHON_POLICY_BLOCKED_CODE = "POLICY_BLOCKED"
 _PYTHON_POLICY_EXHAUSTED_CODE = "POLICY_REPAIR_EXHAUSTED"
 _PYTHON_POLICY_REPAIR_LIMIT = 1
+_PYTHON_DEPENDENCY_MISSING_CODE = "DEPENDENCY_NOT_AVAILABLE"
+_PYTHON_DEPENDENCY_EXHAUSTED_CODE = "DEPENDENCY_REPAIR_EXHAUSTED"
+_PYTHON_DEPENDENCY_REPAIR_LIMIT = 1
 _LOGGER = logging.getLogger(__name__)
 _DATASET_ARTIFACT_KINDS = {
     "analysis_dataset",
@@ -226,9 +229,55 @@ def _python_policy_repair_exhausted(signatures: list[str]) -> bool:
     )
 
 
+def _python_dependency_failure_signatures(
+    signatures: list[str],
+) -> list[str]:
+    matching: list[str] = []
+    for signature in signatures:
+        record = _failure_record(signature)
+        if (
+            record.get("tool") == _PYTHON_TOOL_NAME
+            and record.get("code")
+            in {
+                _PYTHON_DEPENDENCY_MISSING_CODE,
+                _PYTHON_DEPENDENCY_EXHAUSTED_CODE,
+            }
+        ):
+            matching.append(signature)
+    return matching
+
+
+def _python_dependency_repair_attempts(signatures: list[str]) -> int:
+    return sum(
+        _failure_record(signature).get("code")
+        == _PYTHON_DEPENDENCY_MISSING_CODE
+        for signature in _python_dependency_failure_signatures(signatures)
+    )
+
+
+def _python_dependency_repair_exhausted(signatures: list[str]) -> bool:
+    return any(
+        _failure_record(signature).get("code")
+        == _PYTHON_DEPENDENCY_EXHAUSTED_CODE
+        for signature in _python_dependency_failure_signatures(signatures)
+    )
+
+
+def _python_unavailable(signatures: list[str]) -> bool:
+    return _python_policy_repair_exhausted(
+        signatures
+    ) or _python_dependency_repair_exhausted(signatures)
+
+
+def _python_turn_failure_signatures(signatures: list[str]) -> list[str]:
+    matching = set(_python_policy_failure_signatures(signatures))
+    matching.update(_python_dependency_failure_signatures(signatures))
+    return [signature for signature in signatures if signature in matching]
+
+
 def _persistent_failure_signatures(signatures: list[str]) -> list[str]:
     sql_signatures = set(_sql_repair_failure_signatures(signatures))
-    python_signatures = set(_python_policy_failure_signatures(signatures))
+    python_signatures = set(_python_turn_failure_signatures(signatures))
     return [
         signature
         for signature in signatures
@@ -262,6 +311,38 @@ def _python_policy_exhausted_error(
     )
 
 
+def _python_dependency_exhausted_error(
+    *,
+    details: dict[str, Any] | None = None,
+    executed: bool,
+) -> ToolExecutionError:
+    selected_details = dict(details or {})
+    missing_module = str(
+        selected_details.get("missing_module") or "the requested package"
+    )
+    selected_details.update(
+        {
+            "executed": executed,
+            "instruction": (
+                "Do not call custom Python again in this user run. Warn that "
+                f"{missing_module} is required and no valid installed "
+                "alternative was found. Tell the user to add the correct "
+                "pinned dependency to requirements.txt, restart Epi-AI-Agent, "
+                "and retry. State that no result was produced; do not invent "
+                "one."
+            ),
+            "python_available": False,
+            "repair_attempts_remaining": 0,
+        }
+    )
+    return ToolExecutionError(
+        _PYTHON_DEPENDENCY_EXHAUSTED_CODE,
+        "No valid installed alternative resolved the missing Python dependency.",
+        recoverable=True,
+        details=selected_details,
+    )
+
+
 def _repeated_failure(signatures: list[str]) -> bool:
     if signatures:
         latest = _failure_record(signatures[-1])
@@ -271,7 +352,12 @@ def _repeated_failure(signatures: list[str]) -> bool:
         ) or (
             latest.get("tool") == _PYTHON_TOOL_NAME
             and latest.get("code")
-            in {_PYTHON_POLICY_BLOCKED_CODE, _PYTHON_POLICY_EXHAUSTED_CODE}
+            in {
+                _PYTHON_POLICY_BLOCKED_CODE,
+                _PYTHON_POLICY_EXHAUSTED_CODE,
+                _PYTHON_DEPENDENCY_MISSING_CODE,
+                _PYTHON_DEPENDENCY_EXHAUSTED_CODE,
+            }
         ):
             return False
     return len(signatures) >= _REPEATED_FAILURE_LIMIT and all(
@@ -314,7 +400,12 @@ def _matching_failed_call(
         if (
             name == _PYTHON_TOOL_NAME
             and record.get("code")
-            in {_PYTHON_POLICY_BLOCKED_CODE, _PYTHON_POLICY_EXHAUSTED_CODE}
+            in {
+                _PYTHON_POLICY_BLOCKED_CODE,
+                _PYTHON_POLICY_EXHAUSTED_CODE,
+                _PYTHON_DEPENDENCY_MISSING_CODE,
+                _PYTHON_DEPENDENCY_EXHAUSTED_CODE,
+            }
             and isinstance(arguments.get("code"), str)
             and recorded_arguments.get("code") == arguments["code"]
         ):
@@ -554,7 +645,15 @@ def _prepare_model_request(
     tool_failure_recovery = _tool_failure_recovery_required(failures)
 
     iteration_count = int(state.get("iteration_count") or 0)
-    if iteration_count >= agent_config.max_iterations and not tool_failure_recovery:
+    dependency_warning_turn = (
+        _python_dependency_repair_exhausted(failures)
+        and iteration_count == agent_config.max_iterations
+    )
+    if (
+        iteration_count >= agent_config.max_iterations
+        and not tool_failure_recovery
+        and not dependency_warning_turn
+    ):
         return _terminal_model_patch(
             _terminal_error(
                 "MAX_ITERATIONS",
@@ -639,6 +738,29 @@ def _prepare_model_request(
                 )
             )
         )
+    if (
+        _python_dependency_repair_exhausted(failures)
+        and not tool_failure_recovery
+        and not _sql_repair_budget_exhausted(failures)
+    ):
+        continuation_messages.append(
+            SystemMessage(
+                content=json.dumps(
+                    {
+                        "code": _PYTHON_DEPENDENCY_EXHAUSTED_CODE,
+                        "instruction": (
+                            "Custom Python is unavailable for the remainder "
+                            "of this user run. Give a concise package warning "
+                            "with the reason and install/restart/retry steps. "
+                            "State that no result was produced and do not "
+                            "invent one. Other permitted tools remain available."
+                        ),
+                    },
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+            )
+        )
     budget = (
         agent_config.model_profile.user_output_token_increment
         if phase == "authorized"
@@ -689,9 +811,7 @@ def _model_tool_schemas(
             in {PROVIDER_OPENAI_COMPATIBLE, PROVIDER_OPENROUTER}
         ),
     )
-    if not _python_policy_repair_exhausted(
-        list(state.get("failure_signatures") or [])
-    ):
+    if not _python_unavailable(list(state.get("failure_signatures") or [])):
         return schemas
     return [
         schema
@@ -1355,6 +1475,21 @@ def _execute_tools(
             batch_failures.append(signature)
             tracking.finish("rejected", error=error)
             continue
+        if name == _PYTHON_TOOL_NAME and (
+            _python_dependency_repair_exhausted(failures)
+            or (
+                previous is not None
+                and previous.get("code")
+                == _PYTHON_DEPENDENCY_MISSING_CODE
+            )
+        ):
+            error = _python_dependency_exhausted_error(executed=False)
+            messages.append(error_tool_message(call, error))
+            signature = _failure_signature(error.code, name, arguments)
+            failures.append(signature)
+            batch_failures.append(signature)
+            tracking.finish("rejected", error=error)
+            continue
         if previous is not None:
             error = ToolExecutionError(
                 _REPEATED_TOOL_CALL_REJECTED_CODE,
@@ -1397,6 +1532,12 @@ def _execute_tools(
             record_unexecuted(agent_config.activity_sink, thread_id, calls[call_index + 1 :], artifact_store, status="skipped", error=error)
             terminal_error = _terminal_error(error.code, str(error))
             break
+        dependency_retry = (
+            name == _PYTHON_TOOL_NAME
+            and _python_dependency_repair_attempts(failures)
+            >= _PYTHON_DEPENDENCY_REPAIR_LIMIT
+            and not _python_dependency_repair_exhausted(failures)
+        )
         try:
             cancellation_point()
             agent_config.registry.spec(name)
@@ -1425,7 +1566,21 @@ def _execute_tools(
             tracking.finish("cancelled")
             raise
         except ToolExecutionError as error:
-            if (
+            if dependency_retry and bool(
+                dict(error.details or {}).get("execution_started")
+            ):
+                retry_details = dict(error.details or {})
+                retry_details.update(
+                    {
+                        "retry_error_code": error.code,
+                        "retry_error_message": str(error),
+                    }
+                )
+                error = _python_dependency_exhausted_error(
+                    details=retry_details,
+                    executed=True,
+                )
+            elif (
                 name == _PYTHON_TOOL_NAME
                 and error.code == _PYTHON_POLICY_BLOCKED_CODE
             ):
@@ -1444,6 +1599,44 @@ def _execute_tools(
                             "instruction": (
                                 "Remove every reported policy violation, then "
                                 "submit one changed corrected-code call."
+                            ),
+                            "repair_attempts_remaining": 1,
+                            "repair_required": True,
+                        }
+                    )
+                    error = ToolExecutionError(
+                        error.code,
+                        str(error),
+                        recoverable=True,
+                        details=details,
+                    )
+            if (
+                name == _PYTHON_TOOL_NAME
+                and error.code == _PYTHON_DEPENDENCY_MISSING_CODE
+            ):
+                details = dict(error.details or {})
+                if (
+                    _python_dependency_repair_attempts(failures)
+                    >= _PYTHON_DEPENDENCY_REPAIR_LIMIT
+                ):
+                    error = _python_dependency_exhausted_error(
+                        details=details,
+                        executed=True,
+                    )
+                else:
+                    details.update(
+                        {
+                            "instruction": (
+                                "Retry custom Python once with changed code "
+                                "using only installed packages, and only when "
+                                "the alternative is scientifically equivalent. "
+                                "Do not force an unsuitable workaround, silently "
+                                "change the requested method, or make up results. "
+                                "Do not invent results. "
+                                "If no valid alternative exists, do not call "
+                                "custom Python again; give a concise package "
+                                "warning with the reason and state that no result "
+                                "was produced."
                             ),
                             "repair_attempts_remaining": 1,
                             "repair_required": True,
@@ -1568,7 +1761,7 @@ def _execute_tools(
         )
         failures = (
             [
-                *_python_policy_failure_signatures(failures_before_batch),
+                *_python_turn_failure_signatures(failures_before_batch),
                 *batch_failures,
             ]
             if name == _SQL_REPAIR_TOOL_NAME

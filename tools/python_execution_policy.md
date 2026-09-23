@@ -62,6 +62,18 @@ or receiving a second policy block produces `POLICY_REPAIR_EXHAUSTED` and makes
 the Python tool unavailable only for the remainder of that user turn. Other
 tools remain available, and a later user message starts with a fresh budget.
 
+After `DEPENDENCY_NOT_AVAILABLE`, the loop may submit one changed Python call
+using installed packages only when the alternative is scientifically
+equivalent. It must not force an unsuitable workaround, silently change the
+requested method, or invent results. Repeating identical code or encountering
+another failure after generated-code execution starts produces
+`DEPENDENCY_REPAIR_EXHAUSTED`. Static-policy, syntax, argument, and dataset
+selection failures happen before generated-code execution; they preserve their
+primary diagnostic and do not falsely report that code ran. Dependency
+exhaustion is a nonfatal warning: Python is unavailable only for the rest of
+the current user turn, other tools remain available, and a later user message
+starts with a fresh budget.
+
 ## Runtime controls
 
 The parent provides an allowlisted environment plus fixed analysis values.
@@ -85,8 +97,12 @@ The scientific package set is fixed by `requirements.txt`. Generated code
 cannot invoke pip, Conda, uv, operating-system package managers, source builds,
 or other installers. An unavailable import returns `DEPENDENCY_NOT_AVAILABLE`
 with `Package “<module>” isn’t installed.` and structured `missing_module`
-detail. The current analysis run ends; the application and later user requests
-remain available.
+and `available_packages` details. `available_packages` is the detected subset
+of the runtime's supported analysis libraries, not an inventory of every
+application dependency. If the one equivalent-alternative retry does not
+succeed, the agent explains why the missing package is needed, gives the pinned
+dependency/restart/retry instruction, and states that no result was produced.
+This does not put the application run into an error state.
 
 Adding a dependency is a trusted operator action. The operator must identify
 the correct distribution, review it, add an exact `distribution==version` pin

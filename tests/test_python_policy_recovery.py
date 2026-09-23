@@ -27,6 +27,7 @@ from utils.model_runtime_profiles import model_runtime_profile
 
 PYTHON_TOOL_NAME = "analysis-run_custom_python"
 EVIDENCE_TOOL_NAME = "analysis-evidence"
+SQL_REPAIR_TOOL_NAME = "dbrag-validate_and_extract"
 
 
 class Arguments(BaseModel):
@@ -89,6 +90,55 @@ class PolicyPythonTool:
         )
 
 
+class DependencyPythonTool:
+    spec = ToolSpec(
+        name=PYTHON_TOOL_NAME,
+        description="Exercise Python dependency recovery.",
+        args_model=Arguments,
+        read_only=False,
+    )
+
+    def __init__(self) -> None:
+        self.executions: list[dict[str, str]] = []
+
+    def invoke(self, arguments, context):
+        self.executions.append(arguments)
+        if arguments["code"] == "installed-alternative":
+            return ToolResult(message="Equivalent installed analysis completed.")
+        if arguments["code"] == "execution-failure":
+            raise ToolExecutionError(
+                "EXECUTION_FAILED",
+                "The alternative analysis failed.",
+                recoverable=True,
+                details={
+                    "category": "retryable_code",
+                    "execution_started": True,
+                },
+            )
+        if arguments["code"] == "policy-failure":
+            raise ToolExecutionError(
+                "POLICY_BLOCKED",
+                "The alternative violates the execution policy.",
+                recoverable=True,
+                details={
+                    **_policy_details("policy-failure"),
+                    "execution_started": False,
+                },
+            )
+        missing_module = arguments["code"]
+        raise ToolExecutionError(
+            "DEPENDENCY_NOT_AVAILABLE",
+            f"Package “{missing_module}” isn’t installed.",
+            recoverable=True,
+            details={
+                "category": "unsupported_runtime",
+                "execution_started": True,
+                "missing_module": missing_module,
+                "available_packages": ["numpy", "pandas", "statsmodels"],
+            },
+        )
+
+
 class EvidenceTool:
     spec = ToolSpec(
         name=EVIDENCE_TOOL_NAME,
@@ -102,6 +152,14 @@ class EvidenceTool:
     def invoke(self, arguments, context):
         self.executions.append(arguments)
         return ToolResult(message="Evidence is available.")
+
+
+class SqlRepairTool(EvidenceTool):
+    spec = ToolSpec(
+        name=SQL_REPAIR_TOOL_NAME,
+        description="Return a valid SQL extraction.",
+        args_model=Arguments,
+    )
 
 
 class ScriptedModel:
@@ -130,7 +188,7 @@ def tool_call(call_id: str, code: str, *, name: str = PYTHON_TOOL_NAME, **detail
     }
 
 
-def build_graph(python_tool, model, *, other_tools=()):
+def build_graph(python_tool, model, *, other_tools=(), max_iterations=20):
     studies = StudyRegistry()
     config = EpiAgentRuntimeConfig(
         agent_name="test",
@@ -144,6 +202,7 @@ def build_graph(python_tool, model, *, other_tools=()):
             policy=None,
         ),
         model_profile=model_runtime_profile("gpt-5.4"),
+        max_iterations=max_iterations,
     )
     return build_epi_agent_graph(
         state_schema=GenericEpiAgentState,
@@ -153,8 +212,13 @@ def build_graph(python_tool, model, *, other_tools=()):
     )
 
 
-def run_graph(python_tool, model, *, other_tools=()):
-    graph = build_graph(python_tool, model, other_tools=other_tools)
+def run_graph(python_tool, model, *, other_tools=(), max_iterations=20):
+    graph = build_graph(
+        python_tool,
+        model,
+        other_tools=other_tools,
+        max_iterations=max_iterations,
+    )
     state = _initial_graph_state(
         "thread-1",
         HumanMessage(content="Analyze the approved dataset."),
@@ -190,6 +254,288 @@ def test_first_policy_block_allows_one_changed_safe_call():
     assert len(first_error["details"]["violations"]) == 2
     assert python_tool.executions == [{"code": "blocked-a"}, {"code": "safe"}]
     assert result["final_response"] == "The corrected Python analysis completed."
+
+
+def test_missing_dependency_allows_one_equivalent_changed_code_retry():
+    python_tool = DependencyPythonTool()
+    model = ScriptedModel(
+        [
+            AIMessage(content="", tool_calls=[tool_call("missing", "sklearn")]),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    tool_call("alternative", "installed-alternative")
+                ],
+            ),
+            AIMessage(content="The equivalent installed analysis completed."),
+        ]
+    )
+
+    _graph, result = run_graph(python_tool, model)
+
+    first_error = error_payloads(result["messages"])[0]
+    assert first_error["code"] == "DEPENDENCY_NOT_AVAILABLE"
+    assert first_error["recoverable"] is True
+    assert first_error["details"]["repair_required"] is True
+    assert first_error["details"]["repair_attempts_remaining"] == 1
+    assert first_error["details"]["available_packages"] == [
+        "numpy",
+        "pandas",
+        "statsmodels",
+    ]
+    instruction = first_error["details"]["instruction"].casefold()
+    assert "scientifically equivalent" in instruction
+    assert "do not force" in instruction
+    assert "do not invent" in instruction
+    assert python_tool.executions == [
+        {"code": "sklearn"},
+        {"code": "installed-alternative"},
+    ]
+    assert result.get("terminal_error") is None
+    assert result["final_response"] == (
+        "The equivalent installed analysis completed."
+    )
+
+
+def test_unchanged_dependency_retry_becomes_nonfatal_warning_without_reexecution():
+    python_tool = DependencyPythonTool()
+    warning = (
+        "Package unavailable: sklearn is required for this analysis, and no "
+        "valid installed alternative was found. Add the correct pinned "
+        "dependency to requirements.txt, restart Epi-AI-Agent, then retry. "
+        "No result was produced."
+    )
+    model = ScriptedModel(
+        [
+            AIMessage(content="", tool_calls=[tool_call("first", "sklearn")]),
+            AIMessage(content="", tool_calls=[tool_call("same", "sklearn")]),
+            AIMessage(content=warning),
+        ]
+    )
+
+    _graph, result = run_graph(python_tool, model)
+
+    errors = error_payloads(result["messages"])
+    assert [error["code"] for error in errors] == [
+        "DEPENDENCY_NOT_AVAILABLE",
+        "DEPENDENCY_REPAIR_EXHAUSTED",
+    ]
+    assert errors[-1]["recoverable"] is True
+    assert errors[-1]["details"]["python_available"] is False
+    assert errors[-1]["details"]["executed"] is False
+    assert python_tool.executions == [{"code": "sklearn"}]
+    assert result.get("terminal_error") is None
+    assert result["final_response"] == warning
+
+
+def test_second_missing_dependency_disables_only_python_for_current_turn():
+    python_tool = DependencyPythonTool()
+    evidence_tool = EvidenceTool()
+    model = ScriptedModel(
+        [
+            AIMessage(content="", tool_calls=[tool_call("first", "sklearn")]),
+            AIMessage(content="", tool_calls=[tool_call("second", "lifelines")]),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    tool_call("evidence", "available", name=EVIDENCE_TOOL_NAME)
+                ],
+            ),
+            AIMessage(content="No Python result was produced; evidence remains available."),
+        ]
+    )
+
+    _graph, result = run_graph(
+        python_tool,
+        model,
+        other_tools=(evidence_tool,),
+    )
+
+    errors = error_payloads(result["messages"])
+    assert [error["code"] for error in errors] == [
+        "DEPENDENCY_NOT_AVAILABLE",
+        "DEPENDENCY_REPAIR_EXHAUSTED",
+    ]
+    assert errors[-1]["details"]["missing_module"] == "lifelines"
+    assert python_tool.executions == [
+        {"code": "sklearn"},
+        {"code": "lifelines"},
+    ]
+    assert evidence_tool.executions == [{"code": "available"}]
+    assert model.bound_schema_names[2] == (EVIDENCE_TOOL_NAME,)
+    assert result.get("terminal_error") is None
+
+
+def test_executed_dependency_retry_failure_disables_python():
+    python_tool = DependencyPythonTool()
+    model = ScriptedModel(
+        [
+            AIMessage(content="", tool_calls=[tool_call("first", "sklearn")]),
+            AIMessage(
+                content="",
+                tool_calls=[tool_call("retry", "execution-failure")],
+            ),
+            AIMessage(
+                content="",
+                tool_calls=[tool_call("third", "installed-alternative")],
+            ),
+            AIMessage(content="No result was produced."),
+        ]
+    )
+
+    _graph, result = run_graph(python_tool, model)
+
+    errors = error_payloads(result["messages"])
+    assert [error["code"] for error in errors] == [
+        "DEPENDENCY_NOT_AVAILABLE",
+        "DEPENDENCY_REPAIR_EXHAUSTED",
+        "DEPENDENCY_REPAIR_EXHAUSTED",
+    ]
+    assert errors[1]["details"]["retry_error_code"] in {
+        "EXECUTION_FAILED",
+    }
+    assert python_tool.executions == [
+        {"code": "sklearn"},
+        {"code": "execution-failure"},
+    ]
+    assert result.get("terminal_error") is None
+
+
+def test_preflight_failure_does_not_consume_dependency_execution_retry():
+    python_tool = DependencyPythonTool()
+    model = ScriptedModel(
+        [
+            AIMessage(content="", tool_calls=[tool_call("first", "sklearn")]),
+            AIMessage(content="", tool_calls=[tool_call("preflight", "policy-failure")]),
+            AIMessage(
+                content="",
+                tool_calls=[tool_call("retry", "installed-alternative")],
+            ),
+            AIMessage(content="The equivalent installed analysis completed."),
+        ]
+    )
+
+    _graph, result = run_graph(python_tool, model)
+
+    errors = error_payloads(result["messages"])
+    assert [error["code"] for error in errors] == [
+        "DEPENDENCY_NOT_AVAILABLE",
+        "POLICY_BLOCKED",
+    ]
+    assert errors[1]["details"]["execution_started"] is False
+    assert python_tool.executions == [
+        {"code": "sklearn"},
+        {"code": "policy-failure"},
+        {"code": "installed-alternative"},
+    ]
+    assert result.get("terminal_error") is None
+    assert result["final_response"] == (
+        "The equivalent installed analysis completed."
+    )
+
+
+def test_successful_sql_repair_does_not_restore_exhausted_python():
+    python_tool = DependencyPythonTool()
+    sql_tool = SqlRepairTool()
+    model = ScriptedModel(
+        [
+            AIMessage(content="", tool_calls=[tool_call("first", "sklearn")]),
+            AIMessage(content="", tool_calls=[tool_call("second", "lifelines")]),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    tool_call("sql", "select-safe", name=SQL_REPAIR_TOOL_NAME)
+                ],
+            ),
+            AIMessage(
+                content="",
+                tool_calls=[tool_call("third", "installed-alternative")],
+            ),
+            AIMessage(content="No Python result was produced."),
+        ]
+    )
+
+    _graph, result = run_graph(
+        python_tool,
+        model,
+        other_tools=(sql_tool,),
+    )
+
+    assert python_tool.executions == [
+        {"code": "sklearn"},
+        {"code": "lifelines"},
+    ]
+    assert sql_tool.executions == [{"code": "select-safe"}]
+    assert model.bound_schema_names[3] == (SQL_REPAIR_TOOL_NAME,)
+    assert error_payloads(result["messages"])[-1]["code"] == (
+        "DEPENDENCY_REPAIR_EXHAUSTED"
+    )
+    assert result.get("terminal_error") is None
+
+
+def test_dependency_warning_gets_a_final_turn_at_iteration_limit():
+    python_tool = DependencyPythonTool()
+    warning = "Package unavailable: sklearn is required. No result was produced."
+    model = ScriptedModel(
+        [
+            AIMessage(content="", tool_calls=[tool_call("first", "sklearn")]),
+            AIMessage(content="", tool_calls=[tool_call("second", "lifelines")]),
+            AIMessage(content=warning),
+        ]
+    )
+
+    _graph, result = run_graph(
+        python_tool,
+        model,
+        max_iterations=2,
+    )
+
+    assert result.get("terminal_error") is None
+    assert result["final_response"] == warning
+
+
+def test_new_user_message_restores_python_after_dependency_exhaustion():
+    python_tool = DependencyPythonTool()
+    model = ScriptedModel(
+        [
+            AIMessage(content="", tool_calls=[tool_call("first", "sklearn")]),
+            AIMessage(content="", tool_calls=[tool_call("second", "lifelines")]),
+            AIMessage(content="No result was produced."),
+            AIMessage(
+                content="",
+                tool_calls=[tool_call("new-turn", "installed-alternative")],
+            ),
+            AIMessage(content="The new-turn Python analysis completed."),
+        ]
+    )
+    graph, first_result = run_graph(python_tool, model)
+    follow_up = {
+        "messages": follow_up_message_patch(
+            list(first_result["messages"]),
+            HumanMessage(content="Try a new analysis."),
+        ),
+        "final_response": None,
+        "iteration_count": 0,
+        "failure_signatures": [],
+        "tool_argument_repair_attempted": False,
+        "current_turn_artifact_refs": [],
+        "current_turn_output_artifact_refs": [],
+        "completion_blocked": False,
+        "model_output_state": {},
+        "terminal_error": None,
+        "terminal_control": None,
+    }
+
+    second_result = graph.invoke(
+        follow_up,
+        {"configurable": {"thread_id": "thread-1"}},
+    )
+
+    assert model.bound_schema_names[-2] == (PYTHON_TOOL_NAME,)
+    assert python_tool.executions[-1] == {"code": "installed-alternative"}
+    assert second_result["final_response"] == (
+        "The new-turn Python analysis completed."
+    )
 
 
 def test_unchanged_blocked_call_consumes_repair_without_reexecution():
@@ -402,4 +748,3 @@ def test_new_user_message_resets_python_policy_budget():
     assert model.bound_schema_names[-2] == (PYTHON_TOOL_NAME,)
     assert python_tool.executions[-1] == {"code": "safe"}
     assert second_result["final_response"] == "The new-turn Python analysis completed."
-
