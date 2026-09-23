@@ -1,5 +1,6 @@
 from copy import deepcopy
 from dataclasses import replace
+from types import SimpleNamespace
 
 from langchain_core.messages import AIMessage
 from langgraph.errors import GraphInterrupt
@@ -173,3 +174,29 @@ def test_sqlite_persistence_projection_and_cascade(tmp_path):
     assert projected.conversation == []
     store.delete_thread("thread-1")
     assert store.list_tool_executions("thread-1") == []
+
+
+def test_missing_dependency_projects_a_concise_public_run_failure():
+    snapshot = SimpleNamespace(
+        values={
+            "messages": [],
+            "artifacts": {},
+            "terminal_error": {
+                "code": "DEPENDENCY_NOT_AVAILABLE",
+                "message": "Package “sklearn” isn’t installed.",
+                "recoverable": False,
+            },
+        },
+        next=(),
+        interrupts=(),
+    )
+
+    projected = project_thread_state(
+        thread_id="thread-1",
+        snapshot=snapshot,
+        run_status={"state": "done", "steps": 1},
+    )
+
+    assert projected.run.state == "error"
+    assert projected.run.error_code == "DEPENDENCY_NOT_AVAILABLE"
+    assert projected.run.user_message == "Package “sklearn” isn’t installed."

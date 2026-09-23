@@ -461,6 +461,52 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled();
   });
 
+  it("shows a concise missing-package failure and keeps the composer usable", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(runtimeOptionsResponse())
+      .mockResolvedValueOnce(createThreadResponse())
+      .mockResolvedValueOnce(
+        jsonResponse(
+          threadState({
+            run: {
+              state: "error",
+              steps: 1,
+              error: "Package “sklearn” isn’t installed.",
+              error_code: "DEPENDENCY_NOT_AVAILABLE",
+              user_message: "Package “sklearn” isn’t installed.",
+              started_at: null,
+              updated_at: null,
+            },
+            conversation: [
+              { id: "user-1", role: "user", text: "Fit the model" },
+            ],
+          }),
+        ),
+      );
+
+    render(
+      <App
+        apiBase="http://api.test"
+        fetchImpl={fetchMock}
+        loadConversationHistory={false}
+      />,
+    );
+
+    const composer = await screen.findByLabelText(
+      "Ask a question about your dataset!",
+    );
+    fireEvent.change(composer, { target: { value: "Fit the model" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Package “sklearn” isn’t installed.",
+    );
+    expect(composer).not.toBeDisabled();
+    fireEvent.change(composer, { target: { value: "Retry with statsmodels" } });
+    expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled();
+  });
+
   it("blocks the composer for an unprojectable interrupt", async () => {
     const fetchMock = vi
       .fn()

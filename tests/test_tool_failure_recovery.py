@@ -64,6 +64,20 @@ class CorrectableTool(FailingTool):
         )
 
 
+class MissingDependencyTool(FailingTool):
+    def invoke(self, arguments, context):
+        self.executions.append(arguments)
+        raise ToolExecutionError(
+            "DEPENDENCY_NOT_AVAILABLE",
+            "Package “sklearn” isn’t installed.",
+            recoverable=False,
+            details={
+                "category": "unsupported_runtime",
+                "missing_module": "sklearn",
+            },
+        )
+
+
 class SuccessfulTool:
     spec = ToolSpec(
         name="analysis-other",
@@ -299,6 +313,22 @@ def test_python_runtime_failure_is_not_double_encoded():
 
     assert str(error) == "Column 'age' was not found."
     assert error.details == {"category": "retryable_code"}
+
+
+def test_missing_dependency_ends_only_the_current_agent_run():
+    tool = MissingDependencyTool()
+    model = ScriptedModel(
+        [AIMessage(content="", tool_calls=[tool_call("missing")])]
+    )
+
+    result = run_graph(tool, model)
+
+    assert tool.executions == [{"code": "bad"}]
+    assert result["terminal_error"] == {
+        "code": "DEPENDENCY_NOT_AVAILABLE",
+        "message": "Package “sklearn” isn’t installed.",
+        "recoverable": False,
+    }
 
 
 def test_failure_in_read_only_batch_remains_protected_after_another_tool_succeeds():
