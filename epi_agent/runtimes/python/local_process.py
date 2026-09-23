@@ -286,11 +286,20 @@ def _parse_result(output_dir: Path, *, duration_seconds: float) -> PythonExecuti
                 category="invalid_output",
                 recoverable=True,
             )
+        details = error.get("details")
+        if details is not None and not isinstance(details, dict):
+            raise _failure(
+                "OUTPUT_MALFORMED",
+                "Python runtime returned an invalid error envelope.",
+                category="invalid_output",
+                recoverable=True,
+            )
         raise _failure(
             str(error.get("code") or "EXECUTION_FAILED"),
             str(error.get("message") or "Python execution failed.")[:2_000],
             category=str(error.get("category") or "infrastructure"),
             recoverable=bool(error.get("recoverable")),
+            details=details,
         )
     if payload.get("status") != "ok":
         raise _failure(

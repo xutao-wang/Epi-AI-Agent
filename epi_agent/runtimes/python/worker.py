@@ -71,17 +71,18 @@ def _error_payload(
     message: str,
     category: str,
     recoverable: bool,
+    details: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    return {
-        "status": "error",
-        "error": {
-            "code": code,
-            "type": "PythonRuntimeError",
-            "message": message[:2_000],
-            "category": category,
-            "recoverable": recoverable,
-        },
+    error: dict[str, object] = {
+        "code": code,
+        "type": "PythonRuntimeError",
+        "message": message[:2_000],
+        "category": category,
+        "recoverable": recoverable,
     }
+    if details is not None:
+        error["details"] = details
+    return {"status": "error", "error": error}
 
 
 def _load_selected_dataset(input_dir: Path):
@@ -195,11 +196,13 @@ def execute(input_dir: Path, output_dir: Path) -> int:
         )
     except ModuleNotFoundError as exc:
         sys.stdout = previous_stdout
+        missing_module = str(exc.name or "unknown")[:512]
         payload = _error_payload(
             code="DEPENDENCY_NOT_AVAILABLE",
-            message=f"Python runtime does not include package: {exc.name}",
+            message=f"Package “{missing_module}” isn’t installed.",
             category="unsupported_runtime",
             recoverable=False,
+            details={"missing_module": missing_module},
         )
     except _GeneratedDatasetInputError as exc:
         sys.stdout = previous_stdout

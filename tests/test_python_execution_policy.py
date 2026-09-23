@@ -190,6 +190,26 @@ def test_runtime_adapter_preserves_policy_details():
     }
 
 
+def test_runtime_adapter_preserves_missing_dependency_details():
+    runtime_error = PythonRuntimeFailure(
+        "DEPENDENCY_NOT_AVAILABLE",
+        "Package “sklearn” isn’t installed.",
+        category="unsupported_runtime",
+        recoverable=False,
+        details={"missing_module": "sklearn"},
+    )
+
+    tool_error = _runtime_failure(runtime_error)
+
+    assert tool_error.code == "DEPENDENCY_NOT_AVAILABLE"
+    assert str(tool_error) == "Package “sklearn” isn’t installed."
+    assert tool_error.recoverable is False
+    assert tool_error.details == {
+        "category": "unsupported_runtime",
+        "missing_module": "sklearn",
+    }
+
+
 def test_system_prompt_contains_python_policy():
     prompt = build_general_system_prompt(include_db_rag=False)
 

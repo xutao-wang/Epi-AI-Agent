@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import signal
@@ -155,6 +156,51 @@ def test_generated_stdout_limit_returns_typed_failure(tmp_path):
     assert caught.value.code == "STDOUT_TOO_LARGE"
     assert caught.value.category == "invalid_output"
     assert caught.value.recoverable is True
+
+
+def test_missing_dependency_returns_concise_structured_failure(tmp_path):
+    missing_module = "epi_agent_definitely_missing_dependency"
+    runtime = LocalPythonRuntime(
+        runtime_root=tmp_path,
+        timeout_seconds=180,
+        memory_limit_bytes=None,
+    )
+
+    with pytest.raises(PythonRuntimeFailure) as caught:
+        runtime.execute(
+            _request(f"import {missing_module}"),
+            _datasets(),
+        )
+
+    assert caught.value.code == "DEPENDENCY_NOT_AVAILABLE"
+    assert str(caught.value) == f"Package “{missing_module}” isn’t installed."
+    assert caught.value.category == "unsupported_runtime"
+    assert caught.value.recoverable is False
+    assert caught.value.details == {"missing_module": missing_module}
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_parent_rejects_non_object_worker_error_details(tmp_path):
+    (tmp_path / "result.json").write_text(
+        json.dumps(
+            {
+                "status": "error",
+                "error": {
+                    "code": "DEPENDENCY_NOT_AVAILABLE",
+                    "message": "Package is unavailable.",
+                    "category": "unsupported_runtime",
+                    "recoverable": False,
+                    "details": ["not", "an", "object"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(PythonRuntimeFailure) as caught:
+        _parse_result(tmp_path, duration_seconds=0.1)
+
+    assert caught.value.code == "OUTPUT_MALFORMED"
 
 
 def test_native_stderr_is_bounded_before_process_exit(monkeypatch, tmp_path):
