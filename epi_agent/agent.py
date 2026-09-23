@@ -104,6 +104,8 @@ Analysis rules:
   Never install packages at runtime.
 - Custom Python receives the one exact selected input as the already-loaded pandas.DataFrame
   `dataset`; analyze `dataset` directly.
+- Import every library you use explicitly in the generated code; only `dataset`
+  is preloaded.
 - Never load attachment files from generated Python, discover file paths, or
   select a different dataset inside generated code.
 - Generated Python must print the requested human-readable tables,

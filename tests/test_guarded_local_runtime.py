@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import json
 import os
 from pathlib import Path
@@ -12,7 +13,7 @@ import pandas as pd
 import pytest
 
 from epi_agent.runtimes.python import LocalPythonRuntime, PythonExecutionRequest
-from epi_agent.runtimes.python import local_process
+from epi_agent.runtimes.python import local_process, worker
 from epi_agent.runtimes.python.local_process import (
     _child_environment,
     _parse_result,
@@ -32,6 +33,27 @@ def _request(code: str = "print('unused')") -> PythonExecutionRequest:
 
 def _datasets() -> dict[str, pd.DataFrame]:
     return {"selected": pd.DataFrame({"cases": [1]})}
+
+
+def _worker_directories(tmp_path: Path, code: str) -> tuple[Path, Path]:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    datasets_dir = input_dir / "datasets"
+    datasets_dir.mkdir(parents=True)
+    pd.DataFrame({"cases": [2, 3]}).to_csv(
+        datasets_dir / "selected.csv",
+        index=False,
+    )
+    (input_dir / "datasets.json").write_text(
+        json.dumps({"selected": "selected.csv"}),
+        encoding="utf-8",
+    )
+    (input_dir / "selected_dataset_id.txt").write_text(
+        "selected",
+        encoding="utf-8",
+    )
+    (input_dir / "code.py").write_text(code, encoding="utf-8")
+    return input_dir, output_dir
 
 
 def _sleeping_worker(tmp_path: Path) -> tuple[Path, Path]:
@@ -89,6 +111,69 @@ def test_runtime_executes_against_only_the_selected_dataset(tmp_path):
     assert result.runtime.execution_mode == "guarded_local"
     assert result.runtime.security_boundary == "none"
     assert list(tmp_path.iterdir()) == []
+
+
+def test_worker_does_not_import_unused_optional_scientific_packages(
+    monkeypatch,
+    tmp_path,
+):
+    input_dir, output_dir = _worker_directories(
+        tmp_path,
+        "print(int(dataset['cases'].sum()))",
+    )
+    optional_roots = {"lifelines", "matplotlib", "scipy", "statsmodels"}
+    original_import = builtins.__import__
+
+    def reject_optional_import(
+        name,
+        globals=None,
+        locals=None,
+        fromlist=(),
+        level=0,
+    ):
+        if name.partition(".")[0] in optional_roots:
+            raise AssertionError(f"unused optional import attempted: {name}")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", reject_optional_import)
+
+    assert worker.execute(input_dir, output_dir) == 0
+    payload = json.loads((output_dir / "result.json").read_text(encoding="utf-8"))
+    assert payload["status"] == "ok"
+    assert payload["output_text"].strip() == "5"
+
+
+def test_generated_code_can_explicitly_import_numpy(tmp_path):
+    runtime = LocalPythonRuntime(
+        runtime_root=tmp_path,
+        timeout_seconds=180,
+        memory_limit_bytes=None,
+    )
+
+    result = runtime.execute(
+        _request("import numpy as np\nprint(float(np.mean(dataset['cases'])))"),
+        {"selected": pd.DataFrame({"cases": [2, 4]})},
+    )
+
+    assert result.output_text.strip() == "3.0"
+
+
+def test_generated_code_explicit_matplotlib_import_captures_figure(tmp_path):
+    runtime = LocalPythonRuntime(
+        runtime_root=tmp_path,
+        timeout_seconds=180,
+        memory_limit_bytes=None,
+    )
+
+    result = runtime.execute(
+        _request(
+            "from matplotlib import pyplot as plt\n"
+            "plt.plot(dataset['cases'])"
+        ),
+        {"selected": pd.DataFrame({"cases": [2, 4]})},
+    )
+
+    assert result.figure_png.startswith(b"\x89PNG\r\n\x1a\n")
 
 
 def test_child_environment_omits_credentials_proxies_and_python_overrides(

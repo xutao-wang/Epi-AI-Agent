@@ -23,7 +23,9 @@ REPORT_AGENT_GUARDED_PYTHON_ACKNOWLEDGED=1
 Trusted parent code serializes one selected approved table. The worker loads
 that table and exposes it to generated source only as the in-memory pandas
 DataFrame `dataset`. Common installed analysis libraries are available through
-the fixed application environment.
+the fixed application environment, but they are not preloaded into generated
+code. Generated code must import each library it uses explicitly so unused
+optional libraries are not loaded.
 
 Generated source may calculate in memory, print bounded reviewable output, and
 create a Matplotlib figure. The worker returns one bounded JSON result envelope

@@ -117,6 +117,10 @@ common filesystem, network, environment, process-control, dynamic-execution,
 interactive-input, and package-installation operations. Results are staged for
 human review.
 
+Only `dataset` is preloaded for generated analysis code. Generated code imports
+each library it uses explicitly, so optional scientific libraries are loaded
+only when the analysis needs them.
+
 Guarded Local runs with the same host permissions as the application. These
 controls reduce accidental misuse and runaway execution, but they are not an
 operating-system sandbox and cannot safely contain deliberately adversarial

@@ -104,26 +104,10 @@ def execute(input_dir: Path, output_dir: Path) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     stdout_buffer = _BoundedTextBuffer()
     previous_stdout = sys.stdout
-    plt = None
     try:
-        import numpy as np
-        import pandas as pd
-        import statsmodels.api as sm
-        from lifelines import CoxPHFitter, KaplanMeierFitter
-        from matplotlib import pyplot as plt
-        from scipy.stats import chi2_contingency, fisher_exact
-
         dataset = _load_selected_dataset(input_dir)
         code = (input_dir / "code.py").read_text(encoding="utf-8")
         globals_for_code = {
-            "pd": pd,
-            "np": np,
-            "sm": sm,
-            "KaplanMeierFitter": KaplanMeierFitter,
-            "CoxPHFitter": CoxPHFitter,
-            "chi2_contingency": chi2_contingency,
-            "fisher_exact": fisher_exact,
-            "plt": plt,
             "dataset": dataset,
             "__name__": "__main__",
         }
@@ -140,10 +124,11 @@ def execute(input_dir: Path, output_dir: Path) -> int:
         sys.stdout = previous_stdout
 
         figure_png = b""
-        figure_numbers = list(plt.get_fignums())
-        if figure_numbers:
+        pyplot = sys.modules.get("matplotlib.pyplot")
+        figure_numbers = list(pyplot.get_fignums()) if pyplot is not None else []
+        if pyplot is not None and figure_numbers:
             buffer = io.BytesIO()
-            plt.figure(figure_numbers[-1]).savefig(
+            pyplot.figure(figure_numbers[-1]).savefig(
                 buffer,
                 format="png",
                 bbox_inches="tight",
@@ -221,8 +206,9 @@ def execute(input_dir: Path, output_dir: Path) -> int:
             recoverable=True,
         )
     finally:
-        if plt is not None:
-            plt.close("all")
+        pyplot = sys.modules.get("matplotlib.pyplot")
+        if pyplot is not None:
+            pyplot.close("all")
 
     try:
         _write_json(output_dir / "result.json", payload)

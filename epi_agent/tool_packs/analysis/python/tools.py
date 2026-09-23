@@ -64,7 +64,8 @@ class CustomPythonArguments(BaseModel):
             "Python analysis code. The exact approved input is available as "
             "the already-loaded pandas.DataFrame `dataset`; analyze it "
             "directly and do not load attachment files or discover paths. "
-            "Do not use files, network, host environment, or subprocesses."
+            "Import every library you use explicitly. Do not use files, "
+            "network, host environment, or subprocesses."
         )
     )
     code_summary: Description
@@ -107,6 +108,7 @@ class RunCustomPythonTool:
             "exposed to generated code as the already-loaded pandas.DataFrame "
             "`dataset`. Execution does not pause for code review; its exact "
             "result is staged for human review before publication. "
+            "Generated code must import every library it uses explicitly. "
             "Package installation is unavailable during generated-code execution."
         ),
         args_model=CustomPythonArguments,

@@ -80,7 +80,7 @@ def test_prohibited_operations_have_stable_rule_ids(code, rule_id):
         ),
     ],
 )
-def test_library_readers_are_blocked_for_preloaded_and_imported_aliases(code):
+def test_library_readers_are_blocked_for_known_and_imported_aliases(code):
     result = validate_generated_code(code)
 
     assert result.failure_code == "POLICY_BLOCKED"
@@ -214,6 +214,7 @@ def test_system_prompt_contains_python_policy():
     prompt = build_general_system_prompt(include_db_rag=False)
 
     assert "preloaded dataset" in prompt
+    assert "Import every library you use explicitly" in prompt
     assert "single corrected-code attempt" in prompt
     assert "Do not read, write, or discover files" in prompt
 
@@ -226,4 +227,5 @@ def test_python_schema_contains_pre_call_restrictions():
         "Do not use files, network, host environment, or subprocesses"
         in description
     )
+    assert "Import every library you use explicitly" in description
     assert "Package installation is unavailable" in RunCustomPythonTool.spec.description
