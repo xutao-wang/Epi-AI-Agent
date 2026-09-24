@@ -141,6 +141,25 @@ def build_clarification_exchange_event(
     )
 
 
+def build_review_decision_event(
+    *,
+    actor: str,
+    user_turn_hash: str | None,
+    review_kind: str,
+    decision: str,
+    text: str,
+) -> JsonObject:
+    return _build_event(
+        actor=actor,
+        actor_role="review",
+        event_type="review_decision",
+        user_turn_hash=user_turn_hash,
+        review_kind=review_kind,
+        decision=decision,
+        text=text,
+    )
+
+
 def build_attachment_event(
     *,
     actor: str,

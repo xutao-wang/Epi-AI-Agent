@@ -3,11 +3,17 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import BaseModel
 
 from api.runtime import _initial_graph_state
+from epi_agent.artifacts import StateArtifactStore
 from epi_agent.protocol import (
     ToolContext,
     ToolExecutionError,
@@ -18,6 +24,7 @@ from epi_agent.registry import ToolRegistry
 from epi_agent.runtime import (
     EpiAgentRuntimeConfig,
     GenericEpiAgentState,
+    analysis_completion_issues,
     build_epi_agent_graph,
 )
 from epi_agent.studies import StudyRegistry
@@ -188,7 +195,14 @@ def tool_call(call_id: str, code: str, *, name: str = PYTHON_TOOL_NAME, **detail
     }
 
 
-def build_graph(python_tool, model, *, other_tools=(), max_iterations=20):
+def build_graph(
+    python_tool,
+    model,
+    *,
+    other_tools=(),
+    max_iterations=20,
+    completion_issues=lambda _state: [],
+):
     studies = StudyRegistry()
     config = EpiAgentRuntimeConfig(
         agent_name="test",
@@ -203,6 +217,7 @@ def build_graph(python_tool, model, *, other_tools=(), max_iterations=20):
         ),
         model_profile=model_runtime_profile("gpt-5.4"),
         max_iterations=max_iterations,
+        completion_issues=completion_issues,
     )
     return build_epi_agent_graph(
         state_schema=GenericEpiAgentState,
@@ -233,6 +248,226 @@ def error_payloads(messages):
         for message in messages
         if isinstance(message, ToolMessage) and message.status == "error"
     ]
+
+
+def _rejected_analysis_completion_state(
+    *,
+    messages: list[object],
+    candidate_final_response: str = (
+        "Package unavailable: the required package is not installed. "
+        "No result was produced."
+    ),
+) -> dict[str, Any]:
+    store = StateArtifactStore()
+    reference = store.save_artifact(
+        kind="analysis_run",
+        status="rejected",
+        content={},
+        provenance={"producer": "test"},
+    )
+    return {
+        "artifacts": store.snapshot(),
+        "current_turn_artifact_refs": [
+            {
+                "id": reference.id,
+                "kind": reference.kind,
+                "version": reference.version,
+            }
+        ],
+        "messages": messages,
+        "candidate_final_response": candidate_final_response,
+    }
+
+
+def test_rejected_analysis_accepts_an_immediate_missing_dependency_warning():
+    state = _rejected_analysis_completion_state(
+        messages=[
+            ToolMessage(
+                content=json.dumps(
+                    {
+                        "error": {
+                            "code": "DEPENDENCY_NOT_AVAILABLE",
+                            "details": {"missing_module": "sklearn"},
+                        }
+                    }
+                ),
+                tool_call_id="missing-1",
+                name=PYTHON_TOOL_NAME,
+                status="error",
+            )
+        ],
+        candidate_final_response=(
+            "Package “sklearn” is unavailable. Add the correct pinned "
+            "dependency to requirements.txt, restart Epi-AI-Agent, and "
+            "retry. No result was produced."
+        ),
+    )
+
+    assert analysis_completion_issues(state) == []
+
+
+def test_rejected_analysis_accepts_an_immediate_exhausted_dependency_warning():
+    state = _rejected_analysis_completion_state(
+        messages=[
+            ToolMessage(
+                content=json.dumps(
+                    {
+                        "error": {
+                            "code": "DEPENDENCY_REPAIR_EXHAUSTED",
+                            "details": {"missing_module": "lifelines"},
+                        }
+                    }
+                ),
+                tool_call_id="missing-2",
+                name=PYTHON_TOOL_NAME,
+                status="error",
+            )
+        ],
+        candidate_final_response=(
+            "Package “lifelines” is unavailable. Add the correct pinned "
+            "dependency to requirements.txt, restart Epi-AI-Agent, and "
+            "retry. No result was produced."
+        ),
+    )
+
+    assert analysis_completion_issues(state) == []
+
+
+def test_rejected_analysis_does_not_accept_a_stale_dependency_failure():
+    state = _rejected_analysis_completion_state(
+        messages=[
+            ToolMessage(
+                content=json.dumps(
+                    {
+                        "error": {
+                            "code": "DEPENDENCY_NOT_AVAILABLE",
+                            "details": {"missing_module": "sklearn"},
+                        }
+                    }
+                ),
+                tool_call_id="stale-missing",
+                name=PYTHON_TOOL_NAME,
+                status="error",
+            ),
+            AIMessage(content="An unrelated intermediate response."),
+        ]
+    )
+
+    assert analysis_completion_issues(state) == [
+        "analysis_revision_required:"
+        f"{state['current_turn_artifact_refs'][0]['id']}:v1"
+    ]
+
+
+def test_rejected_analysis_does_not_accept_unrelated_text_after_dependency_failure():
+    state = _rejected_analysis_completion_state(
+        messages=[
+            ToolMessage(
+                content=json.dumps(
+                    {
+                        "error": {
+                            "code": "DEPENDENCY_NOT_AVAILABLE",
+                            "details": {"missing_module": "sklearn"},
+                        }
+                    }
+                ),
+                tool_call_id="missing-unrelated",
+                name=PYTHON_TOOL_NAME,
+                status="error",
+            )
+        ],
+        candidate_final_response="The prevalence is 42%.",
+    )
+
+    assert analysis_completion_issues(state) == [
+        "analysis_revision_required:"
+        f"{state['current_turn_artifact_refs'][0]['id']}:v1"
+    ]
+
+
+def test_dependency_text_response_is_replaced_with_a_deterministic_warning():
+    python_tool = DependencyPythonTool()
+    model = ScriptedModel(
+        [
+            AIMessage(content="", tool_calls=[tool_call("missing", "sklearn")]),
+            AIMessage(content="The prevalence is 42%."),
+        ]
+    )
+    graph = build_graph(
+        python_tool,
+        model,
+        completion_issues=analysis_completion_issues,
+    )
+    state = _initial_graph_state(
+        "thread-1",
+        HumanMessage(content="Analyze the approved dataset."),
+    )
+    rejected = _rejected_analysis_completion_state(messages=[])
+    state["artifacts"] = rejected["artifacts"]
+    state["current_turn_artifact_refs"] = rejected[
+        "current_turn_artifact_refs"
+    ]
+
+    result = graph.invoke(
+        state,
+        {"configurable": {"thread_id": "thread-1"}},
+    )
+
+    assert result["final_response"] == (
+        "Package “sklearn” is unavailable. Add the correct pinned dependency "
+        "to requirements.txt, restart Epi-AI-Agent, and retry. No result was "
+        "produced."
+    )
+    assert not any(
+        isinstance(message, SystemMessage)
+        and "WORK_INCOMPLETE" in str(message.content)
+        for message in result["messages"]
+    )
+
+
+def test_incomplete_dependency_text_finalizes_the_deterministic_warning():
+    python_tool = DependencyPythonTool()
+    model = ScriptedModel(
+        [
+            AIMessage(content="", tool_calls=[tool_call("missing", "sklearn")]),
+            AIMessage(
+                content="Package “sklearn” is unavail",
+                id="resp_dependency_warning",
+                response_metadata={
+                    "status": "incomplete",
+                    "incomplete_details": {"reason": "max_output_tokens"},
+                },
+            ),
+        ]
+    )
+    graph = build_graph(
+        python_tool,
+        model,
+        max_iterations=2,
+        completion_issues=analysis_completion_issues,
+    )
+    state = _initial_graph_state(
+        "thread-1",
+        HumanMessage(content="Analyze the approved dataset."),
+    )
+    rejected = _rejected_analysis_completion_state(messages=[])
+    state["artifacts"] = rejected["artifacts"]
+    state["current_turn_artifact_refs"] = rejected[
+        "current_turn_artifact_refs"
+    ]
+
+    result = graph.invoke(
+        state,
+        {"configurable": {"thread_id": "thread-1"}},
+    )
+
+    assert len(model.message_batches) == 2
+    assert result.get("terminal_error") is None
+    assert result["final_response"] == (
+        "Package “sklearn” is unavailable. Add the correct pinned dependency "
+        "to requirements.txt, restart Epi-AI-Agent, and retry. No result was "
+        "produced."
+    )
 
 
 def test_first_policy_block_allows_one_changed_safe_call():
@@ -300,10 +535,9 @@ def test_missing_dependency_allows_one_equivalent_changed_code_retry():
 def test_unchanged_dependency_retry_becomes_nonfatal_warning_without_reexecution():
     python_tool = DependencyPythonTool()
     warning = (
-        "Package unavailable: sklearn is required for this analysis, and no "
-        "valid installed alternative was found. Add the correct pinned "
-        "dependency to requirements.txt, restart Epi-AI-Agent, then retry. "
-        "No result was produced."
+        "The requested Python package is unavailable. Add the correct pinned "
+        "dependency to requirements.txt, restart Epi-AI-Agent, and retry. No "
+        "result was produced."
     )
     model = ScriptedModel(
         [
@@ -475,7 +709,11 @@ def test_successful_sql_repair_does_not_restore_exhausted_python():
 
 def test_dependency_warning_gets_a_final_turn_at_iteration_limit():
     python_tool = DependencyPythonTool()
-    warning = "Package unavailable: sklearn is required. No result was produced."
+    warning = (
+        "Package “lifelines” is unavailable. Add the correct pinned dependency "
+        "to requirements.txt, restart Epi-AI-Agent, and retry. No result was "
+        "produced."
+    )
     model = ScriptedModel(
         [
             AIMessage(content="", tool_calls=[tool_call("first", "sklearn")]),

@@ -444,6 +444,11 @@ class AnalysisResultReviewTool:
                 ),
                 artifacts=transitioned,
                 review_feedback_entry=feedback_entry,
+                conversation_review_decision={
+                    "review_kind": "analysis_result",
+                    "decision": "revise",
+                    "text": feedback,
+                },
             )
         return ToolResult(
             message=json.dumps(

@@ -845,6 +845,11 @@ class RequestDatasetPlanReviewTool:
                 "status=draft."
             ),
             artifacts=(reference,),
+            conversation_review_decision={
+                "review_kind": "dataset_plan",
+                "decision": "revise",
+                "text": feedback,
+            },
         )
 
 
@@ -1156,6 +1161,11 @@ class RequestDatasetReviewTool:
                     f"feedback_event_version={feedback_ref.version}."
                 ),
                 artifacts=(dataset_ref, quality_ref, feedback_ref),
+                conversation_review_decision={
+                    "review_kind": "dataset",
+                    "decision": "revise",
+                    "text": feedback,
+                },
             )
         if action == "cancel":
             try:

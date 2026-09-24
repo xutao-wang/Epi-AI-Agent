@@ -48,6 +48,7 @@ from graph.conversation_events import (
     build_assistant_event,
     build_attachment_event,
     build_clarification_exchange_event,
+    build_review_decision_event,
 )
 from graph.state import LangChainAgentState
 from graph.state import MetaKeys
@@ -950,6 +951,12 @@ def _model_answer_patch(
             message=str(exc),
         )
 
+    dependency_warning = (
+        _python_dependency_terminal_warning(state)
+        if not answer.tool_calls and not answer.invalid_tool_calls
+        else None
+    )
+
     if (
         observation.status == "incomplete"
         and observation.incomplete_reason == "max_output_tokens"
@@ -962,9 +969,13 @@ def _model_answer_patch(
             message="The text-only tool-failure recovery returned no usable text.",
         )
 
-    if observation.status == "incomplete" and not (
-        tool_failure_recovery
-        and observation.incomplete_reason == "max_output_tokens"
+    if (
+        observation.status == "incomplete"
+        and dependency_warning is None
+        and not (
+            tool_failure_recovery
+            and observation.incomplete_reason == "max_output_tokens"
+        )
     ):
         if observation.incomplete_reason != "max_output_tokens":
             return _model_output_error_patch(
@@ -1092,6 +1103,8 @@ def _model_answer_patch(
             if str(value)
         ],
     )
+    if not answer.tool_calls and dependency_warning is not None:
+        answer = answer.model_copy(update={"content": dependency_warning})
     output_state.update(
         {
             "phase": "idle",
@@ -1449,6 +1462,7 @@ def _execute_tools(
     terminal_control: dict[str, Any] | None = None
     terminal_error: dict[str, Any] | None = None
     clarification_exchanges: list[dict[str, str]] = []
+    conversation_review_decisions: list[dict[str, str]] = []
     tool_state_patch: dict[str, Any] = {}
     for call_index, call in enumerate(calls):
         cancellation_point()
@@ -1819,6 +1833,10 @@ def _execute_tools(
             clarification_exchanges.append(
                 dict(result.clarification_exchange)
             )
+        if result.conversation_review_decision is not None:
+            conversation_review_decisions.append(
+                dict(result.conversation_review_decision)
+            )
         pending_analysis_references: list[ArtifactRef] = []
         for reference in result.artifacts:
             if reference.kind != "analysis_run":
@@ -1870,6 +1888,17 @@ def _execute_tools(
                 answer=str(exchange["answer"]),
             ),
         )
+    for decision in conversation_review_decisions:
+        event_state = append_conversation_event(
+            event_state,
+            build_review_decision_event(
+                actor="human",
+                user_turn_hash=user_turn_hash,
+                review_kind=str(decision["review_kind"]),
+                decision=str(decision["decision"]),
+                text=str(decision["text"]),
+            ),
+        )
     if terminal_control is not None and terminal_control.get("status") == "cancelled":
         event_state = _append_cancelled_dataset_event(
             event_state,
@@ -1908,6 +1937,58 @@ def _execute_tools(
             }
         )
     return patch
+
+
+def _latest_python_dependency_failure(
+    state: dict[str, Any],
+) -> dict[str, Any] | None:
+    messages = list(state.get("messages") or [])
+    if not messages:
+        return None
+    latest = messages[-1]
+    if (
+        not isinstance(latest, ToolMessage)
+        or latest.name != _PYTHON_TOOL_NAME
+        or latest.status != "error"
+        or not isinstance(latest.content, str)
+    ):
+        return None
+    try:
+        payload = json.loads(latest.content)
+    except (TypeError, ValueError):
+        return None
+    error = payload.get("error") if isinstance(payload, dict) else None
+    code = error.get("code") if isinstance(error, dict) else None
+    if code in {
+        _PYTHON_DEPENDENCY_MISSING_CODE,
+        _PYTHON_DEPENDENCY_EXHAUSTED_CODE,
+    }:
+        return dict(error)
+    return None
+
+
+def _python_dependency_terminal_warning(
+    state: dict[str, Any],
+) -> str | None:
+    error = _latest_python_dependency_failure(state)
+    if error is None:
+        return None
+    details = error.get("details")
+    missing_module = ""
+    if isinstance(details, dict):
+        missing_module = " ".join(
+            str(details.get("missing_module") or "").split()
+        )[:200]
+    subject = (
+        f"Package “{missing_module}”"
+        if missing_module
+        else "The requested Python package"
+    )
+    return (
+        f"{subject} is unavailable. Add the correct pinned dependency to "
+        "requirements.txt, restart Epi-AI-Agent, and retry. No result was "
+        "produced."
+    )
 
 
 def analysis_completion_issues(state: dict[str, Any]) -> list[str]:
@@ -2061,6 +2142,9 @@ def analysis_completion_issues(state: dict[str, Any]) -> list[str]:
         candidate = str(
             state.get("candidate_final_response") or ""
         ).strip()
+        dependency_warning = _python_dependency_terminal_warning(state)
+        if dependency_warning is not None and candidate == dependency_warning:
+            return []
         if candidate.endswith("?") and candidate.count("?") == 1:
             return []
         return [

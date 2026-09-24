@@ -117,6 +117,7 @@ class ToolResult:
     terminal_control: ToolTerminalControl | None = None
     review_feedback_entry: dict[str, Any] | None = None
     clarification_exchange: dict[str, str] | None = None
+    conversation_review_decision: dict[str, str] | None = None
 
 
 _MAX_MODEL_TOOL_MESSAGE_CHARS = 12_000
