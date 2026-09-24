@@ -109,17 +109,21 @@ embeddings are unavailable, search falls back to lexical matching.
 
 ## Generated Python: Guarded Local
 
-Generated analyses always use **Guarded Local**. A fresh worker receives one
-approved table as the in-memory `dataset`, a clean allowlisted environment,
-private temporary directories, ordinary operating-system resource limits, a
-wall timeout, bounded output, and process-group cleanup. Static checks block
-common filesystem, network, environment, process-control, dynamic-execution,
+Generated analyses always use **Guarded Local**. A fresh worker may run
+standalone in-memory Python or receive one selected table as the in-memory
+`dataset`. It also receives a clean allowlisted environment, private temporary
+directories, ordinary operating-system resource limits, a wall timeout,
+bounded output, and process-group cleanup. Static checks block common
+filesystem, network, environment, process-control, dynamic-execution,
 interactive-input, and package-installation operations. Results are staged for
 human review.
 
-Only `dataset` is preloaded for generated analysis code. Generated code imports
-each library it uses explicitly, so optional scientific libraries are loaded
-only when the analysis needs them.
+When selected, `dataset` is the only preloaded analysis value. Standalone code
+starts without it and can perform calculations, dependency probes,
+demonstrations, or explicitly requested in-memory simulations. Generated code
+imports each library it uses explicitly, so optional scientific libraries are
+loaded only when needed. Standalone execution must never substitute synthetic
+data for a request that depends on real participant or study data.
 
 Guarded Local runs with the same host permissions as the application. These
 controls reduce accidental misuse and runaway execution, but they are not an

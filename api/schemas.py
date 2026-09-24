@@ -238,9 +238,9 @@ class CompletedAnalysisResult(BaseModel):
     method: str = Field(min_length=1)
     python_code: str = ""
     output_text: str = ""
-    dataset: ProvenanceArtifactIdentity
-    dataset_source: Literal["current_upload", "prior_artifact"] = "prior_artifact"
-    dataset_source_reason: str = ""
+    dataset: ProvenanceArtifactIdentity | None = None
+    dataset_source: Literal["current_upload", "prior_artifact"] | None = None
+    dataset_source_reason: str | None = None
     tables: list[AnalysisOutputIdentity] = Field(default_factory=list)
     figures: list[AnalysisOutputIdentity] = Field(default_factory=list)
 
@@ -249,7 +249,7 @@ class AnalysisResultReviewView(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     method: str
-    dataset: dict[str, Any]
+    dataset: dict[str, Any] | None = None
     specification: dict[str, Any]
     output_text: str
     warnings: list[str]

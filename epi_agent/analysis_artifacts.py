@@ -54,7 +54,7 @@ class AnalysisRun(BaseModel):
 
     schema_version: Literal["1.0"] = "1.0"
     method: str = Field(min_length=1)
-    dataset: ArtifactIdentity
+    dataset: ArtifactIdentity | None = None
     specification: dict[str, Any]
     output_text: str = Field(default="", max_length=100_000)
     runtime: dict[str, Any]
@@ -116,8 +116,9 @@ def save_analysis_run(
     provenance: dict[str, Any] = {
         "producer": "epi_agent",
         "thread_id": thread_id,
-        "dataset": run.dataset.model_dump(mode="json"),
     }
+    if run.dataset is not None:
+        provenance["dataset"] = run.dataset.model_dump(mode="json")
     if prior_analysis_run is not None:
         provenance["revision_of"] = {
             "id": prior_analysis_run.id,
@@ -130,7 +131,11 @@ def save_analysis_run(
         status=status,
         content=run.model_dump(mode="json"),
         provenance=provenance,
-        summary=f"{run.method} analysis of {run.dataset.id}",
+        summary=(
+            f"{run.method} analysis of {run.dataset.id}"
+            if run.dataset is not None
+            else f"{run.method} standalone analysis"
+        ),
     )
 
 

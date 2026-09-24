@@ -17,7 +17,7 @@ _LABELS = {
     "attachments-load_table": ToolActivityLabels("Loading a data table"),
     "attachments-parse_structured": ToolActivityLabels("Reading structured data"),
     "attachments-read_document": ToolActivityLabels("Reading a document"),
-    "analysis-run_custom_python": ToolActivityLabels("Running statistical analysis"),
+    "analysis-run_custom_python": ToolActivityLabels("Running Python"),
     "analysis-request_result_review": ToolActivityLabels(
         "Preparing analysis review",
         "Waiting for analysis review",

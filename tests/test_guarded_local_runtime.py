@@ -113,6 +113,79 @@ def test_runtime_executes_against_only_the_selected_dataset(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
+def test_runtime_executes_standalone_code_without_a_dataset(tmp_path):
+    runtime = LocalPythonRuntime(
+        runtime_root=tmp_path,
+        timeout_seconds=180,
+        memory_limit_bytes=None,
+    )
+
+    result = runtime.execute(
+        PythonExecutionRequest(code="print(2 + 2)"),
+        {},
+    )
+
+    assert result.output_text.strip() == "4"
+    assert result.figure_png == b""
+    assert result.runtime.execution_mode == "guarded_local"
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_runtime_executes_explicit_in_memory_synthetic_data(tmp_path):
+    runtime = LocalPythonRuntime(
+        runtime_root=tmp_path,
+        timeout_seconds=180,
+        memory_limit_bytes=None,
+    )
+
+    result = runtime.execute(
+        PythonExecutionRequest(
+            code=(
+                "import pandas as pd\n"
+                "synthetic = pd.DataFrame({'cases': [2, 3]})\n"
+                "print(int(synthetic['cases'].sum()))"
+            )
+        ),
+        {},
+    )
+
+    assert result.output_text.strip() == "5"
+
+
+def test_standalone_code_keeps_static_policy_restrictions(tmp_path):
+    runtime = LocalPythonRuntime(
+        runtime_root=tmp_path,
+        timeout_seconds=180,
+        memory_limit_bytes=None,
+    )
+
+    with pytest.raises(PythonRuntimeFailure) as caught:
+        runtime.execute(
+            PythonExecutionRequest(code="open('/tmp/result.txt', 'w')"),
+            {},
+        )
+
+    assert caught.value.code == "POLICY_BLOCKED"
+    assert caught.value.execution_started is False
+
+
+def test_runtime_rejects_dataset_mapping_without_an_explicit_selection(tmp_path):
+    runtime = LocalPythonRuntime(
+        runtime_root=tmp_path,
+        timeout_seconds=180,
+        memory_limit_bytes=None,
+    )
+
+    with pytest.raises(PythonRuntimeFailure) as caught:
+        runtime.execute(
+            PythonExecutionRequest(code="print('standalone')"),
+            {"unexpected": pd.DataFrame({"cases": [1]})},
+        )
+
+    assert caught.value.code == "DATASET_SELECTION_INVALID"
+    assert caught.value.execution_started is False
+
+
 def test_worker_does_not_import_unused_optional_scientific_packages(
     monkeypatch,
     tmp_path,
@@ -269,6 +342,25 @@ def test_missing_dependency_returns_concise_structured_failure(tmp_path):
     )
     assert "pandas" in caught.value.details["available_packages"]
     assert list(tmp_path.iterdir()) == []
+
+
+def test_standalone_missing_dependency_reaches_dependency_recovery(tmp_path):
+    missing_module = "epi_agent_definitely_missing_standalone_dependency"
+    runtime = LocalPythonRuntime(
+        runtime_root=tmp_path,
+        timeout_seconds=180,
+        memory_limit_bytes=None,
+    )
+
+    with pytest.raises(PythonRuntimeFailure) as caught:
+        runtime.execute(
+            PythonExecutionRequest(code=f"import {missing_module}"),
+            {},
+        )
+
+    assert caught.value.code == "DEPENDENCY_NOT_AVAILABLE"
+    assert caught.value.details["missing_module"] == missing_module
+    assert caught.value.execution_started is True
 
 
 def test_parent_rejects_non_object_worker_error_details(tmp_path):

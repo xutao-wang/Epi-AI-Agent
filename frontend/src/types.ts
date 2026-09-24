@@ -221,9 +221,9 @@ export interface CompletedAnalysisResult {
   method: string;
   python_code: string;
   output_text: string;
-  dataset: ProvenanceArtifactIdentity;
-  dataset_source: "current_upload" | "prior_artifact";
-  dataset_source_reason: string;
+  dataset: ProvenanceArtifactIdentity | null;
+  dataset_source: "current_upload" | "prior_artifact" | null;
+  dataset_source_reason: string | null;
   tables: AnalysisOutputIdentity[];
   figures: AnalysisOutputIdentity[];
 }
@@ -362,7 +362,7 @@ export interface DatasetReviewView {
 
 export interface AnalysisResultReviewView {
   method: string;
-  dataset: { id: string; kind: string; version: number };
+  dataset: { id: string; kind: string; version: number } | null;
   specification: Record<string, unknown>;
   output_text: string;
   warnings: string[];

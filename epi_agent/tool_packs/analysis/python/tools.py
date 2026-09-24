@@ -5,7 +5,12 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, Mapping, Protocol
 
 import pandas as pd
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+)
 
 from epi_agent.analysis_artifacts import (
     AnalysisRun,
@@ -42,6 +47,13 @@ SourceCode = Annotated[
     StringConstraints(min_length=1, max_length=100_000),
 ]
 _MAX_CUSTOM_MESSAGE_CHARS = 12_000
+_DATASET_METADATA_FIELDS = (
+    "dataset_id",
+    "dataset_kind",
+    "dataset_version",
+    "dataset_source",
+    "dataset_source_reason",
+)
 
 
 class PythonRuntime(Protocol):
@@ -55,24 +67,25 @@ class PythonRuntime(Protocol):
 class CustomPythonArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    dataset_id: Identifier
-    dataset_kind: Identifier
-    dataset_version: int = Field(ge=1)
+    dataset_id: Identifier | None = None
+    dataset_kind: Identifier | None = None
+    dataset_version: int | None = Field(default=None, ge=1)
     analysis_goal: Description
     code: SourceCode = Field(
         description=(
-            "Python analysis code. The exact approved input is available as "
-            "the already-loaded pandas.DataFrame `dataset`; analyze it "
-            "directly and do not load attachment files or discover paths. "
+            "Python analysis code. When dataset metadata is supplied, the "
+            "exact selected input is available as the already-loaded "
+            "pandas.DataFrame `dataset`; analyze it directly. Standalone code "
+            "may create data in memory but must not load attachment files or "
+            "discover paths. "
             "Import every library you use explicitly. Do not use files, "
             "network, host environment, or subprocesses."
         )
     )
     code_summary: Description
     code_assumptions: Description
-    dataset_source: Literal["current_upload", "prior_artifact"]
-    dataset_source_reason: Description
-
+    dataset_source: Literal["current_upload", "prior_artifact"] | None = None
+    dataset_source_reason: Description | None = None
 
 def _runtime_failure(error: PythonRuntimeFailure) -> ToolExecutionError:
     details = {
@@ -108,10 +121,14 @@ class RunCustomPythonTool:
     spec = ToolSpec(
         name="analysis-run_custom_python",
         description=(
-            "Run bounded custom Python against one exact approved dataset, "
-            "exposed to generated code as the already-loaded pandas.DataFrame "
-            "`dataset`. Execution does not pause for code review; its exact "
-            "result is staged for human review before publication. "
+            "Run bounded custom Python with an optional selected dataset. When "
+            "supplied, that exact dataset is exposed to generated code as the "
+            "already-loaded pandas.DataFrame `dataset`. With no dataset, code "
+            "may perform in-memory calculations, demonstrations, simulations, "
+            "or dependency probes. Supply all five dataset metadata fields "
+            "together or omit all five. Execution does not pause for code "
+            "review; its exact result is staged for human review before "
+            "publication. "
             "Generated code must import every library it uses explicitly. "
             "Package installation is unavailable during generated-code execution. "
             "After a missing import, retry only once and only with a "
@@ -137,39 +154,56 @@ class RunCustomPythonTool:
         arguments: dict[str, Any],
         context: ToolContext,
     ) -> ToolResult:
-        stored, dataframe = resolve_dataset(
-            arguments,
-            context,
-            runtime_root=context.thread_storage or self._runtime_root,
-        )
-        source_attachment_ids = {
-            str(attachment_id)
-            for attachment_id in list(
-                dict(stored.content.get("provenance") or {}).get(
-                    "source_attachment_ids"
-                )
-                or []
-            )
-            if str(attachment_id)
-        }
-        if arguments["dataset_source"] == "current_upload" and (
-            not source_attachment_ids
-            or source_attachment_ids.isdisjoint(context.current_attachment_ids)
+        dataset_values = [arguments[field] for field in _DATASET_METADATA_FIELDS]
+        if any(value is not None for value in dataset_values) and not all(
+            value is not None for value in dataset_values
         ):
             raise ToolExecutionError(
-                "DATASET_SOURCE_MISMATCH",
-                "The selected dataset was not derived from the current uploaded table.",
+                "DATASET_METADATA_INCOMPLETE",
+                (
+                    "Provide all dataset metadata fields together, or omit "
+                    "all of them."
+                ),
                 recoverable=True,
+                details={"required_together": list(_DATASET_METADATA_FIELDS)},
             )
+        stored = None
+        datasets: dict[str, pd.DataFrame] = {}
+        if arguments["dataset_id"] is not None:
+            stored, dataframe = resolve_dataset(
+                arguments,
+                context,
+                runtime_root=context.thread_storage or self._runtime_root,
+            )
+            source_attachment_ids = {
+                str(attachment_id)
+                for attachment_id in list(
+                    dict(stored.content.get("provenance") or {}).get(
+                        "source_attachment_ids"
+                    )
+                    or []
+                )
+                if str(attachment_id)
+            }
+            if arguments["dataset_source"] == "current_upload" and (
+                not source_attachment_ids
+                or source_attachment_ids.isdisjoint(context.current_attachment_ids)
+            ):
+                raise ToolExecutionError(
+                    "DATASET_SOURCE_MISMATCH",
+                    (
+                        "The selected dataset was not derived from the "
+                        "current uploaded table."
+                    ),
+                    recoverable=True,
+                )
+            datasets[stored.id] = dataframe
         request = PythonExecutionRequest(
             code=arguments["code"],
-            selected_dataset_id=stored.id,
+            selected_dataset_id=stored.id if stored is not None else None,
         )
         try:
-            execution = self._runtime.execute(
-                request,
-                {stored.id: dataframe},
-            )
+            execution = self._runtime.execute(request, datasets)
         except PythonRuntimeFailure as error:
             raise _runtime_failure(error) from error
 
@@ -192,21 +226,33 @@ class RunCustomPythonTool:
                     thread_id=context.thread_id,
                 ),
             )
+        specification = {
+            "analysis_goal": arguments["analysis_goal"],
+            "code": arguments["code"],
+            "code_summary": arguments["code_summary"],
+            "code_assumptions": arguments["code_assumptions"],
+        }
+        if stored is not None:
+            specification.update(
+                {
+                    "dataset_source": arguments["dataset_source"],
+                    "dataset_source_reason": arguments[
+                        "dataset_source_reason"
+                    ],
+                }
+            )
         run = AnalysisRun(
             method="custom_python",
-            dataset=ArtifactIdentity(
-                id=stored.id,
-                kind=stored.kind,
-                version=stored.version,
+            dataset=(
+                ArtifactIdentity(
+                    id=stored.id,
+                    kind=stored.kind,
+                    version=stored.version,
+                )
+                if stored is not None
+                else None
             ),
-            specification={
-                "analysis_goal": arguments["analysis_goal"],
-                "code": arguments["code"],
-                "code_summary": arguments["code_summary"],
-                "code_assumptions": arguments["code_assumptions"],
-                "dataset_source": arguments["dataset_source"],
-                "dataset_source_reason": arguments["dataset_source_reason"],
-            },
+            specification=specification,
             output_text=execution.output_text,
             runtime=execution.runtime.model_dump(mode="json"),
             estimates=[],

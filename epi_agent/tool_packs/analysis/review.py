@@ -175,7 +175,11 @@ def _review_payload(
         },
         "view": {
             "method": run.method,
-            "dataset": run.dataset.model_dump(mode="json"),
+            "dataset": (
+                run.dataset.model_dump(mode="json")
+                if run.dataset is not None
+                else None
+            ),
             "specification": _bounded_specification(run),
             "output_text": run.output_text,
             "warnings": warnings,
@@ -233,30 +237,31 @@ def _analysis_run(
             ),
             recoverable=True,
         )
-    dataset_ref = ArtifactRef(
-        id=run.dataset.id,
-        kind=run.dataset.kind,
-        version=run.dataset.version,
-    )
-    try:
-        dataset = context.artifact_store.require(dataset_ref)
-    except (KeyError, TypeError, ValueError) as error:
-        raise ToolExecutionError(
-            "ANALYSIS_DATASET_STALE",
-            "The exact dataset used by this analysis is no longer available.",
-            recoverable=True,
-        ) from error
-    if not is_selectable_dataset_artifact(
-        {**dict(dataset.content), "status": dataset.status}
-    ):
-        raise ToolExecutionError(
-            "ANALYSIS_DATASET_STALE",
-            (
-                f"Dataset {dataset.id} version {dataset.version} "
-                f"has status={dataset.status}."
-            ),
-            recoverable=True,
+    if run.dataset is not None:
+        dataset_ref = ArtifactRef(
+            id=run.dataset.id,
+            kind=run.dataset.kind,
+            version=run.dataset.version,
         )
+        try:
+            dataset = context.artifact_store.require(dataset_ref)
+        except (KeyError, TypeError, ValueError) as error:
+            raise ToolExecutionError(
+                "ANALYSIS_DATASET_STALE",
+                "The exact dataset used by this analysis is no longer available.",
+                recoverable=True,
+            ) from error
+        if not is_selectable_dataset_artifact(
+            {**dict(dataset.content), "status": dataset.status}
+        ):
+            raise ToolExecutionError(
+                "ANALYSIS_DATASET_STALE",
+                (
+                    f"Dataset {dataset.id} version {dataset.version} "
+                    f"has status={dataset.status}."
+                ),
+                recoverable=True,
+            )
     linked = tuple(
         ArtifactRef(id=item.id, kind=item.kind, version=item.version)
         for item in [*run.tables, *run.figures]

@@ -102,10 +102,17 @@ Analysis rules:
 - Python is the only available analysis runtime. Never offer R code or describe R as an available runtime.
 - Custom Python runs without a code-review pause in the bounded local runtime.
   Never install packages at runtime.
-- Custom Python receives the one exact selected input as the already-loaded pandas.DataFrame
-  `dataset`; analyze `dataset` directly.
-- Import every library you use explicitly in the generated code; only `dataset`
-  is preloaded.
+- Custom Python can run with or without a selected dataset. Decide whether data
+  is required from the requested computation and structured artifact inventory,
+  never by matching words such as "attached" or "uploaded" in the conversation.
+- When a dataset is selected, custom Python receives that exact input as the
+  already-loaded pandas.DataFrame `dataset`; analyze `dataset` directly.
+- Without a selected dataset, custom Python may perform calculations, dependency
+  probes, demonstrations, and explicitly requested in-memory simulations.
+- Never substitute synthetic data for a request that depends on real participant
+  or study data. Select the correct artifact or ask for the missing data instead.
+- Import every library you use explicitly in the generated code; `dataset` is
+  preloaded only when an exact dataset is selected.
 - Prefer the installed scientific packages. If a package is unavailable, make
   at most one changed-code retry and only with a scientifically equivalent
   installed alternative. Do not force an unsuitable workaround, silently

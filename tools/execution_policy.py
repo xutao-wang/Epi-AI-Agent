@@ -47,7 +47,8 @@ class PythonCodeValidation:
 
 
 PYTHON_EXECUTION_POLICY_GUIDANCE = (
-    "Custom Python runs only against the preloaded dataset. Import only "
+    "Custom Python may run with or without a selected dataset. When supplied, "
+    "use only the preloaded dataset for real-data analysis. Import only "
     "installed analysis libraries. Do not read, write, or discover files or "
     "paths; access the host environment or secrets; use the network; create "
     "or control processes; execute dynamically generated code; install "
@@ -175,7 +176,8 @@ _RULE_TEXT = {
     ),
     "PY_FILESYSTEM_ACCESS": (
         "Generated code cannot access or modify files.",
-        "Analyze the preloaded dataset and print results or create an in-memory figure.",
+        "Use in-memory values or the preloaded dataset, then print results or "
+        "create an in-memory figure.",
     ),
     "PY_NETWORK_ACCESS": (
         "Generated code cannot access the network.",
@@ -187,7 +189,8 @@ _RULE_TEXT = {
     ),
     "PY_HOST_ENVIRONMENT_ACCESS": (
         "Generated code cannot inspect the host environment.",
-        "Use only the preloaded dataset and explicitly imported analysis libraries.",
+        "Use in-memory values, an optional preloaded dataset, and explicitly "
+        "imported analysis libraries.",
     ),
     "PY_RENDERER_OVERRIDE": (
         "Generated code cannot change the plotting backend.",
@@ -195,7 +198,8 @@ _RULE_TEXT = {
     ),
     "PY_INTERACTIVE_INPUT": (
         "Generated code cannot request interactive input.",
-        "Use values already present in the preloaded dataset or tool arguments.",
+        "Use explicit in-memory values, the optional preloaded dataset, or "
+        "tool arguments.",
     ),
 }
 

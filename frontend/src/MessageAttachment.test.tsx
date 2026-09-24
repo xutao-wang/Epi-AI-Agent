@@ -274,6 +274,41 @@ describe("MessageAttachment", () => {
     expect(screen.queryByText("API request failed with status 409")).not.toBeInTheDocument();
   });
 
+  it("shows standalone Python output without requesting dataset provenance", async () => {
+    const getAnalysisResult = vi.fn().mockResolvedValue({
+      analysis_run_id: "analysis-standalone",
+      analysis_run_version: 1,
+      method: "custom_python",
+      python_code: "print(2 + 2)",
+      output_text: "4",
+      dataset: null,
+      dataset_source: null,
+      dataset_source_reason: null,
+      tables: [],
+      figures: [],
+    });
+    const getDatasetProvenance = vi.fn();
+
+    renderAttachment(
+      {
+        id: "analysis-standalone",
+        kind: "analysis_run",
+        label: "Custom Python analysis",
+        filename: "",
+        mime: "application/json",
+        byte_size: null,
+        relationship: "output",
+        origin_message_id: null,
+      },
+      { getAnalysisResult, getDatasetProvenance },
+    );
+
+    expect(await screen.findByText("No dataset supplied")).toBeInTheDocument();
+    expect(screen.getByText("4")).toBeInTheDocument();
+    expect(getDatasetProvenance).not.toHaveBeenCalled();
+    expect(screen.queryByText("Dataset and SQL")).not.toBeInTheDocument();
+  });
+
   it("uses plain recovery guidance when a completed analysis cannot load", async () => {
     renderAttachment(
       {

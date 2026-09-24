@@ -119,6 +119,7 @@ export default function MessageAttachment({
         setAnalysisResultError(null);
         if (
           !getDatasetProvenance
+          || !nextResult.dataset
           || nextResult.dataset_source !== "prior_artifact"
         ) return;
         try {
@@ -244,7 +245,9 @@ export default function MessageAttachment({
         <strong>Dataset source:</strong>{" "}
         {analysisResult.dataset_source === "current_upload"
           ? "Current uploaded table"
-          : "Earlier thread artifact"}
+          : analysisResult.dataset_source === "prior_artifact"
+            ? "Earlier thread artifact"
+            : "No dataset supplied"}
       </p>
       {analysisResult.python_code ? (
         <details open>
@@ -279,7 +282,7 @@ export default function MessageAttachment({
           />
         </details>
       ) : null}
-      {analysisResult.dataset_source === "prior_artifact" ? (
+      {analysisResult.dataset_source === "prior_artifact" && analysisResult.dataset ? (
         <details open>
           <summary>Dataset and SQL</summary>
           <p>

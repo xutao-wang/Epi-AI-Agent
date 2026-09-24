@@ -2993,17 +2993,31 @@ class ReportAgentApiRuntime:
             method=run.method,
             python_code=raw_code if isinstance(raw_code, str) else "",
             output_text=run.output_text,
-            dataset=run.dataset.model_dump(mode="json"),
+            dataset=(
+                run.dataset.model_dump(mode="json")
+                if run.dataset is not None
+                else None
+            ),
             dataset_source=(
-                run.specification.get("dataset_source")
-                if run.specification.get("dataset_source")
-                in {"current_upload", "prior_artifact"}
-                else "prior_artifact"
+                (
+                    run.specification.get("dataset_source")
+                    if run.specification.get("dataset_source")
+                    in {"current_upload", "prior_artifact"}
+                    else "prior_artifact"
+                )
+                if run.dataset is not None
+                else None
             ),
             dataset_source_reason=(
-                run.specification.get("dataset_source_reason")
-                if isinstance(run.specification.get("dataset_source_reason"), str)
-                else ""
+                (
+                    run.specification.get("dataset_source_reason")
+                    if isinstance(
+                        run.specification.get("dataset_source_reason"), str
+                    )
+                    else ""
+                )
+                if run.dataset is not None
+                else None
             ),
             tables=[identity.model_dump(mode="json") for identity in run.tables],
             figures=[identity.model_dump(mode="json") for identity in run.figures],

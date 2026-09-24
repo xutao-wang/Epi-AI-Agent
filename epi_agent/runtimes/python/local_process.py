@@ -373,7 +373,17 @@ class LocalPythonRuntime:
                 recoverable=True,
                 details=validation.as_details(),
             )
-        if request.selected_dataset_id not in datasets:
+        if request.selected_dataset_id is None and datasets:
+            raise _failure(
+                "DATASET_SELECTION_INVALID",
+                "Python execution received datasets without an explicit selection.",
+                category="invalid_output",
+                recoverable=True,
+            )
+        if (
+            request.selected_dataset_id is not None
+            and request.selected_dataset_id not in datasets
+        ):
             raise _failure(
                 "DATASET_NOT_AVAILABLE",
                 "The selected dataset is not available for Python execution.",
@@ -408,10 +418,11 @@ class LocalPythonRuntime:
                     json.dumps(manifest, ensure_ascii=True, sort_keys=True),
                     encoding="utf-8",
                 )
-                (input_dir / "selected_dataset_id.txt").write_text(
-                    request.selected_dataset_id,
-                    encoding="utf-8",
-                )
+                if request.selected_dataset_id is not None:
+                    (input_dir / "selected_dataset_id.txt").write_text(
+                        request.selected_dataset_id,
+                        encoding="utf-8",
+                    )
                 (input_dir / "code.py").write_text(
                     request.code,
                     encoding="utf-8",

@@ -20,12 +20,24 @@ REPORT_AGENT_GUARDED_PYTHON_ACKNOWLEDGED=1
 
 ## Inputs and outputs
 
-Trusted parent code serializes one selected approved table. The worker loads
-that table and exposes it to generated source only as the in-memory pandas
-DataFrame `dataset`. Common installed analysis libraries are available through
-the fixed application environment, but they are not preloaded into generated
-code. Generated code must import each library it uses explicitly so unused
-optional libraries are not loaded.
+Generated Python may run standalone or with one selected table artifact.
+Trusted parent code serializes a selected table only when dataset metadata is
+explicitly supplied. The worker then exposes it to generated source as the
+in-memory pandas DataFrame `dataset`. If all dataset metadata is omitted, the
+worker does not define `dataset`, and code may perform calculations, dependency
+probes, demonstrations, or explicitly requested in-memory simulations. A
+missing or stale supplied dataset is an error and never falls back to
+standalone execution.
+
+The choice is structural: it depends on whether validated dataset identity
+fields are present, not on matching conversational words such as `attached` or
+`uploaded`. Standalone code must never substitute synthetic data for a request
+that depends on real participant or study data.
+
+Common installed analysis libraries are available through the fixed
+application environment, but they are not preloaded into generated code.
+Generated code must import each library it uses explicitly so unused optional
+libraries are not loaded.
 
 Generated source may calculate in memory, print bounded reviewable output, and
 create a Matplotlib figure. The worker returns one bounded JSON result envelope

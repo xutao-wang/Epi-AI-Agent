@@ -86,14 +86,16 @@ def _error_payload(
 
 
 def _load_selected_dataset(input_dir: Path):
+    selection_path = input_dir / "selected_dataset_id.txt"
+    if not selection_path.exists():
+        return None
+
     import pandas as pd
 
     manifest = json.loads((input_dir / "datasets.json").read_text(encoding="utf-8"))
     if not isinstance(manifest, dict):
         raise ValueError("Dataset manifest must be an object.")
-    selected_dataset_id = (
-        input_dir / "selected_dataset_id.txt"
-    ).read_text(encoding="utf-8")
+    selected_dataset_id = selection_path.read_text(encoding="utf-8")
     filename = manifest.get(selected_dataset_id)
     if not isinstance(filename, str) or not filename:
         raise ValueError("Selected dataset is absent from the runtime manifest.")
@@ -107,10 +109,9 @@ def execute(input_dir: Path, output_dir: Path) -> int:
     try:
         dataset = _load_selected_dataset(input_dir)
         code = (input_dir / "code.py").read_text(encoding="utf-8")
-        globals_for_code = {
-            "dataset": dataset,
-            "__name__": "__main__",
-        }
+        globals_for_code = {"__name__": "__main__"}
+        if dataset is not None:
+            globals_for_code["dataset"] = dataset
         with warnings.catch_warnings(record=True) as caught_warnings:
             warnings.simplefilter("always")
             sys.stdout = stdout_buffer

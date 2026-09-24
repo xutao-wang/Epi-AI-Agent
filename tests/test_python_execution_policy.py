@@ -1,17 +1,295 @@
 from __future__ import annotations
 
+import json
+
 import pandas as pd
 import pytest
 
+from api.runtime import ReportAgentApiRuntime
+from api.schemas import CompletedAnalysisResult
 from epi_agent.agent import build_general_system_prompt
+from epi_agent.analysis_artifacts import AnalysisRun, save_analysis_run
+from epi_agent.artifacts import StateArtifactStore
+from epi_agent.protocol import ToolContext, ToolExecutionError
 from epi_agent.runtimes.python import LocalPythonRuntime, PythonExecutionRequest
 from epi_agent.runtimes.python.models import PythonRuntimeFailure
+from epi_agent.studies import StudyRegistry
 from epi_agent.tool_packs.analysis.python.tools import (
     CustomPythonArguments,
     RunCustomPythonTool,
     _runtime_failure,
+    build_custom_python_tool_registry,
 )
+from epi_agent.tool_packs.analysis.review import _analysis_run, _review_payload
 from tools.execution_policy import validate_generated_code
+
+
+def test_custom_python_arguments_accept_standalone_execution():
+    arguments = CustomPythonArguments.model_validate(
+        {
+            "analysis_goal": "Demonstrate a calculation",
+            "code": "print(2 + 2)",
+            "code_summary": "Add two integers.",
+            "code_assumptions": "This example does not use participant data.",
+        }
+    )
+
+    assert arguments.dataset_id is None
+    assert arguments.dataset_kind is None
+    assert arguments.dataset_version is None
+    assert arguments.dataset_source is None
+    assert arguments.dataset_source_reason is None
+
+
+def test_custom_python_tool_explains_partial_dataset_metadata(tmp_path):
+    registry = build_custom_python_tool_registry(
+        LocalPythonRuntime(runtime_root=tmp_path),
+        runtime_root=tmp_path,
+    )
+
+    with pytest.raises(ToolExecutionError) as caught:
+        registry.invoke(
+            "analysis-run_custom_python",
+            {
+                "dataset_id": "dataset-1",
+                "analysis_goal": "Analyze cases",
+                "code": "print(dataset.shape)",
+                "code_summary": "Report the dataset shape.",
+                "code_assumptions": "The selected dataset is tabular.",
+            },
+            context=ToolContext(
+                studies=StudyRegistry(),
+                artifact_store=StateArtifactStore(),
+                thread_id="thread-1",
+                policy=None,
+            ),
+        )
+
+    assert caught.value.code == "DATASET_METADATA_INCOMPLETE"
+    assert str(caught.value) == (
+        "Provide all dataset metadata fields together, or omit all of them."
+    )
+    assert caught.value.details == {
+        "required_together": [
+            "dataset_id",
+            "dataset_kind",
+            "dataset_version",
+            "dataset_source",
+            "dataset_source_reason",
+        ]
+    }
+
+
+def test_completed_standalone_result_has_no_dataset_source():
+    result = CompletedAnalysisResult.model_validate(
+        {
+            "analysis_run_id": "run-1",
+            "analysis_run_version": 1,
+            "method": "custom_python",
+            "python_code": "print(2 + 2)",
+            "output_text": "4\n",
+        }
+    )
+
+    assert result.dataset is None
+    assert result.dataset_source is None
+    assert result.dataset_source_reason is None
+
+
+def test_api_ignores_dataset_source_without_dataset(monkeypatch):
+    runtime = ReportAgentApiRuntime(
+        graph_factory=lambda *_args, **_kwargs: None,
+        default_runtime_settings={"model_name": "test-model"},
+        models=["test-model"],
+    )
+    run = AnalysisRun(
+        method="custom_python",
+        specification={
+            "code": "print(2 + 2)",
+            "dataset_source": "prior_artifact",
+            "dataset_source_reason": "Inconsistent stale metadata.",
+        },
+        output_text="4\n",
+        runtime={"language": "Python", "version": "3.12"},
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_file_artifact",
+        lambda *_args, **_kwargs: {
+            "kind": "analysis_run",
+            "content": {
+                "kind": "analysis_run",
+                "status": "active",
+                "version": 1,
+                "content": run.model_dump(mode="json"),
+            },
+        },
+    )
+
+    result = runtime.analysis_result("thread-1", "run-1")
+
+    assert result.dataset is None
+    assert result.dataset_source is None
+    assert result.dataset_source_reason is None
+
+
+def test_custom_python_tool_runs_standalone_and_records_no_dataset(tmp_path):
+    store = StateArtifactStore()
+    registry = build_custom_python_tool_registry(
+        LocalPythonRuntime(
+            runtime_root=tmp_path,
+            timeout_seconds=180,
+            memory_limit_bytes=None,
+        ),
+        runtime_root=tmp_path,
+    )
+
+    result = registry.invoke(
+        "analysis-run_custom_python",
+        {
+            "analysis_goal": "Demonstrate a calculation",
+            "code": "print(2 + 2)",
+            "code_summary": "Add two integers.",
+            "code_assumptions": "This example does not use participant data.",
+        },
+        context=ToolContext(
+            studies=StudyRegistry(),
+            artifact_store=store,
+            thread_id="thread-1",
+            policy=None,
+        ),
+    )
+
+    message = json.loads(result.message)
+    assert message["analysis_run_status"] == "pending_review"
+    assert len(result.artifacts) == 1
+    stored = store.require(result.artifacts[0])
+    run = AnalysisRun.model_validate(stored.content)
+    assert run.dataset is None
+    assert run.output_text.strip() == "4"
+    assert "dataset" not in stored.provenance
+
+
+def test_custom_python_tool_preserves_exact_dataset_execution(tmp_path):
+    dataset_path = tmp_path / "selected.parquet"
+    pd.DataFrame({"cases": [2, 3]}).to_parquet(dataset_path, index=False)
+    store = StateArtifactStore()
+    store.save_dataset(
+        {
+            "id": "dataset-1",
+            "kind": "analysis_dataset",
+            "version": 1,
+            "status": "active",
+            "path": str(dataset_path),
+            "provenance": {},
+        }
+    )
+    registry = build_custom_python_tool_registry(
+        LocalPythonRuntime(
+            runtime_root=tmp_path,
+            timeout_seconds=180,
+            memory_limit_bytes=None,
+        ),
+        runtime_root=tmp_path,
+    )
+
+    result = registry.invoke(
+        "analysis-run_custom_python",
+        {
+            "dataset_id": "dataset-1",
+            "dataset_kind": "analysis_dataset",
+            "dataset_version": 1,
+            "dataset_source": "prior_artifact",
+            "dataset_source_reason": "The selected artifact contains cases.",
+            "analysis_goal": "Sum cases",
+            "code": "print(int(dataset['cases'].sum()))",
+            "code_summary": "Sum the cases column.",
+            "code_assumptions": "Cases are additive counts.",
+        },
+        context=ToolContext(
+            studies=StudyRegistry(),
+            artifact_store=store,
+            thread_id="thread-1",
+            policy=None,
+        ),
+    )
+
+    stored = store.require(result.artifacts[-1])
+    run = AnalysisRun.model_validate(stored.content)
+    assert run.dataset is not None
+    assert run.dataset.id == "dataset-1"
+    assert run.output_text.strip() == "5"
+    assert stored.provenance["dataset"]["id"] == "dataset-1"
+
+
+def test_missing_supplied_dataset_never_falls_back_to_standalone(tmp_path):
+    store = StateArtifactStore()
+    registry = build_custom_python_tool_registry(
+        LocalPythonRuntime(runtime_root=tmp_path),
+        runtime_root=tmp_path,
+    )
+
+    with pytest.raises(ToolExecutionError) as caught:
+        registry.invoke(
+            "analysis-run_custom_python",
+            {
+                "dataset_id": "missing-dataset",
+                "dataset_kind": "analysis_dataset",
+                "dataset_version": 1,
+                "dataset_source": "prior_artifact",
+                "dataset_source_reason": "Analyze the selected artifact.",
+                "analysis_goal": "Count rows",
+                "code": "print(len(dataset))",
+                "code_summary": "Count dataset rows.",
+                "code_assumptions": "Each row is one observation.",
+            },
+            context=ToolContext(
+                studies=StudyRegistry(),
+                artifact_store=store,
+                thread_id="thread-1",
+                policy=None,
+            ),
+        )
+
+    assert caught.value.code == "DATASET_NOT_AVAILABLE"
+    assert store.list_artifacts() == []
+
+
+def test_standalone_analysis_run_is_reviewable():
+    store = StateArtifactStore()
+    context = ToolContext(
+        studies=StudyRegistry(),
+        artifact_store=store,
+        thread_id="thread-1",
+        policy=None,
+    )
+    reference = save_analysis_run(
+        store,
+        AnalysisRun(
+            method="custom_python",
+            specification={
+                "analysis_goal": "Demonstrate a calculation",
+                "code": "print(2 + 2)",
+            },
+            output_text="4\n",
+            runtime={"language": "Python", "version": "3.12"},
+        ),
+        thread_id="thread-1",
+        status="pending_review",
+    )
+
+    run_reference, run, linked = _analysis_run(
+        {
+            "analysis_run_id": reference.id,
+            "analysis_run_version": reference.version,
+        },
+        context,
+    )
+    payload = _review_payload(run_reference, run, feedback_history=())
+
+    assert linked == ()
+    assert payload["view"]["dataset"] is None
+    assert payload["view"]["output_text"] == "4\n"
 
 
 def test_allowed_code_returns_typed_success():
@@ -222,7 +500,9 @@ def test_runtime_adapter_preserves_missing_dependency_details():
 def test_system_prompt_contains_python_policy():
     prompt = build_general_system_prompt(include_db_rag=False)
 
-    assert "preloaded dataset" in prompt
+    assert "with or without a selected dataset" in prompt
+    assert "never by matching words" in prompt
+    assert "Never substitute synthetic data" in prompt
     assert "Import every library you use explicitly" in prompt
     assert "single corrected-code attempt" in prompt
     assert "scientifically equivalent" in prompt
@@ -232,15 +512,26 @@ def test_system_prompt_contains_python_policy():
     assert "Do not read, write, or discover files" in prompt
 
 
-def test_python_schema_contains_pre_call_restrictions():
+def test_python_schema_contains_pre_call_restrictions(tmp_path):
     schema = CustomPythonArguments.model_json_schema()
     description = schema["properties"]["code"]["description"]
+    registry = build_custom_python_tool_registry(
+        LocalPythonRuntime(runtime_root=tmp_path),
+        runtime_root=tmp_path,
+    )
+    model_description = registry.model_schemas()[0]["function"]["description"]
 
+    assert "Standalone code may create data in memory" in description
+    assert "dataset_id" not in schema["required"]
     assert (
         "Do not use files, network, host environment, or subprocesses"
         in description
     )
     assert "Import every library you use explicitly" in description
+    assert (
+        "Supply all five dataset metadata fields together or omit all five"
+        in model_description
+    )
     assert "Package installation is unavailable" in RunCustomPythonTool.spec.description
     assert (
         "scientifically equivalent installed alternative"

@@ -12,7 +12,11 @@ class PythonExecutionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     code: str = Field(min_length=1, max_length=100_000)
-    selected_dataset_id: str = Field(min_length=1, max_length=512)
+    selected_dataset_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=512,
+    )
 
 
 class PythonRuntimeManifest(BaseModel):
