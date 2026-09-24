@@ -1,5 +1,8 @@
 # Guarded Local Missing-Dependency Design
 
+> Historical design: retry and terminal behavior here is superseded by
+> `tools/python_execution_policy.md`.
+
 ## Purpose
 
 When generated Python imports a module that is not installed, Epi-AI-Agent

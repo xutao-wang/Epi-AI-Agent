@@ -134,8 +134,8 @@ trust.
 Docker adds a boundary between the whole application and the host; it does not
 create a separate boundary between generated Python and the rest of the
 application container. Application networking remains enabled for model
-providers and trusted tools, while generated Python remains offline by static
-policy.
+providers and trusted tools. Generated Python must not use it; static checks
+reject common direct network clients but do not provide network isolation.
 
 The installed scientific package set is fixed by `requirements.txt`. Generated
 code cannot install packages with pip, Conda, uv, system package managers, or

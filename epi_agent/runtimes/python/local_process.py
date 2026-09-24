@@ -410,8 +410,10 @@ class LocalPythonRuntime:
 
             manifest: dict[str, str] = {}
             try:
-                for index, (dataset_id, dataframe) in enumerate(datasets.items()):
-                    filename = f"{index}.csv"
+                if request.selected_dataset_id is not None:
+                    dataset_id = request.selected_dataset_id
+                    dataframe = datasets[dataset_id]
+                    filename = "0.csv"
                     dataframe.to_csv(datasets_dir / filename, index=False)
                     manifest[str(dataset_id)] = filename
                 (input_dir / "datasets.json").write_text(

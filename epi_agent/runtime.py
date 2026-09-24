@@ -646,14 +646,20 @@ def _prepare_model_request(
     tool_failure_recovery = _tool_failure_recovery_required(failures)
 
     iteration_count = int(state.get("iteration_count") or 0)
-    dependency_warning_turn = (
-        _python_dependency_repair_exhausted(failures)
-        and iteration_count == agent_config.max_iterations
-    )
+    dependency_warning = _python_dependency_terminal_warning(state)
+    if (
+        iteration_count >= agent_config.max_iterations
+        and dependency_warning is not None
+        and not tool_failure_recovery
+    ):
+        return {
+            "messages": [AIMessage(content=dependency_warning)],
+            "completion_blocked": False,
+            "final_response": dependency_warning,
+        }
     if (
         iteration_count >= agent_config.max_iterations
         and not tool_failure_recovery
-        and not dependency_warning_turn
     ):
         return _terminal_model_patch(
             _terminal_error(
@@ -1784,6 +1790,15 @@ def _execute_tools(
                 *batch_failures,
             ]
         )
+        if name == _PYTHON_TOOL_NAME:
+            dependency_failures = set(
+                _python_dependency_failure_signatures(failures)
+            )
+            failures = [
+                signature
+                for signature in failures
+                if signature not in dependency_failures
+            ]
         reducer_state = {**state, **tool_state_patch}
         tool_state_patch.update(
             agent_config.tool_success_state_reducer(
@@ -1985,9 +2000,10 @@ def _python_dependency_terminal_warning(
         else "The requested Python package"
     )
     return (
-        f"{subject} is unavailable. Add the correct pinned dependency to "
-        "requirements.txt, restart Epi-AI-Agent, and retry. No result was "
-        "produced."
+        f"{subject} is required by the requested Python execution but is "
+        "unavailable. "
+        "Add the correct pinned dependency to requirements.txt, restart "
+        "Epi-AI-Agent, and retry. No result was produced."
     )
 
 

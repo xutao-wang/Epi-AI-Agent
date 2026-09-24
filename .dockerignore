@@ -6,6 +6,13 @@
 .venv
 .venv-*
 .worktrees
+.superpowers
+.streamlit
+AGENTS.md
+publication
+slides
+tmp
+todo.md
 runtime
 study_data
 local_data
@@ -18,4 +25,3 @@ frontend/node_modules
 node_modules
 config/custom_models.json
 db_rag/benchmark
-

@@ -1,5 +1,8 @@
 # Guarded Local Missing-Dependency Implementation Plan
 
+> Historical plan: retry and terminal behavior here is superseded by
+> `tools/python_execution_policy.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make unavailable Python imports fail with a concise, structured, non-crashing error and document a reproducible operator-managed package update procedure for native and Docker deployments.

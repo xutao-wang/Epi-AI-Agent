@@ -106,4 +106,3 @@ def latest_analysis() -> dict[str, object]:
         return _load_review_from_sqlite(DATABASE_PATH)
     except (KeyError, ValueError) as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
-

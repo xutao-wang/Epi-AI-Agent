@@ -113,6 +113,31 @@ def test_runtime_executes_against_only_the_selected_dataset(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
+def test_runtime_does_not_serialize_an_unselected_dataset(tmp_path):
+    class UnselectedDataFrame(pd.DataFrame):
+        def to_csv(self, *args, **kwargs):
+            raise AssertionError("unselected dataset was serialized")
+
+    runtime = LocalPythonRuntime(
+        runtime_root=tmp_path,
+        timeout_seconds=180,
+        memory_limit_bytes=None,
+    )
+
+    result = runtime.execute(
+        PythonExecutionRequest(
+            code="print(int(dataset['cases'].sum()))",
+            selected_dataset_id="selected",
+        ),
+        {
+            "selected": pd.DataFrame({"cases": [2, 3]}),
+            "other": UnselectedDataFrame({"cases": [100]}),
+        },
+    )
+
+    assert result.output_text.strip() == "5"
+
+
 def test_runtime_executes_standalone_code_without_a_dataset(tmp_path):
     runtime = LocalPythonRuntime(
         runtime_root=tmp_path,

@@ -36,7 +36,7 @@ def test_runtime_image_is_python_312_non_root_and_starts_fastapi():
     assert "frontend/dist" not in _dockerignore_patterns()
 
 
-def test_docker_context_excludes_secrets_runtime_studies_and_worktrees():
+def test_docker_context_excludes_secrets_runtime_studies_and_local_scratch():
     patterns = _dockerignore_patterns()
 
     assert {
@@ -45,6 +45,13 @@ def test_docker_context_excludes_secrets_runtime_studies_and_worktrees():
         "runtime",
         "study_data",
         "config/custom_models.json",
+        ".superpowers",
+        ".streamlit",
+        "AGENTS.md",
+        "publication",
+        "slides",
+        "tmp",
+        "todo.md",
     } <= patterns
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "ARG OPENAI_API_KEY" not in dockerfile

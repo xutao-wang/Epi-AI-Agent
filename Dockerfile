@@ -32,4 +32,3 @@ ENV REPORT_AGENT_CONTAINER=1 \
 USER app
 EXPOSE 8080
 CMD ["python", "run_fastapi.py", "--host", "0.0.0.0", "--port", "8080"]
-

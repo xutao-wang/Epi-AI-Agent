@@ -46,9 +46,10 @@ an analysis result for human review.
 
 ## Static guardrails
 
-Source is parsed before a child process is created. Violations include a stable
-rule ID, operation, source location, bounded explanation, and correction text.
-At most ten source-ordered findings are returned.
+Source is parsed before a child process is created. The validator detects common
+direct forms of disallowed behavior. Violations include a stable rule ID,
+operation, source location, bounded explanation, and correction text. At most
+ten source-ordered findings are returned.
 
 The policy blocks:
 
@@ -63,8 +64,9 @@ The policy blocks:
 
 Invalid syntax returns `INVALID_PYTHON_SYNTAX`, not a policy violation.
 
-Static checking is an application guardrail. Python is dynamic, so static
-checking must not be represented as containment.
+Static checking is an application guardrail. Python is dynamic, so indirect or
+aliased access may not be detected and static checking must not be represented
+as containment.
 
 ## Recovery
 
@@ -101,9 +103,11 @@ files are removed.
 
 ## Network and packages
 
-Generated Python is offline by policy. External publications, APIs, and data
-must enter through dedicated trusted tools and approved analysis inputs. There
-is no temporary prompt that grants arbitrary network access.
+Generated Python must not use the network. Static validation rejects known
+direct network clients, but Guarded Local does not provide network isolation.
+External publications, APIs, and data must enter through dedicated trusted
+tools and approved analysis inputs. There is no temporary prompt that grants
+arbitrary network access.
 
 The scientific package set is fixed by `requirements.txt`. Generated code
 cannot invoke pip, Conda, uv, operating-system package managers, source builds,

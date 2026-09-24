@@ -297,9 +297,9 @@ def test_rejected_analysis_accepts_an_immediate_missing_dependency_warning():
             )
         ],
         candidate_final_response=(
-            "Package “sklearn” is unavailable. Add the correct pinned "
-            "dependency to requirements.txt, restart Epi-AI-Agent, and "
-            "retry. No result was produced."
+            "Package “sklearn” is required by the requested Python execution but is "
+            "unavailable. Add the correct pinned dependency to requirements.txt, "
+            "restart Epi-AI-Agent, and retry. No result was produced."
         ),
     )
 
@@ -324,9 +324,9 @@ def test_rejected_analysis_accepts_an_immediate_exhausted_dependency_warning():
             )
         ],
         candidate_final_response=(
-            "Package “lifelines” is unavailable. Add the correct pinned "
-            "dependency to requirements.txt, restart Epi-AI-Agent, and "
-            "retry. No result was produced."
+            "Package “lifelines” is required by the requested Python execution but is "
+            "unavailable. Add the correct pinned dependency to requirements.txt, "
+            "restart Epi-AI-Agent, and retry. No result was produced."
         ),
     )
 
@@ -414,9 +414,9 @@ def test_dependency_text_response_is_replaced_with_a_deterministic_warning():
     )
 
     assert result["final_response"] == (
-        "Package “sklearn” is unavailable. Add the correct pinned dependency "
-        "to requirements.txt, restart Epi-AI-Agent, and retry. No result was "
-        "produced."
+        "Package “sklearn” is required by the requested Python execution but is "
+        "unavailable. Add the correct pinned dependency to requirements.txt, "
+        "restart Epi-AI-Agent, and retry. No result was produced."
     )
     assert not any(
         isinstance(message, SystemMessage)
@@ -463,10 +463,14 @@ def test_incomplete_dependency_text_finalizes_the_deterministic_warning():
 
     assert len(model.message_batches) == 2
     assert result.get("terminal_error") is None
+    assert (
+        "required by the requested Python execution"
+        in result["final_response"]
+    )
     assert result["final_response"] == (
-        "Package “sklearn” is unavailable. Add the correct pinned dependency "
-        "to requirements.txt, restart Epi-AI-Agent, and retry. No result was "
-        "produced."
+        "Package “sklearn” is required by the requested Python execution but is "
+        "unavailable. Add the correct pinned dependency to requirements.txt, "
+        "restart Epi-AI-Agent, and retry. No result was produced."
     )
 
 
@@ -530,14 +534,16 @@ def test_missing_dependency_allows_one_equivalent_changed_code_retry():
     assert result["final_response"] == (
         "The equivalent installed analysis completed."
     )
+    assert result["failure_signatures"] == []
 
 
 def test_unchanged_dependency_retry_becomes_nonfatal_warning_without_reexecution():
     python_tool = DependencyPythonTool()
     warning = (
-        "The requested Python package is unavailable. Add the correct pinned "
-        "dependency to requirements.txt, restart Epi-AI-Agent, and retry. No "
-        "result was produced."
+        "The requested Python package is required by the requested Python "
+        "execution but is unavailable. Add the correct pinned dependency to "
+        "requirements.txt, restart Epi-AI-Agent, and retry. No result was "
+        "produced."
     )
     model = ScriptedModel(
         [
@@ -710,9 +716,9 @@ def test_successful_sql_repair_does_not_restore_exhausted_python():
 def test_dependency_warning_gets_a_final_turn_at_iteration_limit():
     python_tool = DependencyPythonTool()
     warning = (
-        "Package “lifelines” is unavailable. Add the correct pinned dependency "
-        "to requirements.txt, restart Epi-AI-Agent, and retry. No result was "
-        "produced."
+        "Package “lifelines” is required by the requested Python execution but is "
+        "unavailable. Add the correct pinned dependency to requirements.txt, "
+        "restart Epi-AI-Agent, and retry. No result was produced."
     )
     model = ScriptedModel(
         [
@@ -730,6 +736,31 @@ def test_dependency_warning_gets_a_final_turn_at_iteration_limit():
 
     assert result.get("terminal_error") is None
     assert result["final_response"] == warning
+
+
+def test_first_missing_dependency_at_iteration_limit_returns_package_warning():
+    python_tool = DependencyPythonTool()
+    model = ScriptedModel(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[tool_call("missing", "sklearn")],
+            )
+        ]
+    )
+
+    _graph, result = run_graph(
+        python_tool,
+        model,
+        max_iterations=1,
+    )
+
+    assert result.get("terminal_error") is None
+    assert result["final_response"] == (
+        "Package “sklearn” is required by the requested Python execution but is "
+        "unavailable. Add the correct pinned dependency to requirements.txt, "
+        "restart Epi-AI-Agent, and retry. No result was produced."
+    )
 
 
 def test_new_user_message_restores_python_after_dependency_exhaustion():
