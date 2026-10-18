@@ -16,11 +16,6 @@ COPY --chown=app:app . /app
 RUN mkdir -p /app/runtime /app/study_data \
     && chown -R app:app /app/runtime /app/study_data
 
-FROM app-base AS smoke
-
-USER app
-CMD ["python", "-m", "uvicorn", "tests.docker_smoke_app:app", "--host", "0.0.0.0", "--port", "8080"]
-
 FROM app-base AS runtime
 
 ENV REPORT_AGENT_CONTAINER=1 \

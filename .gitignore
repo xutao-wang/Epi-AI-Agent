@@ -27,11 +27,19 @@ local_data/
 AGENTS.md
 /docs/
 /scripts/
-/tests/
 run_fastapi_typescript_app.py
 slides/
 tmp/
 todo.md
+
+# Local tests, verification, and their generated reports.
+/tests/
+/frontend/src/**/*.test.*
+/frontend/src/**/*.spec.*
+/frontend/src/**/__tests__/
+/frontend/coverage/
+/frontend/playwright-report/
+/frontend/test-results/
 
 # Raw/private source data and user-generated artifacts.
 synthetic_report_india/
