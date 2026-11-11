@@ -99,7 +99,8 @@ def _load_selected_dataset(input_dir: Path):
     filename = manifest.get(selected_dataset_id)
     if not isinstance(filename, str) or not filename:
         raise ValueError("Selected dataset is absent from the runtime manifest.")
-    return pd.read_csv(input_dir / "datasets" / filename)
+    path = input_dir / "datasets" / filename
+    return pd.read_parquet(path) if path.suffix == ".parquet" else pd.read_csv(path)
 
 
 def execute(input_dir: Path, output_dir: Path) -> int:

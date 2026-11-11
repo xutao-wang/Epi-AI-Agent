@@ -25,3 +25,8 @@ frontend/node_modules
 node_modules
 config/custom_models.json
 db_rag/benchmark
+
+# Local verification tooling is not part of the deployed application.
+tests
+scripts/smoke_*
+scripts/e2e_*

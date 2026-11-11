@@ -130,8 +130,8 @@ class PlanAggregate(BaseModel):
 class PlanReduction(BaseModel):
     """An optional SQL-generation hint for repeated records.
 
-    Reduction hints remain typed for compatibility with the deterministic
-    compiler, but their cross-field completeness is not a dataset-plan gate.
+    Reduction hints provide typed context for SQL generation; their
+    cross-field completeness is not a dataset-plan gate.
     """
 
     source: str = ""

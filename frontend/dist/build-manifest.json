@@ -1,5 +1,5 @@
 {
-  "built_at": "2026-10-18T02:12:27.035593+00:00",
+  "built_at": "2026-11-11T05:18:13.613081+00:00",
   "source_sha256": {
     "frontend/index.html": "89f2b276eb183f4ebfe35982a0cac2d863da771436560c61d977e282ee15b07a",
     "frontend/package-lock.json": "a14f127c2e852575ffd49c7e3c4c5e342da58af5f92b45622f0963064b0ad1d5",
@@ -28,7 +28,7 @@
     "frontend/src/messageRendering.ts": "6bbd0207f2a014e04998457768e3afb8edb075f66fe62a9100a1bc753ce4be5f",
     "frontend/src/reviewSelection.ts": "021c79c78e1ac4627a7563c848c59d36521cf227a4f7ee99ff3545ceac4a5d2f",
     "frontend/src/styles.css": "a2b126c40f2182ba66baf43e9445b7f1f231c7fa7baa5451139b2c51fa78b3f0",
-    "frontend/src/types.ts": "9b9dafe91821a28df2a5687ed7d9cde0845f16fbcc21d2d7531f7bd7eff32f44",
+    "frontend/src/types.ts": "ccee5bec4b593c381a8d76d19d83ab425f604c9bfbf3e9c49504d6bac9bb79cd",
     "frontend/src/vite-env.d.ts": "65996936fbb042915f7b74a200fcdde7e410f32a669b1ab9597cfaa4b0faddb5",
     "frontend/tsconfig.json": "a043926a1c02562384a05d174123966c72d6b145b8a89201e673d31a1f024de4",
     "frontend/tsconfig.node.json": "966bcda855805869c0de7ae9f09fd972aa4b948502cf90a6dc3bbcb149d68c85",

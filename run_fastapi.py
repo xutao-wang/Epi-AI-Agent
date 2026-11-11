@@ -32,6 +32,7 @@ from utils.model_availability import (
 )
 from utils.model_runtime_profiles import (
     ENABLED_CUSTOM_ENDPOINTS_ENV,
+    ModelRuntimeProfile,
     OPENROUTER_BASE_URL,
     PROVIDER_API_KEY_ENVS,
     PROVIDER_OPENAI_COMPATIBLE,
@@ -131,6 +132,7 @@ def _provider_label(provider: str) -> str:
     return {
         "openai": "OpenAI",
         "anthropic": "Anthropic",
+        "bedrock": "Amazon Bedrock",
         PROVIDER_OPENAI_COMPATIBLE: "Compatible endpoint",
         PROVIDER_OPENROUTER: "OpenRouter",
     }.get(provider, provider)
@@ -225,6 +227,8 @@ def _configure_provider_menu(
                 "6. Remove Anthropic\n"
                 "7. Remove OpenRouter\n"
                 "8. Keep current providers\n"
+                "9. Configure or replace Amazon Bedrock\n"
+                "10. Remove Amazon Bedrock\n"
                 "Selection [8]: "
             )
             default = "8"
@@ -235,6 +239,7 @@ def _configure_provider_menu(
                 "2. Configure Anthropic\n"
                 "3. Configure OpenRouter\n"
                 "4. Connect to a compatible endpoint (beta)\n"
+                "9. Configure Amazon Bedrock\n"
                 "Selection: "
             )
             default = ""
@@ -244,6 +249,33 @@ def _configure_provider_menu(
             raise StartupConfigurationError(
                 "AI provider setup was cancelled."
             ) from error
+
+        if selection == "9":
+            from utils.bedrock import discover_bedrock_profiles
+            try:
+                candidate = normalize_secret_input(getpass_fn("Paste your Amazon Bedrock API key (empty returns): "))
+                if not candidate:
+                    continue
+                default_region = str(environ.get("BEDROCK_REGION") or environ.get("AWS_REGION") or environ.get("AWS_DEFAULT_REGION") or "us-east-1")
+                region = input_fn(f"Amazon Bedrock region [{default_region}]: ").strip() or default_region
+                values = {"BEDROCK_API_KEY": candidate, "BEDROCK_REGION": region}
+                if not discover_bedrock_profiles(dict(environ) | values):
+                    raise ValueError("No supported native Converse/tool models were discovered in this region.")
+            except (ProviderCredentialError, ValueError) as error:
+                output_fn(f"Amazon Bedrock setup failed: {error}")
+                continue
+            except (EOFError, KeyboardInterrupt) as error:
+                raise StartupConfigurationError("Amazon Bedrock setup was cancelled.") from error
+            environ.update(values)
+            persist(project_root, values)
+            output_fn("Amazon Bedrock key and region verified and saved. Model invocation access is checked when used.")
+            return
+        if force and selection == "10":
+            keys = {"BEDROCK_API_KEY", "AWS_BEARER_TOKEN_BEDROCK", "BEDROCK_REGION"}
+            for key in keys:
+                environ.pop(key, None)
+            remove_local_env_values(project_root, keys)
+            return
 
         providers = {
             "1": ("openai",),
@@ -351,6 +383,7 @@ def configure_and_verify_providers(
     discoverer: Callable[..., Sequence[object]] = discover_openai_compatible_models,
     persist: Callable[[str | Path, dict[str, str]], None] = persist_local_env_values,
     force: bool = False,
+    bedrock_discoverer: Callable[..., Mapping[str, ModelRuntimeProfile]] | None = None,
 ) -> ModelAvailability:
     """Configure providers, verify each one, and return usable model IDs."""
     remove_local_env_values(project_root, _DEPRECATED_LOCAL_ENV_KEYS)
@@ -361,6 +394,8 @@ def configure_and_verify_providers(
         normalize_secret_input(environ.get(key, ""))
         for key in PROVIDER_API_KEY_ENVS.values()
     )
+    from utils.bedrock import bedrock_configured, discover_bedrock_profiles
+    has_builtin = has_builtin or bedrock_configured(environ)
     has_selected_custom = bool(enabled_custom_endpoint_ids(environ))
     if force or not (has_builtin or has_selected_custom):
         _configure_provider_menu(
@@ -377,6 +412,15 @@ def configure_and_verify_providers(
     verified: set[ProviderEndpoint] = set()
     profiles = registered_model_profiles(environ)
     discovered_profiles = {}
+    if bedrock_configured(environ):
+        try:
+            bedrock_profiles = (bedrock_discoverer or discover_bedrock_profiles)(environ)
+        except (ProviderCredentialError, ValueError) as error:
+            output_fn(f"Amazon Bedrock discovery failed: {error}")
+        else:
+            discovered_profiles.update(bedrock_profiles)
+            verified.update(profile_endpoint(p) for p in bedrock_profiles.values())
+            output_fn(f"Amazon Bedrock verified: {len(bedrock_profiles)} supported model choices discovered. Invocation access is checked when used.")
     discovery_endpoints = load_custom_endpoint_entries(environ=environ)
     for endpoint_id in enabled_custom_endpoint_ids(environ):
         entry = discovery_endpoints.get(endpoint_id)

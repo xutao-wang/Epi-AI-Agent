@@ -91,7 +91,8 @@ export type ModelProvider =
   | "openai"
   | "anthropic"
   | "openai_compatible"
-  | "openrouter";
+  | "openrouter"
+  | "bedrock";
 
 export interface ModelOption {
   id: string;

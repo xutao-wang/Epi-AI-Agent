@@ -167,9 +167,22 @@ def _terminal_model_patch(error: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _failure_signature(code: str, name: str, arguments: dict[str, Any]) -> str:
+def _failure_signature(
+    code: str,
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    repair_fields: list[str] | None = None,
+) -> str:
+    record: dict[str, Any] = {"arguments": arguments, "code": code, "tool": name}
+    if (
+        isinstance(repair_fields, list)
+        and repair_fields
+        and all(isinstance(field, str) for field in repair_fields)
+    ):
+        record["repair_fields"] = sorted(set(repair_fields))
     return json.dumps(
-        {"arguments": arguments, "code": code, "tool": name},
+        record,
         default=str,
         sort_keys=True,
     )
@@ -344,6 +357,23 @@ def _python_dependency_exhausted_error(
     )
 
 
+def _failure_repair_key(signature: str) -> str:
+    record = _failure_record(signature)
+    fields = record.get("repair_fields")
+    arguments = record.get("arguments")
+    if not (
+        isinstance(fields, list)
+        and fields
+        and all(isinstance(field, str) for field in fields)
+        and isinstance(arguments, dict)
+    ):
+        return signature
+    # Retain the full arguments in history; compare only the declared repair
+    # fields so unrelated edits cannot disguise the same unresolved failure.
+    record["arguments"] = {field: arguments.get(field) for field in fields}
+    return json.dumps(record, default=str, sort_keys=True)
+
+
 def _repeated_failure(signatures: list[str]) -> bool:
     if signatures:
         latest = _failure_record(signatures[-1])
@@ -362,7 +392,8 @@ def _repeated_failure(signatures: list[str]) -> bool:
         ):
             return False
     return len(signatures) >= _REPEATED_FAILURE_LIMIT and all(
-        item == signatures[-1] for item in signatures[-_REPEATED_FAILURE_LIMIT:]
+        _failure_repair_key(item) == _failure_repair_key(signatures[-1])
+        for item in signatures[-_REPEATED_FAILURE_LIMIT:]
     )
 
 
@@ -815,7 +846,7 @@ def _model_tool_schemas(
     schemas = agent_config.registry.model_schemas(
         inline_local_references=(
             agent_config.model_profile.provider
-            in {PROVIDER_OPENAI_COMPATIBLE, PROVIDER_OPENROUTER}
+            in {PROVIDER_OPENAI_COMPATIBLE, PROVIDER_OPENROUTER, "bedrock"}
         ),
     )
     if not _python_unavailable(list(state.get("failure_signatures") or [])):
@@ -1726,7 +1757,10 @@ def _execute_tools(
                 )
             error = _with_recovery_instruction(error)
             messages.append(error_tool_message(call, error))
-            signature = _failure_signature(error.code, name, arguments)
+            signature = _failure_signature(
+                error.code, name, arguments,
+                repair_fields=dict(error.details or {}).get("repair_fields"),
+            )
             failures.append(signature)
             batch_failures.append(signature)
             if activity_started and error.code != "INVALID_ARGUMENTS":

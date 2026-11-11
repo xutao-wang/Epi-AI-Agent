@@ -215,6 +215,18 @@ def verify_anthropic_credentials(
         raise _status_failure("Anthropic", int(error.status_code)) from error
 
 
+def verify_bedrock_credentials(api_key: str, *, region: str | None = None) -> None:
+    import os
+    from utils.bedrock import discover_bedrock_profiles
+    env = dict(os.environ) | {"BEDROCK_API_KEY": api_key}
+    if region:
+        env["BEDROCK_REGION"] = region
+    try:
+        discover_bedrock_profiles(env)
+    except ValueError as exc:
+        raise ProviderCredentialError("configuration", str(exc)) from None
+
+
 def verify_provider_credential(
     provider: str,
     api_key: str,
@@ -223,8 +235,13 @@ def verify_provider_credential(
     openai_checker: Callable[..., None] = verify_openai_credentials,
     anthropic_checker: Callable[..., None] = verify_anthropic_credentials,
     openrouter_checker: Callable[..., None] = verify_openrouter_credentials,
+    bedrock_checker: Callable[..., None] = verify_bedrock_credentials,
+    region: str | None = None,
 ) -> None:
     normalized_provider = str(provider or "").strip().lower()
+    if normalized_provider == "bedrock":
+        bedrock_checker(api_key, region=region)
+        return
     if normalized_provider == "openai":
         openai_checker(api_key)
         return
@@ -273,6 +290,7 @@ __all__ = [
     "discover_openai_compatible_models",
     "verify_active_provider",
     "verify_anthropic_credentials",
+    "verify_bedrock_credentials",
     "verify_openai_credentials",
     "verify_openrouter_credentials",
     "verify_provider_credential",

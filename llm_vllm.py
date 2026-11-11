@@ -8,6 +8,7 @@ from pydantic import SecretStr
 from utils.model_runtime_profiles import (
     ModelRuntimeProfile,
     PROVIDER_ANTHROPIC,
+    PROVIDER_BEDROCK,
     PROVIDER_OPENAI,
     PROVIDER_OPENAI_COMPATIBLE,
     PROVIDER_OPENROUTER,
@@ -16,6 +17,8 @@ from utils.model_runtime_profiles import (
 
 
 _COMPAT_PLACEHOLDER_KEY = "not-needed"
+# SDK retries repeat a provider request, not an agent tool or analysis run.
+_TRANSIENT_REQUEST_RETRIES = 2
 
 
 def resolve_provider_api_key(
@@ -26,6 +29,8 @@ def resolve_provider_api_key(
     resolved = str(api_key or "").strip()
     if not resolved and profile.api_key_env:
         resolved = str(os.getenv(profile.api_key_env, "") or "").strip()
+    if not resolved and profile.provider == PROVIDER_BEDROCK:
+        resolved = str(os.getenv("AWS_BEARER_TOKEN_BEDROCK", "") or "").strip()
     if not resolved:
         if profile.api_key_required:
             env_name = profile.api_key_env or "the provider API key"
@@ -45,7 +50,7 @@ def _build_openai_chat_llm(
         "model": profile.served_model_id,
         "api_key": SecretStr(api_key),
         "timeout": profile.request_timeout_seconds,
-        "max_retries": 0,
+        "max_retries": _TRANSIENT_REQUEST_RETRIES,
         "max_completion_tokens": profile.initial_output_tokens,
         "use_responses_api": True,
         "use_previous_response_id": True,
@@ -66,7 +71,7 @@ def _build_anthropic_chat_llm(profile: ModelRuntimeProfile, api_key: str):
         "model": profile.served_model_id,
         "api_key": api_key,
         "timeout": profile.request_timeout_seconds,
-        "max_retries": 0,
+        "max_retries": _TRANSIENT_REQUEST_RETRIES,
         "max_tokens": profile.initial_output_tokens,
     }
     if profile.reasoning is not None:
@@ -90,7 +95,7 @@ def _build_openai_compatible_chat_llm(
         api_key=SecretStr(api_key),
         base_url=profile.base_url,
         timeout=profile.request_timeout_seconds,
-        max_retries=0,
+        max_retries=_TRANSIENT_REQUEST_RETRIES,
         max_tokens=profile.initial_output_tokens,
     )
     if profile.supports_sampling_controls:
@@ -143,6 +148,11 @@ def build_chat_llm(
             f"Model profile {profile.model_id!r} does not match {model_name!r}."
         )
     resolved_key = resolve_provider_api_key(profile, api_key=api_key)
+    if profile.provider == PROVIDER_BEDROCK:
+        from utils.bedrock import build_bedrock_chat
+        return build_bedrock_chat(
+            profile, resolved_key, temperature=temperature, top_p=top_p,
+        )
     if profile.provider == PROVIDER_ANTHROPIC:
         return _build_anthropic_chat_llm(profile, resolved_key)
     if profile.provider == PROVIDER_OPENROUTER:
@@ -195,7 +205,7 @@ def build_openai_llm(
         kwargs.update(
             {
                 "timeout": profile.request_timeout_seconds,
-                "max_retries": 0,
+                "max_retries": _TRANSIENT_REQUEST_RETRIES,
                 "max_completion_tokens": profile.initial_output_tokens,
                 "use_responses_api": True,
                 "use_previous_response_id": True,

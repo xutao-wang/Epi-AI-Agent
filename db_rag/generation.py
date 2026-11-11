@@ -137,27 +137,39 @@ def check_sql_quality(sql: str) -> list[str]:
     return warnings
 
 
-def validate_sql(sql: str) -> tuple[bool, str | None]:
+def sql_validation_issues(sql: str, *, check_syntax: bool = True) -> list[dict[str, str]]:
+    """Collect diagnostics; callers owning the parse may disable this syntax pass."""
     policy_sql = _mask_sql_literals_identifiers_and_comments(str(sql or ""))
     sql_upper = policy_sql.strip().upper()
     if is_unanswerable_response(sql):
-        return True, None
+        return []
+    issues: list[dict[str, str]] = []
+
+    def add(code: str, message: str, stage: str = "policy") -> None:
+        issues.append({"stage": stage, "code": code, "message": message})
+
     if not sql_upper.startswith(("SELECT", "WITH")):
-        return False, "Only read-only SELECT/WITH SQL is allowed."
+        add("SQL_READ_ONLY_REQUIRED", "Only read-only SELECT/WITH SQL is allowed.")
     if re.search(r";\s*\S", sql_upper):
-        return False, "SQL contains multiple statements, which is not allowed."
+        add("SQL_MULTIPLE_STATEMENTS", "SQL contains multiple statements, which is not allowed.")
     if any(re.search(rf"\b{re.escape(keyword)}\b", sql_upper) for keyword in _DANGEROUS_SQL):
-        return False, "SQL contains disallowed mutating or DDL keywords."
+        add("SQL_DISALLOWED_KEYWORDS", "SQL contains disallowed mutating or DDL keywords.")
 
-    try:
-        import sqlglot
+    if check_syntax:
+        try:
+            import sqlglot
 
-        sqlglot.parse_one(sql, dialect="duckdb")
-    except ModuleNotFoundError:
-        pass
-    except Exception as exc:  # pragma: no cover
-        return False, str(exc)
-    quality_errors = check_sql_quality(sql)
-    if quality_errors:
-        return False, quality_errors[0]
-    return True, None
+            sqlglot.parse_one(sql, dialect="duckdb")
+        except ModuleNotFoundError:
+            pass
+        except Exception as exc:  # pragma: no cover
+            add("SQL_SYNTAX_ERROR", str(exc), "syntax")
+    for message in check_sql_quality(sql):
+        add("SQL_QUALITY_ERROR", message)
+    return issues
+
+
+def validate_sql(sql: str) -> tuple[bool, str | None]:
+    """Preserve the existing first-error interface for older callers."""
+    issues = sql_validation_issues(sql)
+    return not issues, issues[0]["message"] if issues else None

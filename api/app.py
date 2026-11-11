@@ -67,6 +67,9 @@ def _provider_key(
     profile: ModelRuntimeProfile,
     environ: Mapping[str, str],
 ) -> str:
+    if profile.provider == "bedrock":
+        from utils.bedrock import resolve_bedrock_settings
+        return resolve_bedrock_settings(environ).api_key
     configured = (
         str(environ.get(profile.api_key_env, "") or "").strip()
         if profile.api_key_env

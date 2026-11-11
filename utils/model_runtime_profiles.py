@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-Provider = Literal["openai", "anthropic", "openai_compatible", "openrouter"]
+Provider = Literal["openai", "anthropic", "openai_compatible", "openrouter", "bedrock"]
 ReasoningMode = Literal["adaptive"]
 ReasoningEffort = Literal["low", "medium", "high", "xhigh", "max"]
 
@@ -24,12 +24,14 @@ PROVIDER_OPENAI: Provider = "openai"
 PROVIDER_ANTHROPIC: Provider = "anthropic"
 PROVIDER_OPENAI_COMPATIBLE: Provider = "openai_compatible"
 PROVIDER_OPENROUTER: Provider = "openrouter"
+PROVIDER_BEDROCK: Provider = "bedrock"
 
 PROVIDER_LABELS: dict[str, str] = {
     PROVIDER_OPENAI: "OpenAI",
     PROVIDER_ANTHROPIC: "Anthropic",
     PROVIDER_OPENAI_COMPATIBLE: "Custom endpoint",
     PROVIDER_OPENROUTER: "OpenRouter",
+    PROVIDER_BEDROCK: "Amazon Bedrock",
 }
 
 OPENROUTER_API_KEY_ENV = "OPENROUTER_API_KEY"
@@ -39,6 +41,7 @@ PROVIDER_API_KEY_ENVS: dict[str, str] = {
     PROVIDER_OPENAI: "OPENAI_API_KEY",
     PROVIDER_ANTHROPIC: "ANTHROPIC_API_KEY",
     PROVIDER_OPENROUTER: OPENROUTER_API_KEY_ENV,
+    PROVIDER_BEDROCK: "BEDROCK_API_KEY",
 }
 
 CUSTOM_MODELS_PATH_ENV = "REPORT_AGENT_CUSTOM_MODELS_PATH"
@@ -104,11 +107,14 @@ class ModelRuntimeProfile:
     api_key_required: bool = True
     base_url: str | None = None
     remote_model_id: str | None = None
+    bedrock_region: str | None = None
+    bedrock_base_model_id: str | None = None
     supports_vision: bool = True
     supports_mid_conversation_system: bool = True
     custom_endpoint_id: str | None = None
     context_window_tokens: int | None = None
     output_approval_required: bool = True
+    automatic_selection_allowed: bool = True
 
     def __post_init__(self) -> None:
         if self.provider == PROVIDER_OPENAI:
@@ -133,6 +139,9 @@ class ModelRuntimeProfile:
                 raise ValueError(
                     "reasoning is not supported for openai_compatible models"
                 )
+        elif self.provider == PROVIDER_BEDROCK:
+            if self.base_url:
+                raise ValueError("Bedrock uses native AWS endpoints, not base_url.")
         elif self.provider == PROVIDER_OPENROUTER:
             if self.reasoning is not None and self.reasoning.mode is not None:
                 raise ValueError(
@@ -345,12 +354,12 @@ INTERNAL_MODEL_RUNTIME_PROFILES = {
 
 
 class CustomModelEntry(BaseModel):
-    """One operator-registered OpenAI-compatible (e.g. vLLM) or OpenRouter model."""
+    """One operator-registered compatible endpoint, OpenRouter, or Bedrock model."""
 
     model_config = ConfigDict(extra="forbid")
 
     id: str = Field(min_length=1, max_length=200)
-    provider: Literal["openai_compatible", "openrouter"] = PROVIDER_OPENAI_COMPATIBLE
+    provider: Literal["openai_compatible", "openrouter", "bedrock"] = PROVIDER_OPENAI_COMPATIBLE
     base_url: str = ""
     label: str = ""
     model: str = ""
@@ -369,14 +378,31 @@ class CustomModelEntry(BaseModel):
     supports_sampling_controls: bool = True
     routing_context_char_ceiling: int = Field(default=262_144, gt=0)
     output_approval_required: bool = False
+    bedrock_region: str | None = None
+    bedrock_base_model_id: str | None = None
+    supports_tool_calling: bool = False
+    supports_streaming: bool = False
 
     @model_validator(mode="after")
     def _require_endpoint(self) -> "CustomModelEntry":
         if self.provider == PROVIDER_OPENAI_COMPATIBLE and not self.base_url.strip():
             raise ValueError(f"Custom model {self.id!r} requires a base_url.")
+        if self.provider == PROVIDER_BEDROCK:
+            if self.api_key_env.strip() not in {"", "BEDROCK_API_KEY"}:
+                raise ValueError(
+                    "Bedrock models use the shared BEDROCK_API_KEY credential; "
+                    "api_key_env must be empty or BEDROCK_API_KEY. "
+                    "AWS_BEARER_TOKEN_BEDROCK remains a shared settings fallback."
+                )
+            if not self.id.startswith("bedrock:") or not self.model.strip():
+                raise ValueError("Bedrock overrides require a bedrock: id and an explicit model target.")
+            if self.model.startswith("arn:") and not self.bedrock_base_model_id:
+                raise ValueError("Bedrock ARN overrides require bedrock_base_model_id.")
+            if self.base_url or not (self.supports_tool_calling and self.supports_streaming):
+                raise ValueError("Bedrock overrides require native endpoints, tool calling and streaming.")
         return self
 
-    def to_profile(self) -> ModelRuntimeProfile:
+    def to_profile(self, *, environ: Mapping[str, str] = os.environ) -> ModelRuntimeProfile:
         price: Decimal | None = None
         if self.output_usd_per_million is not None:
             try:
@@ -386,13 +412,24 @@ class CustomModelEntry(BaseModel):
                     f"Custom model {self.id!r} has an invalid "
                     "output_usd_per_million value."
                 ) from exc
+        is_bedrock = self.provider == PROVIDER_BEDROCK
+        bedrock_region = self.bedrock_region
+        if is_bedrock and not bedrock_region:
+            bedrock_region = next(
+                (str(environ[key]).strip()
+                 for key in ("BEDROCK_REGION", "AWS_REGION", "AWS_DEFAULT_REGION")
+                 if str(environ.get(key, "")).strip()),
+                None,
+            )
         is_openrouter = self.provider == PROVIDER_OPENROUTER
         base_url = self.base_url.strip()
         if not base_url and is_openrouter:
             base_url = OPENROUTER_BASE_URL
-        api_key_env = self.api_key_env.strip() or (
-            OPENROUTER_API_KEY_ENV if is_openrouter else ""
+        default_key_env = (
+            "BEDROCK_API_KEY" if is_bedrock
+            else OPENROUTER_API_KEY_ENV if is_openrouter else ""
         )
+        api_key_env = self.api_key_env.strip() or default_key_env
         # OpenRouter fronts chat-completions models that accept a system turn
         # anywhere; self-hosted chat templates frequently do not.
         supports_system = (
@@ -426,10 +463,12 @@ class CustomModelEntry(BaseModel):
             provider=self.provider,
             api_key_env=api_key_env,
             api_key_required=bool(api_key_env),
-            base_url=base_url,
+            base_url=(base_url or None) if is_bedrock else base_url,
+            bedrock_region=bedrock_region,
+            bedrock_base_model_id=self.bedrock_base_model_id,
             remote_model_id=self.model or self.id,
             supports_vision=self.supports_vision,
-            supports_mid_conversation_system=supports_system,
+            supports_mid_conversation_system=False if is_bedrock else supports_system,
             custom_endpoint_id=self.id,
             output_approval_required=self.output_approval_required,
         )
@@ -744,7 +783,7 @@ def load_custom_model_profiles(
             raise ValueError(
                 f"Custom model id {entry.id!r} duplicates an existing model."
             )
-        profiles[entry.id] = entry.to_profile()
+        profiles[entry.id] = entry.to_profile(environ=environ)
     return profiles
 
 
@@ -883,6 +922,7 @@ __all__ = [
     "ReasoningMode",
     "VllmLaunchProfile",
     "PROVIDER_ANTHROPIC",
+    "PROVIDER_BEDROCK",
     "PROVIDER_API_KEY_ENVS",
     "PROVIDER_LABELS",
     "OPENROUTER_API_KEY_ENV",

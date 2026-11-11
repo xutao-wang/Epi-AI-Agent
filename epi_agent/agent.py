@@ -111,6 +111,10 @@ Analysis rules:
   probes, demonstrations, and explicitly requested in-memory simulations.
 - Never substitute synthetic data for a request that depends on real participant
   or study data. Select the correct artifact or ask for the missing data instead.
+- Dataset-based Python requires all five dataset metadata arguments together.
+  On an incomplete-reference error, fill the reported missing fields from the
+  exact selected artifact reference. Preserve the Python code while repairing
+  those arguments; removing the input is not a repair for data-based analysis.
 - Import every library you use explicitly in the generated code; `dataset` is
   preloaded only when an exact dataset is selected.
 - Prefer the installed scientific packages. If a package is unavailable, make

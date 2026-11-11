@@ -31,6 +31,7 @@ from db_rag.service.models import (
     ValidatedExtractionSql,
 )
 from db_rag.service.sql_service import (
+    SqlValidationError,
     execute_validated_extraction_sql,
     validate_extraction_sql,
 )
@@ -44,7 +45,6 @@ from epi_agent.artifacts import (
 from epi_agent.db_rag import persistence as db_rag_persistence
 from epi_agent.dataset_reuse import dataset_storage_content
 from epi_agent.db_rag.references import FieldRef, TableRef
-from epi_agent.db_rag.sql_compiler import compile_dataset_plan_sql
 from epi_agent.db_rag.quality import inspect_dataset as inspect_dataset_artifact
 from epi_agent.db_rag.reviews import (
     RequestDatasetPlanReviewTool,
@@ -92,7 +92,10 @@ _DATASET_KINDS = {
 
 _PLAN_REPAIR_HINTS = {
     "PLAN_FIELD_UNAVAILABLE": "Replace the field with an available table and column from the runtime catalog.",
-    "PLAN_FILTER_VALUE_UNAVAILABLE": "Use an observed stored value compatible with the runtime field.",
+    "PLAN_FILTER_VALUE_UNAVAILABLE": (
+        "Check the field, operator and value type. Equality and IN values must "
+        "occur in the data; comparison thresholds, exclusions and patterns need not."
+    ),
     "PLAN_JOIN_UNAVAILABLE": "Use tables connected by an observed runtime key path.",
 }
 
@@ -177,7 +180,7 @@ class ValidateDatasetPlanArguments(BaseModel):
 class ValidateAndExtractArguments(BaseModel):
     plan_id: str
     plan_version: int = Field(ge=1)
-    sql: str | None = None
+    sql: str = Field(min_length=1, description="Read-only DuckDB SQL implementing the approved dataset plan.")
     predecessor_dataset_id: str | None = None
     predecessor_dataset_version: int | None = Field(default=None, ge=1)
 
@@ -190,8 +193,8 @@ class ValidateAndExtractArguments(BaseModel):
                 "predecessor_dataset_id and predecessor_dataset_version "
                 "must be supplied together"
             )
-        if self.sql is not None and not self.sql.strip():
-            raise ValueError("sql must not be blank when supplied")
+        if not self.sql.strip():
+            raise ValueError("sql must not be blank")
         return self
 
 
@@ -2069,7 +2072,7 @@ def _filter_constraint_values(constraint: dict[str, Any]) -> list[Any]:
     return [constraint.get("value")]
 
 
-def _filter_value_exists(
+def _filter_value_is_valid(
     *,
     database_path: Path,
     table: str,
@@ -2086,6 +2089,15 @@ def _filter_value_exists(
             f"WHERE {column_sql} {operator_sql} ? LIMIT 0",
             [value],
         )
+        if operator not in {"=", "==", "in"}:
+            # Exercise value conversion even for empty tables. DuckDB selects
+            # the common type, so fractional/large numeric thresholds are not
+            # narrowed to the column's stored type. No stored rows are scanned.
+            connection.execute(
+                f"SELECT COALESCE((SELECT {column_sql} FROM {table_sql} LIMIT 0), ?)",
+                [value],
+            ).fetchone()
+            return True
         return (
             connection.execute(
                 f"SELECT 1 FROM {table_sql} "
@@ -2346,7 +2358,7 @@ def _validate_dataset_plan(
         try:
             database_path = _source_database_path(study, source)
             for value_index, value in enumerate(_filter_constraint_values(constraint)):
-                if not _filter_value_exists(
+                if not _filter_value_is_valid(
                     database_path=database_path,
                     table=table,
                     column=column,
@@ -2540,7 +2552,7 @@ def _sql_repair_details(
     tables: list[str],
     columns: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    return {
+    details = {
         "status": "repair_required",
         "plan": {"id": plan_id, "version": plan_version},
         "origin": origin,
@@ -2550,6 +2562,14 @@ def _sql_repair_details(
         "allowed_tables": list(tables[:50]),
         "allowed_columns": [dict(column) for column in columns[:200]],
     }
+    if isinstance(error, SqlValidationError):
+        details.update({
+            "issues": [{**item, "message": item["message"][:1_000]} for item in error.issues[:50]],
+            "issue_count": len(error.issues),
+            "issues_truncated": len(error.issues) > 50,
+            "skipped_checks": error.skipped_checks,
+        })
+    return details
 
 
 def _validated_sql_artifact(
@@ -2653,12 +2673,9 @@ def _validate_and_extract(
         )
     )
     runtime_path = _plan_runtime_path(context, plan)
-    supplied_sql = str(arguments.get("sql") or "").strip()
-    origin = "llm_repair" if supplied_sql else "deterministic_compiler"
-    attempted_sql: str | None = supplied_sql or None
+    attempted_sql = arguments["sql"].strip()
+    origin = "llm_generated"
     try:
-        if attempted_sql is None:
-            attempted_sql = compile_dataset_plan_sql(plan)
         validated = validate_extraction_sql(
             sql=attempted_sql,
             approved_tables=tables,
@@ -4420,8 +4437,8 @@ def build_db_rag_tool_registry() -> ToolRegistry:
         (
             "validate_and_extract",
             (
-                "Compile and immediately validate and extract an approved "
-                "dataset plan. Omit sql for the deterministic first attempt. "
+                "Validate supplied read-only SQL and immediately extract against "
+                "the exact approved dataset plan. SQL is required on every attempt. "
                 "After SQL_REPAIR_REQUIRED, submit repaired read-only SQL "
                 "against the same frozen plan, using at most four repairs."
             ),

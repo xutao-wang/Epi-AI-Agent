@@ -168,6 +168,40 @@ def _classify_anthropic_error(exc: Exception) -> tuple[str, str] | None:
     return None
 
 
+def _classify_bedrock_error(exc: Exception) -> tuple[str, str] | None:
+    try:
+        from botocore.exceptions import ClientError, ConnectTimeoutError, ReadTimeoutError, EndpointConnectionError, ConnectionClosedError, NoCredentialsError, TokenRetrievalError
+    except ImportError:
+        return None
+    if isinstance(exc, (ConnectTimeoutError, ReadTimeoutError)):
+        return _public_failure("MODEL_REQUEST_TIMEOUT", "Amazon Bedrock did not respond within the request timeout.")
+    if isinstance(exc, (EndpointConnectionError, ConnectionClosedError)):
+        return _public_failure("PROVIDER_CONNECTION_FAILED", "The server could not reach Amazon Bedrock. Check the region and network, then retry.")
+    if isinstance(exc, (NoCredentialsError, TokenRetrievalError)):
+        return _public_failure("PROVIDER_AUTHENTICATION_FAILED", "Amazon Bedrock credentials are unavailable. Check BEDROCK_API_KEY and BEDROCK_REGION, then restart.")
+    if not isinstance(exc, ClientError):
+        return None
+    error = exc.response.get("Error", {})
+    code = str(error.get("Code", "")).lower()
+    message = str(error.get("Message", "")).lower()
+    # AWS returns ResourceNotFound for an account missing Anthropic onboarding.
+    if "use case details" in message or "model access" in message or "agreement" in message:
+        return _public_failure("PROVIDER_ACCESS_DENIED", "Amazon Bedrock model access is not activated. Complete the model provider's access or use-case setup in the AWS Bedrock console, then retry.")
+    if code in {"unrecognizedclientexception", "invalidsignatureexception", "expiredtokenexception", "invalidbearertokenexception", "unauthorizedexception"}:
+        return _public_failure("PROVIDER_AUTHENTICATION_FAILED", "Amazon Bedrock rejected the credentials. Check BEDROCK_API_KEY and its matching BEDROCK_REGION, then restart.")
+    if code in {"accessdeniedexception", "notauthorizedexception"}:
+        return _public_failure("PROVIDER_ACCESS_DENIED", "Amazon Bedrock denied this model or inference profile. Check key permissions, region, marketplace entitlement and model access in the AWS console.")
+    if code in {"throttlingexception", "servicequotaexceededexception", "modelnotreadyexception"}:
+        return _public_failure("PROVIDER_RATE_LIMITED", "Amazon Bedrock is throttling requests or loading the model. Wait briefly, then retry.")
+    if code == "modeltimeoutexception":
+        return _public_failure("MODEL_REQUEST_TIMEOUT", "Amazon Bedrock did not respond within the request timeout.")
+    if code in {"resourcenotfoundexception", "serviceunavailableexception", "validationexception"}:
+        if "context" in message or "too many tokens" in message:
+            return _public_failure("PROVIDER_CONTEXT_LIMIT_EXCEEDED", "The conversation exceeds this Bedrock model's context limit. Reduce the attached content or start a new conversation.")
+        return _public_failure("PROVIDER_MODEL_UNAVAILABLE", "The selected Bedrock model, target, or Converse feature is unavailable. Check the region, inference profile and model access, or choose another model.")
+    return _generic_status_failure()
+
+
 def _generic_status_failure() -> tuple[str, str]:
     return _public_failure(
         "RUN_FAILED",
@@ -182,7 +216,7 @@ def classify_llm_error(exc: Exception) -> tuple[str, str]:
             "MODEL_REQUEST_TIMEOUT",
             "The selected model did not respond within its request timeout.",
         )
-    for classifier in (_classify_anthropic_error, _classify_openai_error):
+    for classifier in (_classify_bedrock_error, _classify_anthropic_error, _classify_openai_error):
         result = classifier(exc)
         if result is not None:
             return result

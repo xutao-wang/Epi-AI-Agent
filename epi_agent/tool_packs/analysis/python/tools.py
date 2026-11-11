@@ -125,8 +125,12 @@ class RunCustomPythonTool:
             "supplied, that exact dataset is exposed to generated code as the "
             "already-loaded pandas.DataFrame `dataset`. With no dataset, code "
             "may perform in-memory calculations, demonstrations, simulations, "
-            "or dependency probes. Supply all five dataset metadata fields "
-            "together or omit all five. Execution does not pause for code "
+            "or dependency probes. Dataset-based computation requires all five "
+            "dataset metadata fields together. Omit them only for standalone "
+            "computation that does not depend on stored records. For an "
+            "incomplete reference, repair the missing arguments; do not remove "
+            "the input or change Python code to bypass the error. "
+            "Execution does not pause for code "
             "review; its exact result is staged for human review before "
             "publication. "
             "Generated code must import every library it uses explicitly. "
@@ -154,18 +158,32 @@ class RunCustomPythonTool:
         arguments: dict[str, Any],
         context: ToolContext,
     ) -> ToolResult:
-        dataset_values = [arguments[field] for field in _DATASET_METADATA_FIELDS]
-        if any(value is not None for value in dataset_values) and not all(
-            value is not None for value in dataset_values
-        ):
+        missing_fields = [
+            field for field in _DATASET_METADATA_FIELDS if arguments[field] is None
+        ]
+        if 0 < len(missing_fields) < len(_DATASET_METADATA_FIELDS):
             raise ToolExecutionError(
                 "DATASET_METADATA_INCOMPLETE",
                 (
-                    "Provide all dataset metadata fields together, or omit "
-                    "all of them."
+                    "Dataset-based execution requires a complete input reference. "
+                    "Missing arguments: " + ", ".join(missing_fields) + "."
                 ),
                 recoverable=True,
-                details={"required_together": list(_DATASET_METADATA_FIELDS)},
+                details={
+                    "required_together": list(_DATASET_METADATA_FIELDS),
+                    "missing_fields": missing_fields,
+                    "repair_fields": missing_fields,
+                    "dataset_input_required": True,
+                    "execution_started": False,
+                    "instruction": (
+                        "Fill the missing dataset arguments using the exact "
+                        "selected artifact reference from the authoritative "
+                        "inventory; inspect or select the input if needed. "
+                        "Keep the Python code unchanged while repairing these "
+                        "arguments. Do not invent reference values or remove "
+                        "the dataset fields to switch to standalone execution."
+                    ),
+                },
             )
         stored = None
         datasets: dict[str, pd.DataFrame] = {}

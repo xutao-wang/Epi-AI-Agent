@@ -10,29 +10,41 @@ from .models import (
     SqlExecutionResult,
     ValidatedExtractionSql,
 )
-from ..generation import validate_sql
+from ..generation import sql_validation_issues
+
+
+class SqlValidationError(ValueError):
+    """All observed validation issues, plus checks blocked by prerequisites."""
+
+    def __init__(
+        self,
+        issues: list[dict[str, str]],
+        skipped_checks: list[dict[str, str]],
+    ) -> None:
+        self.issues = list({
+            (item["stage"], item["code"], item["message"]): item
+            for item in issues
+        }.values())
+        self.skipped_checks = skipped_checks
+        super().__init__("; ".join(item["message"] for item in self.issues))
 
 
 def _quote_duckdb_identifier(identifier: str) -> str:
     return '"' + str(identifier).replace('"', '""') + '"'
 
 
-def _validate_approved_schema_references(
-    sql: str,
+def _approved_schema_issues(
+    expression: Any,
     *,
     approved_tables: list[str],
     approved_columns: list[dict[str, Any]],
-) -> tuple[bool, str | None]:
-    try:
-        import sqlglot
-        from sqlglot import exp
-    except ModuleNotFoundError:
-        return True, None
+) -> list[dict[str, str]]:
+    from sqlglot import exp
 
-    try:
-        expression = sqlglot.parse_one(sql, dialect="duckdb")
-    except Exception:
-        return True, None
+    issues: list[dict[str, str]] = []
+
+    def add(code: str, message: str) -> None:
+        issues.append({"stage": "approved_schema", "code": code, "message": message})
 
     approved_table_names = {str(table or "").strip().casefold() for table in approved_tables if str(table or "").strip()}
     approved_column_names = {
@@ -51,7 +63,7 @@ def _validate_approved_schema_references(
             or bool(getattr(projection, "is_star", False))
             for projection in select.expressions
         ):
-            return False, "SQL wildcard projections are not approved."
+            add("SQL_WILDCARD_PROJECTION", "SQL wildcard projections are not approved.")
     table_aliases: dict[str, str] = {}
     for table in expression.find_all(exp.Table):
         table_name = str(table.name or "").strip()
@@ -61,7 +73,7 @@ def _validate_approved_schema_references(
         if normalized_table in cte_names:
             continue
         if approved_table_names and normalized_table not in approved_table_names:
-            return False, f"SQL references unapproved table: {table_name}"
+            add("SQL_UNAPPROVED_TABLE", f"SQL references unapproved table: {table_name}")
         alias = str(table.alias_or_name or table_name).strip()
         if alias:
             table_aliases[alias.casefold()] = normalized_table
@@ -76,23 +88,26 @@ def _validate_approved_schema_references(
         if qualifier and qualifier not in table_aliases and qualifier not in approved_table_names:
             continue
         if approved_column_names and column_name.casefold() not in approved_column_names:
-            return False, f"SQL references unapproved column: {column_name}"
+            add("SQL_UNAPPROVED_COLUMN", f"SQL references unapproved column: {column_name}")
 
-    return True, None
+    return issues
 
 
-def _validate_relation_provenance(
-    sql: str,
+def _relation_provenance_issues(
+    expression: Any,
     *,
     approved_tables: list[str],
-) -> tuple[bool, str | None]:
-    try:
-        import sqlglot
-        from sqlglot import exp
+) -> list[dict[str, str]]:
+    from sqlglot import exp
 
-        expression = sqlglot.parse_one(sql, dialect="duckdb")
-    except Exception:
-        return True, None
+    issues: list[dict[str, str]] = []
+
+    def add(message: str) -> None:
+        issues.append({
+            "stage": "relation_provenance",
+            "code": "SQL_RELATION_UNAPPROVED",
+            "message": message,
+        })
 
     approved = {
         str(table or "").strip().casefold()
@@ -118,12 +133,9 @@ def _validate_relation_provenance(
             ),
         ]
         if not direct_relations:
-            return (
-                False,
-                (
-                    "SQL relation provenance requires every query branch and "
-                    "CTE to derive from an approved physical table."
-                ),
+            add(
+                "SQL relation provenance requires every query branch and "
+                "CTE to derive from an approved physical table."
             )
 
     relation_nodes = [
@@ -134,24 +146,19 @@ def _validate_relation_provenance(
         if isinstance(relation, exp.Subquery):
             continue
         if not isinstance(relation, exp.Table):
-            return (
-                False,
-                (
-                    "SQL relation provenance is not derived from an approved physical table: "
-                    f"{relation.sql(dialect='duckdb')}."
-                ),
+            add(
+                "SQL relation provenance is not derived from an approved physical table: "
+                f"{relation.sql(dialect='duckdb')}."
             )
+            continue
         if not isinstance(relation.this, exp.Identifier):
-            return (
-                False,
-                (
-                    "SQL relation provenance is unapproved: table functions "
-                    "and external scans are forbidden."
-                ),
+            add(
+                "SQL relation provenance is unapproved: table functions "
+                "and external scans are forbidden."
             )
+            continue
         if relation.args.get("db") is not None or relation.args.get("catalog") is not None:
-            return (
-                False,
+            add(
                 "SQL relation provenance is unapproved: qualified external relations are forbidden.",
             )
         relation_name = str(relation.name or "").strip()
@@ -159,11 +166,10 @@ def _validate_relation_provenance(
         if normalized_name in cte_names:
             continue
         if normalized_name not in approved:
-            return (
-                False,
+            add(
                 f"SQL relation provenance is unapproved: {relation_name or '<anonymous>'}.",
             )
-    return True, None
+    return issues
 
 
 def _validate_runtime_schema_sql(
@@ -208,29 +214,58 @@ def validate_extraction_sql(
     approved_columns: list[dict[str, Any]],
     database_path: str | Path,
 ) -> ValidatedExtractionSql:
-    checks = (
-        validate_sql(sql),
-        _validate_relation_provenance(
-            sql,
-            approved_tables=approved_tables,
-        ),
-        _validate_approved_schema_references(
-            sql,
-            approved_tables=approved_tables,
-            approved_columns=approved_columns,
-        ),
-    )
-    for valid, error in checks:
+    # This entry point owns parsing and reuses the trees for structural checks.
+    issues = sql_validation_issues(sql, check_syntax=False)
+    skipped: list[dict[str, str]] = []
+    expressions = None
+    try:
+        import sqlglot
+
+        parsed = sqlglot.parse(sql, dialect="duckdb")
+        if not parsed or parsed[0] is None:
+            raise sqlglot.errors.ParseError(f"No expression was parsed from '{sql}'")
+        expressions = [item for item in parsed if item is not None]
+    except ModuleNotFoundError:
+        issues.append({
+            "stage": "syntax", "code": "SQL_PARSER_UNAVAILABLE",
+            "message": "SQL parser is unavailable; structural checks cannot run.",
+        })
+    except Exception as error:
+        # Keep the established diagnostic order: policy, syntax, then quality.
+        quality_index = next(
+            (index for index, item in enumerate(issues) if item["code"] == "SQL_QUALITY_ERROR"),
+            len(issues),
+        )
+        issues.insert(quality_index, {
+            "stage": "syntax", "code": "SQL_SYNTAX_ERROR", "message": str(error),
+        })
+
+    if expressions is None or any(item["stage"] == "syntax" for item in issues):
+        skipped.extend(
+            {"check": check, "reason": "Requires a successfully parsed SQL statement."}
+            for check in ("relation_provenance", "approved_schema")
+        )
+    else:
+        for expression in expressions:
+            issues.extend(_relation_provenance_issues(expression, approved_tables=approved_tables))
+            issues.extend(_approved_schema_issues(
+                expression, approved_tables=approved_tables, approved_columns=approved_columns,
+            ))
+
+    if issues:
+        skipped.append({
+            "check": "runtime_schema",
+            "reason": "Database preflight requires SQL to pass policy and structural checks.",
+        })
+    else:
+        valid, error = _validate_runtime_schema_sql(sql, database_path=database_path)
         if not valid:
-            raise ValueError(
-                error or "SQL extraction safety validation failed."
-            )
-    valid, error = _validate_runtime_schema_sql(
-        sql,
-        database_path=database_path,
-    )
-    if not valid:
-        raise ValueError(error or "SQL runtime schema validation failed.")
+            issues.append({
+                "stage": "runtime_schema", "code": "SQL_RUNTIME_SCHEMA_ERROR",
+                "message": error or "SQL runtime schema validation failed.",
+            })
+    if issues:
+        raise SqlValidationError(issues, skipped)
     return ValidatedExtractionSql(
         sql=sql,
         sha256=hashlib.sha256(sql.encode("utf-8")).hexdigest(),

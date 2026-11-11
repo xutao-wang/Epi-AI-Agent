@@ -413,8 +413,8 @@ class LocalPythonRuntime:
                 if request.selected_dataset_id is not None:
                     dataset_id = request.selected_dataset_id
                     dataframe = datasets[dataset_id]
-                    filename = "0.csv"
-                    dataframe.to_csv(datasets_dir / filename, index=False)
+                    filename = "0.parquet"
+                    dataframe.to_parquet(datasets_dir / filename)
                     manifest[str(dataset_id)] = filename
                 (input_dir / "datasets.json").write_text(
                     json.dumps(manifest, ensure_ascii=True, sort_keys=True),

@@ -64,12 +64,16 @@ def _observe_status(
         reason = str(incomplete_details.get("reason") or "").strip() or None
         return status, reason
 
-    stop_reason = str(metadata.get("stop_reason") or "").strip().casefold()
+    stop_reason = str(
+        metadata.get("stopReason") or metadata.get("stop_reason") or ""
+    ).strip().casefold()
     if stop_reason:
-        # Anthropic Messages shape.
+        # Anthropic Messages and native Bedrock Converse shapes.
         if stop_reason == "max_tokens":
             _require_response_id(response_id)
             return "incomplete", _MAX_OUTPUT_REASON
+        if stop_reason in {"content_filtered", "guardrail_intervened"}:
+            return "incomplete", "content_filter"
         if stop_reason == "refusal":
             return "incomplete", "refusal"
         if stop_reason == "model_context_window_exceeded":
@@ -127,6 +131,7 @@ def observe_model_response(
         response_id=response_id,
         provider_request_id=str(
             headers.get("x-request-id")
+            or dict(metadata.get("ResponseMetadata") or {}).get("RequestId")
             or metadata.get("request_id")
             or ""
         ).strip(),

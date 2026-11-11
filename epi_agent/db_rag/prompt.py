@@ -65,9 +65,10 @@ Before SQL execution, obtain approval for the exact dataset-plan version.
 Final checkbox approval freezes the selected plan in one resume. Do not save,
 rename, revise, or review another plan after approval to
 normalize content or repair SQL.
-After final checkbox approval, the returned plan is frozen and approved. Call
-dbrag-validate_and_extract with that exact plan ID and version and omit sql for
-the initial deterministic candidate.
+After final checkbox approval, the returned plan is frozen and approved. Write
+read-only DuckDB SQL implementing its selected fields, joins, filters and
+repeated-record reductions. Call dbrag-validate_and_extract with that exact plan
+ID and version and the SQL in the required sql argument.
 Generate only read-only extraction SQL using one SELECT or WITH statement. A
 WITH statement may contain multiple CTEs, joins, subqueries, and set operations.
 Select every output column explicitly; never use SELECT * or table.*. Never
@@ -76,13 +77,16 @@ ATTACH, DETACH, PRAGMA, or an external file or database scan.
 If dbrag-validate_and_extract returns SQL_REPAIR_REQUIRED, treat it as a
 recoverable SQL-generation error. Use only the frozen plan, allowed schema
 context, attempted SQL, and complete diagnostic to correct the SQL, then call
-dbrag-validate_and_extract with the same plan identity and repaired sql. Never
-submit unchanged rejected SQL. Never save, rename, revise, or review a plan to
+dbrag-validate_and_extract with the same plan identity and repaired sql. Inspect
+every entry in details.issues and fix
+all reported independent issues in the same repair. Entries in skipped_checks
+were not evaluated because a prerequisite failed; they are not successful checks.
+Never submit unchanged rejected SQL. Never save, rename, revise, or review a plan to
 repair SQL, and do not ask the user to review the plan again. Use at most five total SQL candidates:
-the initial deterministic candidate followed by repairs 1 through 4.
+the initial LLM-generated candidate followed by repairs 1 through 4.
 A rejected candidate was not executed and made no database changes.
 If all five candidates are rejected, do not call another tool; explain the final
-technical diagnostic to the user. Compiler SQL and repaired SQL use the same
+technical diagnostic to the user. Initial SQL and repaired SQL use the same
 read-only safety and execution path.
 Once the tool returns a pending-review dataset, inspect it and request dataset
 review as before. A new plan after approval requires explicit human

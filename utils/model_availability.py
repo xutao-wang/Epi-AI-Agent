@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 
 from utils.model_runtime_profiles import (
@@ -24,6 +24,7 @@ class ProviderEndpoint:
     provider: str
     api_key_env: str
     base_url: str | None = None
+    region: str | None = None
 
 
 @dataclass(frozen=True)
@@ -42,10 +43,25 @@ def registered_model_profiles(
 ) -> Mapping[str, ModelRuntimeProfile]:
     profiles = {
         **MODEL_RUNTIME_PROFILES,
-        **load_custom_model_profiles(environ=environ),
         **(discovered_profiles or {}),
     }
-    return MappingProxyType(profiles)
+    configured = load_custom_model_profiles(environ=environ)
+    for model_id, custom in configured.items():
+        observed = (discovered_profiles or {}).get(model_id)
+        if (observed is not None and custom.provider == observed.provider == "bedrock"
+                and custom.served_model_id == observed.served_model_id
+                and custom.bedrock_region == observed.bedrock_region
+                and observed.bedrock_base_model_id):
+            # Keep operator runtime settings while retaining the identity resolved
+            # from this exact target by authenticated discovery.
+            custom = replace(custom, bedrock_base_model_id=observed.bedrock_base_model_id)
+        profiles[model_id] = custom
+    from utils.bedrock import filter_bedrock_profiles
+    from utils.bedrock_runtime_settings import align_bedrock_runtime_settings
+    profiles = align_bedrock_runtime_settings(
+        profiles, explicit_ids={mid for mid, p in configured.items() if p.provider == "bedrock"},
+    )
+    return MappingProxyType(filter_bedrock_profiles(profiles, environ))
 
 
 def profile_endpoint(profile: ModelRuntimeProfile) -> ProviderEndpoint:
@@ -53,6 +69,7 @@ def profile_endpoint(profile: ModelRuntimeProfile) -> ProviderEndpoint:
         provider=profile.provider,
         api_key_env=profile.api_key_env,
         base_url=profile.base_url,
+        region=profile.bedrock_region,
     )
 
 
@@ -93,19 +110,40 @@ def build_model_availability(
     if not available:
         raise ValueError("No verified AI model provider is available.")
 
-    if "gpt-5.6-terra" in available:
+    automatic = tuple(
+        model_id for model_id in available
+        if profiles[model_id].automatic_selection_allowed
+    )
+    if not automatic:
+        raise ValueError(
+            "Only explicit-selection Bedrock global or application choices are available. "
+            "Register an explicit global or application target in config/custom_models.json "
+            "to permit automatic chat and title selection, or configure a regional/geographic model."
+        )
+
+    if "gpt-5.6-terra" in automatic:
         default = "gpt-5.6-terra"
-    elif "claude-opus-5" in available:
+    elif "claude-opus-5" in automatic:
         default = "claude-opus-5"
+    elif (
+        "bedrock:openai.gpt-5.6-terra" in automatic
+        and all(profiles[mid].provider == "bedrock" for mid in available)
+    ):
+        default = "bedrock:openai.gpt-5.6-terra"
+    elif (
+        "bedrock:amazon.nova-micro-v1:0" in automatic
+        and all(profiles[mid].provider == "bedrock" for mid in available)
+    ):
+        default = "bedrock:amazon.nova-micro-v1:0"
     else:
-        default = available[0]
+        default = automatic[0]
 
     default_provider = profiles[default].provider
     preferred_title = {
         PROVIDER_OPENAI: "gpt-5.6-luna",
         PROVIDER_ANTHROPIC: "claude-haiku-4-5",
     }.get(default_provider, default)
-    title = preferred_title if preferred_title in available else default
+    title = preferred_title if preferred_title in automatic else default
     return ModelAvailability(
         registered_profiles=profiles,
         available_model_ids=available,
@@ -117,9 +155,18 @@ def build_model_availability(
 def model_availability_from_configured_credentials(
     environ: Mapping[str, str],
 ) -> ModelAvailability:
-    """Build the non-native fallback catalog without performing network I/O."""
-    profiles = registered_model_profiles(environ)
-    configured: set[ProviderEndpoint] = set()
+    """Build the configured catalog, including authenticated native Bedrock discovery."""
+    from utils.bedrock import bedrock_configured, discover_bedrock_profiles
+    from utils.provider_startup import ProviderCredentialError
+    discovered = {}
+    bedrock_failure = None
+    if bedrock_configured(environ):
+        try:
+            discovered = discover_bedrock_profiles(environ)
+        except (ProviderCredentialError, ValueError) as exc:
+            bedrock_failure = exc
+    profiles = registered_model_profiles(environ, discovered)
+    configured: set[ProviderEndpoint] = {profile_endpoint(p) for p in discovered.values()}
     for endpoint in configured_provider_endpoints(environ):
         endpoint_profiles = [
             profile
@@ -135,7 +182,12 @@ def model_availability_from_configured_credentials(
         if requires_key and not key:
             continue
         configured.add(endpoint)
-    return build_model_availability(environ, configured)
+    try:
+        return build_model_availability(environ, configured, discovered)
+    except ValueError:
+        if bedrock_failure is not None:
+            raise ValueError(str(bedrock_failure)) from None
+        raise
 
 
 __all__ = [
