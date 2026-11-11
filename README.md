@@ -320,3 +320,5 @@ analysis. Failed generated code is never replayed automatically.
 Production development uses `master`. The `master-benchmark` branch preserves
 evaluation functionality. Port shared fixes selectively instead of merging the
 whole benchmark branch into production.
+Use a separate runtime-data directory for `master-benchmark` via
+`REPORT_AGENT_RUNTIME_ROOT` to keep evaluation artifacts out of normal conversation storage.

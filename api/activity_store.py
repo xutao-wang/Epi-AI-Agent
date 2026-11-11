@@ -10,6 +10,24 @@ from api.activity_labels import tool_activity_labels
 from api.schemas import ActivityItem, ActivityRun, ActivityRunState
 
 
+_TOOL_EXECUTION_SUMMARY_FIELDS = (
+    "execution_id",
+    "tool_call_id",
+    "tool_name",
+    "arguments_hash",
+    "status",
+    "started_at",
+    "finished_at",
+    "duration_seconds",
+    "error_code",
+    "recoverable",
+    "accessed_artifacts",
+    "created_artifacts",
+    "updated_artifacts",
+    "returned_artifacts",
+)
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS agent_activity_runs (
     id TEXT PRIMARY KEY,
@@ -511,7 +529,22 @@ class SqliteActivityStore:
                    WHERE r.thread_id = ? ORDER BY e.rowid""",
                 (thread_id,),
             ).fetchall()
-        return [{**json.loads(row["payload"]), "run_id": row["run_id"]} for row in rows]
+        records = []
+        for row in rows:
+            stored = json.loads(row["payload"])
+            # Historical extended records remain intact in SQLite; public reads
+            # expose only the same bounded summary as current production writes.
+            summary = {
+                field: stored[field]
+                for field in _TOOL_EXECUTION_SUMMARY_FIELDS
+                if field in stored
+            }
+            records.append({
+                **summary,
+                "schema_version": "tool-execution-v1",
+                "run_id": row["run_id"],
+            })
+        return records
 
     def list_runs(self, thread_id: str) -> list[ActivityRun]:
         with self._connect() as connection:

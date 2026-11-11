@@ -138,3 +138,59 @@ def test_docker_context_excludes_local_test_and_smoke_tooling():
     assert "scripts/smoke_*" in patterns
     assert "scripts/e2e_*" in patterns
     assert not any(line.strip() == "scripts" for line in patterns)
+
+
+def test_historical_extended_tracking_projects_to_v1_without_rewriting_sqlite(tmp_path):
+    import sqlite3
+
+    database = tmp_path / "historical-activity.sqlite"
+    activity = SqliteActivityStore(database)
+    run_id = activity.start_run("thread", "user-message")
+    summary = {
+        "schema_version": "tool-execution-v1",
+        "execution_id": "historical-execution",
+        "tool_call_id": "historical-call",
+        "tool_name": "analysis-run_custom_python",
+        "arguments_hash": "a" * 64,
+        "status": "recoverable_failure",
+        "started_at": "2026-11-01T12:00:00+00:00",
+        "finished_at": "2026-11-01T12:00:01+00:00",
+        "duration_seconds": 1.25,
+        "error_code": "EXECUTION_FAILED",
+        "recoverable": True,
+        "accessed_artifacts": [{"id": "input", "kind": "subset", "version": 2}],
+        "created_artifacts": [{"id": "created", "kind": "analysis_run", "version": 1}],
+        "updated_artifacts": [{"id": "updated", "kind": "dataset_plan", "version": 3}],
+        "returned_artifacts": [{"id": "returned", "kind": "figure", "version": 1}],
+    }
+    historical = {
+        **summary, "schema_version": "tool-execution-v2",
+        "artifact_snapshots": [{"content_base64": "encoded-dataset-content-" * 100_000}],
+        "arguments": {"code": "print(dataset.value.mean())"},
+        "result": {"message": "historical result", "dataset": [1, 2, 3]},
+        "error": {"message": "historical error", "details": {"private": "payload"}},
+        "capabilities": ["compute", "record_access_possible"],
+        "future_payload": {"unexpected": "must also stay out of the response"},
+    }
+    current = {**summary, "execution_id": "current-execution", "tool_call_id": "current-call",
+               "status": "completed", "error_code": None, "recoverable": None}
+    activity.tool_execution("thread", historical)
+    activity.tool_execution("thread", current)
+    with sqlite3.connect(database) as connection:
+        original_rows = connection.execute("SELECT payload FROM agent_tool_executions ORDER BY rowid").fetchall()
+    assert len(original_rows[0][0].encode()) > 1_000_000
+
+    records = activity.list_tool_executions("thread")
+    assert len(json.dumps(records).encode()) < 50_000
+    assert records == [{**summary, "run_id": run_id}, {**current, "run_id": run_id}]
+    projected = project_thread_state(
+        thread_id="thread", snapshot=SimpleNamespace(values={"artifacts": {}}, next=(), interrupts=[]),
+        run_status={"state": "done"}, activity_runs=activity.list_runs("thread"), tool_executions=records)
+    assert projected.tool_tracking_version == "tool-execution-v1"
+    assert projected.tool_executions == records
+    assert len(projected.model_dump_json().encode()) < 100_000
+    assert "encoded-dataset-content" not in projected.model_dump_json()
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT payload FROM agent_tool_executions ORDER BY rowid").fetchall() == original_rows
+    assert json.loads(original_rows[0][0]) == historical
+    assert json.loads(original_rows[1][0]) == current
