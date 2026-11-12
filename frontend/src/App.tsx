@@ -151,6 +151,12 @@ function ActivityMessage({ detail, steps, title }: ActivityMessageProps) {
   );
 }
 
+const PLUG_LIMIT_CODES = new Set([
+  "TOO_MANY_FILES",
+  "FILE_TOO_LARGE",
+  "MESSAGE_ATTACHMENTS_TOO_LARGE",
+]);
+
 export default function App({
   apiClient,
   loadConversationHistory = true,
@@ -825,7 +831,16 @@ export default function App({
         applyUploadResult(result, new Set([pending.file.name]));
       }
     } catch (uploadError) {
-      await handleRequestError(uploadError, pending.threadId, pending.generation);
+      if (
+        uploadError instanceof ApiError &&
+        (uploadError.status === 422 || uploadError.status === 502)
+      ) {
+        if (plugUploadIsCurrent(pending)) {
+          addPlugError(pending.file.name, plugErrorCode(uploadError.detail));
+        }
+      } else {
+        await handleRequestError(uploadError, pending.threadId, pending.generation);
+      }
     } finally {
       if (plugUploadIsCurrent(pending)) {
         setIsUploadingAttachments(false);
@@ -833,21 +848,32 @@ export default function App({
     }
   }
 
+  function plugErrorCode(detail: unknown): string {
+    const match =
+      typeof detail === "string" ? /^([A-Z_]{1,64}):/.exec(detail) : null;
+    return match ? match[1] : "PLUG_REJECTED";
+  }
+
   function failPlugUpload(code: string) {
     const pending = pendingPlugUpload;
     setPendingPlugUpload(null);
-    if (!pending) {
-      return;
+    if (pending) {
+      addPlugError(pending.file.name, code);
     }
+  }
+
+  function addPlugError(filename: string, code: string) {
     setAttachmentErrors((current) => [
-      ...current.filter((item) => item.filename !== pending.file.name),
+      ...current.filter((item) => item.filename !== filename),
       {
-        filename: pending.file.name,
+        filename,
         code,
         message:
           code === "PLUG_UNREACHABLE"
             ? "the upload checker could not be reached; nothing was uploaded"
-            : "the upload checker did not release this file; nothing was uploaded",
+            : PLUG_LIMIT_CODES.has(code)
+              ? "the prepared files exceed this app's attachment limits; nothing was uploaded"
+              : "the upload checker did not release this file; nothing was uploaded",
       },
     ]);
   }
