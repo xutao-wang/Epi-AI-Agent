@@ -1,5 +1,5 @@
 {
-  "built_at": "2026-11-12T01:18:56.670313+00:00",
+  "built_at": "2026-11-12T06:06:10.598214+00:00",
   "source_sha256": {
     "frontend/index.html": "89f2b276eb183f4ebfe35982a0cac2d863da771436560c61d977e282ee15b07a",
     "frontend/package-lock.json": "a14f127c2e852575ffd49c7e3c4c5e342da58af5f92b45622f0963064b0ad1d5",
@@ -21,7 +21,7 @@
     "frontend/src/EmbeddingFallbackNotice.tsx": "b9500df5ed07480b383868fd98c17b595bd92dcf35174c79c5021d7040eed067",
     "frontend/src/MessageAttachment.tsx": "72c91b9089aa902b3d890ef3acabf5f621835b9a67df98aa539186736b168177",
     "frontend/src/ModelOutputLimit.tsx": "11772c85d484d46bdb6cf7e80ae2360a7578bce36dfaccb05ced574e8b76dfa7",
-    "frontend/src/UploadPlugModal.tsx": "822431d278ca7d1f9c1d68131ecd20f5dfb46eb10663ed5a76576548e597592f",
+    "frontend/src/UploadPlugModal.tsx": "c5477ce9ec8bc6766d728b5aedc5d6b2336cfebdff586df2c99ba0ae953b5945",
     "frontend/src/apiClient.ts": "37314603cae8911cf22a7e55a9a4b436357e0ee1d15ee9290085f15989117faa",
     "frontend/src/config.ts": "e1dd49bf31ef600311bc1b235b88b8436008267821c72e24c649b85ddfb52ca9",
     "frontend/src/katex-auto-render.d.ts": "bb35c7c0610d7f2f583d6920e1f8d633050390c121c9fbd29247b8ef9b0b7303",
@@ -29,7 +29,7 @@
     "frontend/src/messageRendering.ts": "6bbd0207f2a014e04998457768e3afb8edb075f66fe62a9100a1bc753ce4be5f",
     "frontend/src/reviewSelection.ts": "021c79c78e1ac4627a7563c848c59d36521cf227a4f7ee99ff3545ceac4a5d2f",
     "frontend/src/styles.css": "b5237e3acbb29cff98bebb67c0fe10132b45d348cfe1af63a5ca29207c0643ab",
-    "frontend/src/types.ts": "038488fd1551230b8ef78b9f9aed2d122c2a4e55924798a59aabb998167c85b1",
+    "frontend/src/types.ts": "d9e625e233ed26b3926d76806ef6e3ea2555d627fc56fe1476245b975cb4af8e",
     "frontend/src/vite-env.d.ts": "65996936fbb042915f7b74a200fcdde7e410f32a669b1ab9597cfaa4b0faddb5",
     "frontend/tsconfig.json": "a043926a1c02562384a05d174123966c72d6b145b8a89201e673d31a1f024de4",
     "frontend/tsconfig.node.json": "966bcda855805869c0de7ae9f09fd972aa4b948502cf90a6dc3bbcb149d68c85",

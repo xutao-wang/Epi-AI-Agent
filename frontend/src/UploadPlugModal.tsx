@@ -110,7 +110,13 @@ export default function UploadPlugModal({
           isReady = true;
           window.clearTimeout(readyTimer);
           frameWindow.postMessage(
-            { type: "file", contract: plug.contract, thread_id: threadId, file },
+            {
+              type: "file",
+              contract: plug.contract,
+              thread_id: threadId,
+              caps: plug.caps,
+              file,
+            },
             plug.origin,
           );
         }
@@ -132,7 +138,7 @@ export default function UploadPlugModal({
       window.clearTimeout(readyTimer);
       window.removeEventListener("message", handleMessage);
     };
-  }, [plug.origin, plug.contract, threadId, file]);
+  }, [plug.origin, plug.contract, plug.caps, threadId, file]);
 
   return (
     <div className="upload-plug-backdrop">

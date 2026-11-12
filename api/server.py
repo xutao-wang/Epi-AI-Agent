@@ -59,9 +59,21 @@ from utils.upload_plug import (
 )
 
 
+class UploadPlugCaps(BaseModel):
+    """This app's attachment caps, sent to the plug so it can refuse an over-cap ZIP early."""
+
+    max_files: int
+    max_file_bytes: int
+    max_total_bytes: int
+    max_table_rows: int
+    max_table_columns: int
+    max_table_cells: int
+
+
 class UploadPlugInfo(BaseModel):
     origin: str
     contract: str
+    caps: UploadPlugCaps
 
 
 class PlugAttachmentRequest(BaseModel):
@@ -415,7 +427,19 @@ def create_app(
     ) -> UploadPlugInfo | None:
         if not plug.enabled:
             return None
-        return UploadPlugInfo(origin=plug.origin, contract=UPLOAD_PLUG_CONTRACT)
+        limits = runtime.attachment_limits
+        return UploadPlugInfo(
+            origin=plug.origin,
+            contract=UPLOAD_PLUG_CONTRACT,
+            caps=UploadPlugCaps(
+                max_files=limits.max_files_per_message,
+                max_file_bytes=limits.max_bytes,
+                max_total_bytes=limits.max_message_bytes,
+                max_table_rows=limits.max_table_rows,
+                max_table_columns=limits.max_table_columns,
+                max_table_cells=limits.max_table_cells,
+            ),
+        )
 
     @api.post(
         "/api/threads/{thread_id}/plug-attachments",

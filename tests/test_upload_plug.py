@@ -190,10 +190,25 @@ def test_plug_off_hides_plug_routes(client: TestClient) -> None:
 
 def test_plug_on_reports_origin_only() -> None:
     client = _plug_client(FakeRuntime(), FakePlug(FILES))
+    limits = AttachmentLimits()
     assert client.get("/api/upload-plug").json() == {
         "origin": PLUG_URL,
         "contract": "1",
+        "caps": {
+            "max_files": limits.max_files_per_message,
+            "max_file_bytes": limits.max_bytes,
+            "max_total_bytes": limits.max_message_bytes,
+            "max_table_rows": limits.max_table_rows,
+            "max_table_columns": limits.max_table_columns,
+            "max_table_cells": limits.max_table_cells,
+        },
     }
+
+
+def test_plug_caps_follow_the_configured_limits() -> None:
+    runtime = FakeRuntime(attachment_limits=AttachmentLimits(max_files_per_message=3))
+    caps = _plug_client(runtime, FakePlug(FILES)).get("/api/upload-plug").json()["caps"]
+    assert caps["max_files"] == 3
 
 
 def test_plug_on_refuses_plain_upload() -> None:
