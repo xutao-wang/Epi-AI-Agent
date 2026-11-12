@@ -19,6 +19,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict
 
 from api.deployment import cors_allow_origin_regex
 from api.auth import RequestIdentity, local_request_identity
@@ -50,6 +51,23 @@ from api.schemas import (
 )
 from utils.attachment_artifacts import AttachmentError, AttachmentLimits
 from utils.review_interrupts import InvalidInterruptDecisionError
+from utils.upload_plug import (
+    CONTRACT_VERSION as UPLOAD_PLUG_CONTRACT,
+    UploadPlugError,
+    UploadPlugSettings,
+    fetch_delivery,
+)
+
+
+class UploadPlugInfo(BaseModel):
+    origin: str
+    contract: str
+
+
+class PlugAttachmentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    handle: str
 
 
 _UPLOAD_READ_CHUNK_BYTES = 1024 * 1024
@@ -190,9 +208,12 @@ def create_app(
     provider_api_key: str,
     static_dir: Path | None = None,
     cors_origin_regex: str | None = None,
+    upload_plug: UploadPlugSettings | None = None,
 ) -> FastAPI:
     app = FastAPI(title="RePORT Agent API")
     attachment_limits = runtime.attachment_limits
+    plug = upload_plug if upload_plug is not None else UploadPlugSettings.from_env()
+    plug.validate()
 
     app.add_middleware(
         AttachmentRequestBodyLimitMiddleware,
@@ -352,6 +373,14 @@ def create_app(
     ) -> AttachmentUploadResult:
         try:
             runtime.authorize_thread(identity, thread_id)
+            if plug.enabled:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "UPLOAD_PLUG_REQUIRED: uploads go through the upload "
+                        "plug; attach a ZIP with the paperclip"
+                    ),
+                )
             declared_length = http_request.headers.get("content-length")
             try:
                 content_length = (
@@ -379,6 +408,67 @@ def create_app(
             raise HTTPException(status_code=404, detail="Conversation not found") from exc
         except AttachmentError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @api.get("/api/upload-plug")
+    def upload_plug_info(
+        _identity: RequestIdentity = Depends(local_request_identity),
+    ) -> UploadPlugInfo | None:
+        if not plug.enabled:
+            return None
+        return UploadPlugInfo(origin=plug.origin, contract=UPLOAD_PLUG_CONTRACT)
+
+    @api.post(
+        "/api/threads/{thread_id}/plug-attachments",
+        response_model=AttachmentUploadResult,
+    )
+    def stage_plug_attachments(
+        thread_id: str,
+        request: PlugAttachmentRequest,
+        identity: RequestIdentity = Depends(local_request_identity),
+    ) -> AttachmentUploadResult:
+        if not plug.enabled:
+            raise HTTPException(status_code=404, detail="No upload plug is configured")
+        try:
+            runtime.authorize_thread(identity, thread_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Conversation not found") from exc
+        limits = runtime.attachment_limits
+        try:
+            uploads = fetch_delivery(
+                plug,
+                request.handle,
+                thread_id,
+                max_files=limits.max_files_per_message,
+                max_file_bytes=limits.max_bytes,
+                max_total_bytes=limits.max_message_bytes,
+            )
+        except UploadPlugError as exc:
+            status_code = 502 if exc.code == "PLUG_UNREACHABLE" else 422
+            raise HTTPException(
+                status_code=status_code,
+                detail=f"{exc.code}: {exc.message}",
+            ) from exc
+        try:
+            result = runtime.stage_attachments(identity, thread_id, uploads)
+        except AttachmentError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"PLUG_REJECTED: {exc}",
+            ) from exc
+        if result.errors:
+            # All or nothing: never leave part of a prepared upload staged.
+            for attachment in result.attachments:
+                try:
+                    runtime.discard_staged_attachment(identity, thread_id, attachment.id)
+                except (AttachmentError, KeyError):
+                    # Unreferenced staged files expire with the staging TTL and
+                    # their ids never reach the browser, so they cannot be sent.
+                    pass
+            raise HTTPException(
+                status_code=422,
+                detail="PLUG_REJECTED: the app could not stage every prepared file",
+            )
+        return result
 
     @api.delete(
         "/api/threads/{thread_id}/attachments/{attachment_id}",
