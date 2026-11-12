@@ -10,10 +10,13 @@ interface Props {
   staged: AttachmentManifestSummary[];
   errors: AttachmentUploadError[];
   isUploading: boolean;
+  zipOnly?: boolean;
   onFilesSelected(files: File[]): void;
   onDismissError(index: number): void;
   onRemove(attachmentId: string): Promise<void>;
 }
+
+const ZIP_ONLY_EXTENSIONS = ".zip";
 
 const ACCEPTED_EXTENSIONS =
   ".csv,.tsv,.xls,.xlsx,.json,.xml,.pdf,.docx,.txt,.md,.png,.jpg,.jpeg";
@@ -34,6 +37,7 @@ export default function AttachmentComposer({
   staged,
   errors,
   isUploading,
+  zipOnly = false,
   onFilesSelected,
   onDismissError,
   onRemove,
@@ -46,12 +50,12 @@ export default function AttachmentComposer({
       className="attachment-composer"
     >
       <input
-        accept={ACCEPTED_EXTENSIONS}
+        accept={zipOnly ? ZIP_ONLY_EXTENSIONS : ACCEPTED_EXTENSIONS}
         aria-hidden="true"
         className="attachment-composer-input"
         data-testid="attachment-file-input"
         disabled={disabled}
-        multiple
+        multiple={!zipOnly}
         onChange={(event) => {
           const files = Array.from(event.target.files ?? []);
           if (files.length) {
@@ -113,11 +117,11 @@ export default function AttachmentComposer({
       <div className="message-form-actions">
         <div className="message-form-primary-actions">
           <button
-            aria-label="Attach files"
+            aria-label={zipOnly ? "Attach a study ZIP" : "Attach files"}
             className="attachment-composer-picker"
             disabled={disabled}
             onClick={() => inputRef.current?.click()}
-            title="Attach files"
+            title={zipOnly ? "Attach a study ZIP" : "Attach files"}
             type="button"
           >
             <svg

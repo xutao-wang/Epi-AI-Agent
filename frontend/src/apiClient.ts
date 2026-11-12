@@ -1,6 +1,7 @@
 import type {
   ApiThreadState,
   AttachmentUploadResult,
+  UploadPlugInfo,
   CompletedAnalysisResult,
   DatasetPreview,
   DatasetProvenance,
@@ -237,6 +238,27 @@ export async function uploadAttachments(
   const response = await fetchImpl(
     apiUrl(apiBase, `/api/threads/${pathParam(threadId)}/attachments`),
     { method: "POST", body },
+  );
+  return parseJsonResponse<AttachmentUploadResult>(response);
+}
+
+export async function getUploadPlug(
+  fetchImpl: FetchImpl = fetch,
+  apiBase = "",
+): Promise<UploadPlugInfo | null> {
+  const response = await fetchImpl(apiUrl(apiBase, "/api/upload-plug"));
+  return parseJsonResponse<UploadPlugInfo | null>(response);
+}
+
+export async function stagePlugAttachments(
+  fetchImpl: FetchImpl = fetch,
+  apiBase = "",
+  threadId: string,
+  handle: string,
+): Promise<AttachmentUploadResult> {
+  const response = await fetchImpl(
+    apiUrl(apiBase, `/api/threads/${pathParam(threadId)}/plug-attachments`),
+    jsonPostInit({ handle }),
   );
   return parseJsonResponse<AttachmentUploadResult>(response);
 }
@@ -505,6 +527,12 @@ export function createApiClient({
     },
     uploadAttachments(threadId: string, files: File[]) {
       return uploadAttachments(localFetch, apiBase, threadId, files);
+    },
+    getUploadPlug() {
+      return getUploadPlug(localFetch, apiBase);
+    },
+    stagePlugAttachments(threadId: string, handle: string) {
+      return stagePlugAttachments(localFetch, apiBase, threadId, handle);
     },
     discardStagedAttachment(threadId: string, attachmentId: string) {
       return discardStagedAttachment(

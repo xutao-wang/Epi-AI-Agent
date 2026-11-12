@@ -164,6 +164,11 @@ export interface AttachmentUploadError {
   message: string;
 }
 
+export interface UploadPlugInfo {
+  origin: string;
+  contract: string;
+}
+
 export interface AttachmentUploadResult {
   attachments: AttachmentManifestSummary[];
   errors: AttachmentUploadError[];
