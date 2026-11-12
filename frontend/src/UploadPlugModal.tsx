@@ -76,6 +76,9 @@ export default function UploadPlugModal({
   const finishedRef = useRef(false);
   const callbacksRef = useRef({ onDone, onCancel, onError });
   callbacksRef.current = { onDone, onCancel, onError };
+  // Held in a ref so a new caps object never re-arms the ready timer mid-upload.
+  const capsRef = useRef(plug.caps);
+  capsRef.current = plug.caps;
   const src = `${plug.origin}/embed?thread_id=${encodeURIComponent(
     threadId,
   )}&contract=${encodeURIComponent(plug.contract)}`;
@@ -114,7 +117,7 @@ export default function UploadPlugModal({
               type: "file",
               contract: plug.contract,
               thread_id: threadId,
-              caps: plug.caps,
+              caps: capsRef.current,
               file,
             },
             plug.origin,
@@ -138,7 +141,7 @@ export default function UploadPlugModal({
       window.clearTimeout(readyTimer);
       window.removeEventListener("message", handleMessage);
     };
-  }, [plug.origin, plug.contract, plug.caps, threadId, file]);
+  }, [plug.origin, plug.contract, threadId, file]);
 
   return (
     <div className="upload-plug-backdrop">
