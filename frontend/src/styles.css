@@ -2216,3 +2216,14 @@ select {
   height: 100%;
   border: 0;
 }
+
+.upload-checker-badge {
+  align-self: center;
+  padding: 2px 8px;
+  border: 1px solid #b45309;
+  border-radius: 999px;
+  color: #b45309;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}

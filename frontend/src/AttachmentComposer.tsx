@@ -11,6 +11,8 @@ interface Props {
   errors: AttachmentUploadError[];
   isUploading: boolean;
   zipOnly?: boolean;
+  // True when the app checked and no upload checker is configured: shows a visible badge.
+  checkerOff?: boolean;
   onFilesSelected(files: File[]): void;
   onDismissError(index: number): void;
   onRemove(attachmentId: string): Promise<void>;
@@ -38,6 +40,7 @@ export default function AttachmentComposer({
   errors,
   isUploading,
   zipOnly = false,
+  checkerOff = false,
   onFilesSelected,
   onDismissError,
   onRemove,
@@ -139,6 +142,15 @@ export default function AttachmentComposer({
               />
             </svg>
           </button>
+          {checkerOff ? (
+            <span
+              className="upload-checker-badge"
+              role="status"
+              title="No PHI checker is configured: attached files are not checked for protected health information before they reach the assistant."
+            >
+              PHI checker: off
+            </span>
+          ) : null}
           {action}
         </div>
       </div>
