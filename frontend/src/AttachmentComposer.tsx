@@ -10,10 +10,17 @@ interface Props {
   staged: AttachmentManifestSummary[];
   errors: AttachmentUploadError[];
   isUploading: boolean;
+  zipOnly?: boolean;
+  // True when the app checked and no upload checker is configured: shows a visible badge.
+  checkerOff?: boolean;
+  // True until the app knows whether an upload checker is configured.
+  attachDisabled?: boolean;
   onFilesSelected(files: File[]): void;
   onDismissError(index: number): void;
   onRemove(attachmentId: string): Promise<void>;
 }
+
+const ZIP_ONLY_EXTENSIONS = ".zip";
 
 const ACCEPTED_EXTENSIONS =
   ".csv,.tsv,.xls,.xlsx,.json,.xml,.pdf,.docx,.txt,.md,.png,.jpg,.jpeg";
@@ -34,6 +41,9 @@ export default function AttachmentComposer({
   staged,
   errors,
   isUploading,
+  zipOnly = false,
+  checkerOff = false,
+  attachDisabled = false,
   onFilesSelected,
   onDismissError,
   onRemove,
@@ -46,12 +56,12 @@ export default function AttachmentComposer({
       className="attachment-composer"
     >
       <input
-        accept={ACCEPTED_EXTENSIONS}
+        accept={zipOnly ? ZIP_ONLY_EXTENSIONS : ACCEPTED_EXTENSIONS}
         aria-hidden="true"
         className="attachment-composer-input"
         data-testid="attachment-file-input"
-        disabled={disabled}
-        multiple
+        disabled={disabled || attachDisabled}
+        multiple={!zipOnly}
         onChange={(event) => {
           const files = Array.from(event.target.files ?? []);
           if (files.length) {
@@ -113,11 +123,11 @@ export default function AttachmentComposer({
       <div className="message-form-actions">
         <div className="message-form-primary-actions">
           <button
-            aria-label="Attach files"
+            aria-label={zipOnly ? "Attach a study ZIP" : "Attach files"}
             className="attachment-composer-picker"
-            disabled={disabled}
+            disabled={disabled || attachDisabled}
             onClick={() => inputRef.current?.click()}
-            title="Attach files"
+            title={zipOnly ? "Attach a study ZIP" : "Attach files"}
             type="button"
           >
             <svg
@@ -135,6 +145,15 @@ export default function AttachmentComposer({
               />
             </svg>
           </button>
+          {checkerOff ? (
+            <span
+              className="upload-checker-badge"
+              role="status"
+              title="No PHI checker is configured: attached files are not checked for protected health information before they reach the assistant."
+            >
+              PHI checker: off
+            </span>
+          ) : null}
           {action}
         </div>
       </div>

@@ -164,6 +164,21 @@ export interface AttachmentUploadError {
   message: string;
 }
 
+export interface UploadPlugCaps {
+  max_files: number;
+  max_file_bytes: number;
+  max_total_bytes: number;
+  max_table_rows: number;
+  max_table_columns: number;
+  max_table_cells: number;
+}
+
+export interface UploadPlugInfo {
+  origin: string;
+  contract: string;
+  caps: UploadPlugCaps;
+}
+
 export interface AttachmentUploadResult {
   attachments: AttachmentManifestSummary[];
   errors: AttachmentUploadError[];
