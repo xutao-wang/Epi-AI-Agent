@@ -13,6 +13,8 @@ interface Props {
   zipOnly?: boolean;
   // True when the app checked and no upload checker is configured: shows a visible badge.
   checkerOff?: boolean;
+  // True until the app knows whether an upload checker is configured.
+  attachDisabled?: boolean;
   onFilesSelected(files: File[]): void;
   onDismissError(index: number): void;
   onRemove(attachmentId: string): Promise<void>;
@@ -41,6 +43,7 @@ export default function AttachmentComposer({
   isUploading,
   zipOnly = false,
   checkerOff = false,
+  attachDisabled = false,
   onFilesSelected,
   onDismissError,
   onRemove,
@@ -57,7 +60,7 @@ export default function AttachmentComposer({
         aria-hidden="true"
         className="attachment-composer-input"
         data-testid="attachment-file-input"
-        disabled={disabled}
+        disabled={disabled || attachDisabled}
         multiple={!zipOnly}
         onChange={(event) => {
           const files = Array.from(event.target.files ?? []);
@@ -122,7 +125,7 @@ export default function AttachmentComposer({
           <button
             aria-label={zipOnly ? "Attach a study ZIP" : "Attach files"}
             className="attachment-composer-picker"
-            disabled={disabled}
+            disabled={disabled || attachDisabled}
             onClick={() => inputRef.current?.click()}
             title={zipOnly ? "Attach a study ZIP" : "Attach files"}
             type="button"

@@ -205,7 +205,8 @@ export default function App({
   >([]);
   const [isUploadingAttachments, setIsUploadingAttachments] = useState(false);
   const [uploadPlug, setUploadPlug] = useState<UploadPlugInfo | null>(null);
-  // Set once the app has answered whether an upload plug is configured.
+  // Set once the app has answered whether an upload plug is configured. Until then, and if the
+  // answer fails, attaching stays disabled: an unknown checker state never falls back to "off".
   const [uploadPlugChecked, setUploadPlugChecked] = useState(false);
   const [pendingPlugUpload, setPendingPlugUpload] = useState<{
     threadId: string;
@@ -234,7 +235,7 @@ export default function App({
       .catch(() => {
         if (isMounted) {
           setUploadPlug(null);
-          setUploadPlugChecked(true);
+          setUploadPlugChecked(false);
         }
       });
     return () => {
@@ -1558,6 +1559,7 @@ export default function App({
               staged={stagedAttachments}
               zipOnly={uploadPlug !== null}
               checkerOff={uploadPlugChecked && uploadPlug === null}
+              attachDisabled={!uploadPlugChecked}
             />
           </form>
           {uploadPlug && pendingPlugUpload ? (

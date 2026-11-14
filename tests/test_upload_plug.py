@@ -343,3 +343,38 @@ def test_half_configured_plug_refuses_to_start(url: str, secret: str) -> None:
             provider_api_key="unused",
             upload_plug=UploadPlugSettings(url=url, secret=secret),
         )
+
+
+def test_plug_on_refuses_plain_upload_before_reading_the_body() -> None:
+    """Raw bytes must never reach the app process: the 409 comes before any body is read."""
+    import asyncio
+
+    runtime = FakeRuntime()
+    app = _plug_client(runtime, FakePlug(FILES)).app
+    scope = {
+        "type": "http", "method": "POST", "path": f"/api/threads/{THREAD_ID}/attachments",
+        "raw_path": f"/api/threads/{THREAD_ID}/attachments".encode(), "query_string": b"",
+        "headers": [(b"content-type", b"multipart/form-data; boundary=x"), (b"content-length", b"1000")],
+        "scheme": "http", "server": ("testserver", 80), "client": ("127.0.0.1", 1),
+        "http_version": "1.1", "root_path": "",
+    }
+    sent: list[dict] = []
+
+    async def receive():
+        raise AssertionError("the request body was read")
+
+    async def send(message):
+        sent.append(message)
+
+    asyncio.run(app(scope, receive, send))
+    assert sent[0]["status"] == 409
+    assert runtime.staged == []
+
+
+def test_gateway_errors_are_unreachable_not_rejected() -> None:
+    from utils.upload_plug import UploadPlugError, _raise_for_status
+
+    for status in (502, 503, 504):
+        with pytest.raises(UploadPlugError) as caught:
+            _raise_for_status(httpx.Response(status))
+        assert caught.value.code == "PLUG_UNREACHABLE"

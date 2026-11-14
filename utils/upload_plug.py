@@ -14,12 +14,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass
 from urllib.parse import quote, urlsplit
 
 import httpx
+
+# httpx logs every request URL at INFO, and delivery URLs carry the handle and thread id.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 CONTRACT_VERSION = "1"
 
@@ -161,6 +165,8 @@ def _raise_for_status(response: httpx.Response) -> None:
         raise UploadPlugError("CONTRACT_MISMATCH", "the upload plug uses a different contract version")
     if response.status_code in {401, 403}:
         raise UploadPlugError("PLUG_REJECTED", "the upload plug refused this app's credentials")
+    if response.status_code in {502, 503, 504}:
+        raise UploadPlugError("PLUG_UNREACHABLE", "the upload plug could not be reached")
     if response.status_code != 200:
         raise UploadPlugError("PLUG_REJECTED", "the upload plug did not release these files")
 

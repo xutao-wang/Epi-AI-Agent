@@ -108,9 +108,12 @@ def _content_disposition(disposition: str, filename: str) -> str:
 
 
 class AttachmentRequestBodyLimitMiddleware:
-    def __init__(self, app: Any, *, max_bytes: int) -> None:
+    def __init__(self, app: Any, *, max_bytes: int, refuse_uploads: bool = False) -> None:
         self.app = app
         self.max_bytes = max_bytes
+        # With the upload plug on, plain uploads are refused before any of the body is read,
+        # so raw file bytes never reach this process (no multipart parsing, no temp files).
+        self.refuse_uploads = refuse_uploads
 
     async def __call__(self, scope, receive, send) -> None:
         is_attachment_upload = (
@@ -120,6 +123,19 @@ class AttachmentRequestBodyLimitMiddleware:
         )
         if not is_attachment_upload:
             await self.app(scope, receive, send)
+            return
+        if self.refuse_uploads:
+            response = JSONResponse(
+                status_code=409,
+                content={
+                    "detail": (
+                        "UPLOAD_PLUG_REQUIRED: uploads go through the upload "
+                        "plug; attach a ZIP with the paperclip"
+                    )
+                },
+                headers={"Connection": "close"},
+            )
+            await response(scope, receive, send)
             return
 
         headers = {
@@ -233,6 +249,7 @@ def create_app(
             attachment_limits.max_message_bytes
             + _MULTIPART_OVERHEAD_BYTES
         ),
+        refuse_uploads=plug.enabled,
     )
 
     def provider_key_for_work(
