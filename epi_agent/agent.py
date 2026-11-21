@@ -56,6 +56,18 @@ _MAX_CARD_COLUMNS = 100
 _MAX_CARD_VALUE_CHARS = 500
 _MAX_CARD_LIST_ITEMS = 20
 
+# Added once to the context when any attachment card is marked deidentified (files
+# pulled through the upload plug). Fixed text: nothing in it comes from the data.
+DEIDENTIFIED_ATTACHMENTS_NOTE = (
+    "Attachments marked deidentified were de-identified by the upload checker, "
+    "which can miss some identifiers, names especially. If an identifier remains, "
+    "do not repeat it, infer from it or try to re-identify anyone. Bracketed "
+    "tokens such as [NAME] or [DATE] are placeholders for removed values: treat "
+    "them as removed, not as missing or corrupt data, and do not try to "
+    "reconstruct them. Date columns may hold day offsets from each participant's "
+    "first date instead of calendar dates, and ID columns should hold study IDs."
+)
+
 
 GENERAL_CORE_INSTRUCTIONS = """You are the single reasoning owner for
 epidemiology requests. Keep the user's exact scientific goal in view across
@@ -252,6 +264,7 @@ def build_epi_agent_context_prompt(
             ),
             "current_turn": attachment_id in current_attachment_ids,
             "inspection": inspection_card or None,
+            "deidentified": True if attachment.get("deidentified") is True else None,
         }
         cards.append(
             {
@@ -353,6 +366,8 @@ def build_epi_agent_context_prompt(
         )
     )
     contexts = [artifact_context]
+    if any(card.get("deidentified") is True for card in cards):
+        contexts.append(DEIDENTIFIED_ATTACHMENTS_NOTE)
     cancelled_turn = dict(state.get("cancelled_turn") or {})
     cancelled_text = _bounded_text(cancelled_turn.get("text"))
     cancelled_attachment_ids = _bounded_strings(

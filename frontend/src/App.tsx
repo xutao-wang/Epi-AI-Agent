@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { ApiError, createApiClient, type ApiClient } from "./apiClient";
 import AgentActivityTimeline from "./AgentActivityTimeline";
 import AttachmentComposer from "./AttachmentComposer";
+import UploadPlugModal from "./UploadPlugModal";
 import AnalysisResultReview from "./AnalysisResultReview";
 import AppShell from "./AppShell";
 import ClarificationTrace from "./ClarificationTrace";
@@ -26,6 +27,7 @@ import type {
   ConversationSummary,
 } from "./types";
 import { AGENT_DECIDE_ANSWER } from "./types";
+import type { AttachmentUploadResult, UploadPlugInfo } from "./types";
 import type { FormEvent, KeyboardEvent } from "react";
 
 interface Props {
@@ -149,6 +151,12 @@ function ActivityMessage({ detail, steps, title }: ActivityMessageProps) {
   );
 }
 
+const PLUG_LIMIT_CODES = new Set([
+  "TOO_MANY_FILES",
+  "FILE_TOO_LARGE",
+  "MESSAGE_ATTACHMENTS_TOO_LARGE",
+]);
+
 export default function App({
   apiClient,
   loadConversationHistory = true,
@@ -196,6 +204,16 @@ export default function App({
     AttachmentUploadError[]
   >([]);
   const [isUploadingAttachments, setIsUploadingAttachments] = useState(false);
+  const [uploadPlug, setUploadPlug] = useState<UploadPlugInfo | null>(null);
+  // Set once the app has answered whether an upload plug is configured. Until then, and if the
+  // answer fails, attaching stays disabled: an unknown checker state never falls back to "off".
+  const [uploadPlugChecked, setUploadPlugChecked] = useState(false);
+  const [uploadPlugCheckFailed, setUploadPlugCheckFailed] = useState(false);
+  const [pendingPlugUpload, setPendingPlugUpload] = useState<{
+    threadId: string;
+    generation: number;
+    file: File;
+  } | null>(null);
   const [submittedClarifications, setSubmittedClarifications] = useState<
     Record<string, ClarificationExchange>
   >({});
@@ -204,6 +222,47 @@ export default function App({
   const [restoredReviewThreadId, setRestoredReviewThreadId] = useState<
     string | null
   >(null);
+
+  useEffect(() => {
+    let isMounted = true;
+    let retryTimer: number | undefined;
+    // Optional upload plug. When the app reports none, uploads work as before.
+    // Until the app answers, attaching stays off (never falls back to "no checker");
+    // a failed check is retried and explained.
+    const check = (attempt: number) => {
+      Promise.resolve(apiClient.getUploadPlug?.())
+        .then((plug) => {
+          if (isMounted) {
+            setUploadPlug(plug ?? null);
+            setUploadPlugChecked(true);
+            setUploadPlugCheckFailed(false);
+          }
+        })
+        .catch(() => {
+          if (!isMounted) {
+            return;
+          }
+          setUploadPlug(null);
+          setUploadPlugChecked(false);
+          setUploadPlugCheckFailed(true);
+          retryTimer = window.setTimeout(
+            () => check(attempt + 1),
+            Math.min(30_000, 2_000 * 2 ** attempt),
+          );
+        });
+    };
+    check(0);
+    return () => {
+      isMounted = false;
+      window.clearTimeout(retryTimer);
+    };
+  }, [apiClient]);
+
+  useEffect(() => {
+    if (pendingPlugUpload && pendingPlugUpload.threadId !== threadId) {
+      setPendingPlugUpload(null);
+    }
+  }, [pendingPlugUpload, threadId]);
 
   useEffect(() => {
     let isMounted = true;
@@ -681,6 +740,7 @@ export default function App({
         byte_size: attachment.byte_size,
         relationship: "input",
         origin_message_id: optimisticMessageId,
+        deidentified: attachment.deidentified,
       })),
     };
     setIsSubmitting(true);
@@ -741,8 +801,129 @@ export default function App({
     }
   }
 
+  function applyUploadResult(
+    result: AttachmentUploadResult,
+    attemptedFilenames: Set<string>,
+  ) {
+    setStagedAttachments((current) => {
+      const byId = new Map(
+        [...current, ...result.attachments].map((item) => [item.id, item]),
+      );
+      return [...byId.values()];
+    });
+    setAttachmentErrors((current) => [
+      ...current.filter(
+        (uploadError) => !attemptedFilenames.has(uploadError.filename),
+      ),
+      ...result.errors,
+    ]);
+    setError(null);
+  }
+
+  async function selectPlugAttachment(file: File) {
+    let activeThreadId: string | null | undefined;
+    try {
+      activeThreadId = await ensureThread();
+    } catch (threadError) {
+      setError(errorMessage(threadError));
+      return;
+    }
+    if (!activeThreadId) {
+      return;
+    }
+    setPendingPlugUpload({
+      threadId: activeThreadId,
+      generation: selectionGenerationRef.current,
+      file,
+    });
+  }
+
+  function plugUploadIsCurrent(pending: { threadId: string; generation: number }) {
+    return (
+      selectionGenerationRef.current === pending.generation &&
+      selectedThreadIdRef.current === pending.threadId
+    );
+  }
+
+  async function finishPlugUpload(handle: string) {
+    const pending = pendingPlugUpload;
+    setPendingPlugUpload(null);
+    if (!pending || !plugUploadIsCurrent(pending)) {
+      return;
+    }
+    setIsUploadingAttachments(true);
+    try {
+      const result = await apiClient.stagePlugAttachments(pending.threadId, handle);
+      if (plugUploadIsCurrent(pending)) {
+        applyUploadResult(result, new Set([pending.file.name]));
+      }
+    } catch (uploadError) {
+      if (
+        uploadError instanceof ApiError &&
+        (uploadError.status === 422 || uploadError.status === 502)
+      ) {
+        if (plugUploadIsCurrent(pending)) {
+          addPlugError(pending.file.name, plugErrorCode(uploadError.detail));
+        }
+      } else {
+        await handleRequestError(uploadError, pending.threadId, pending.generation);
+      }
+    } finally {
+      if (plugUploadIsCurrent(pending)) {
+        setIsUploadingAttachments(false);
+      }
+    }
+  }
+
+  function plugErrorCode(detail: unknown): string {
+    const match =
+      typeof detail === "string" ? /^([A-Z_]{1,64}):/.exec(detail) : null;
+    return match ? match[1] : "PLUG_REJECTED";
+  }
+
+  function failPlugUpload(code: string) {
+    const pending = pendingPlugUpload;
+    setPendingPlugUpload(null);
+    if (pending) {
+      addPlugError(pending.file.name, code);
+    }
+  }
+
+  function addPlugError(filename: string, code: string) {
+    setAttachmentErrors((current) => [
+      ...current.filter((item) => item.filename !== filename),
+      {
+        filename,
+        code,
+        message:
+          code === "PLUG_UNREACHABLE"
+            ? "the upload checker could not be reached; nothing was uploaded"
+            : code === "PLUG_CONTRACT_MISMATCH"
+              ? "the upload checker speaks a different version of the upload contract; nothing was uploaded"
+              : PLUG_LIMIT_CODES.has(code)
+              ? "the prepared files exceed this app's attachment limits; nothing was uploaded"
+                : "the upload checker did not release this file; nothing was uploaded",
+      },
+    ]);
+  }
+
   async function selectAttachments(files: File[]) {
     if (!runtimeOptions || !files.length || isBusy) {
+      return;
+    }
+    if (uploadPlug) {
+      if (files.length !== 1 || !files[0].name.toLowerCase().endsWith(".zip")) {
+        setAttachmentErrors((current) => [
+          ...current,
+          {
+            filename: files[0].name,
+            code: "UPLOAD_PLUG_REQUIRED",
+            message: "attach one study ZIP; loose files are not accepted",
+          },
+        ]);
+        return;
+      }
+      await selectPlugAttachment(files[0]);
       return;
     }
     setIsUploadingAttachments(true);
@@ -761,20 +942,7 @@ export default function App({
       ) {
         return;
       }
-      setStagedAttachments((current) => {
-        const byId = new Map(
-          [...current, ...result.attachments].map((item) => [item.id, item]),
-        );
-        return [...byId.values()];
-      });
-      const attemptedFilenames = new Set(files.map((file) => file.name));
-      setAttachmentErrors((current) => [
-        ...current.filter(
-          (uploadError) => !attemptedFilenames.has(uploadError.filename),
-        ),
-        ...result.errors,
-      ]);
-      setError(null);
+      applyUploadResult(result, new Set(files.map((file) => file.name)));
     } catch (uploadError) {
       if (activeThreadId && generation !== null) {
         await handleRequestError(uploadError, activeThreadId, generation);
@@ -1413,8 +1581,22 @@ export default function App({
               onFilesSelected={selectAttachments}
               onRemove={removeStagedAttachment}
               staged={stagedAttachments}
+              zipOnly={uploadPlug !== null}
+              checkerOff={uploadPlugChecked && uploadPlug === null}
+              attachDisabled={!uploadPlugChecked}
+              checkerUnknown={uploadPlugCheckFailed}
             />
           </form>
+          {uploadPlug && pendingPlugUpload ? (
+            <UploadPlugModal
+              file={pendingPlugUpload.file}
+              onCancel={() => setPendingPlugUpload(null)}
+              onDone={(handle) => void finishPlugUpload(handle)}
+              onError={failPlugUpload}
+              plug={uploadPlug}
+              threadId={pendingPlugUpload.threadId}
+            />
+          ) : null}
         </>
       }
     />

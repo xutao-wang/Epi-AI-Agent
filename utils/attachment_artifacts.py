@@ -425,7 +425,10 @@ class LocalAttachmentStore:
         filename: str,
         declared_mime: str,
         content: bytes,
+        *,
+        deidentified: bool = False,
     ) -> dict[str, Any]:
+        # deidentified is set only by the server's upload plug route, never from a request.
         if len(content) > self.limits.max_bytes:
             raise AttachmentError(
                 "FILE_TOO_LARGE",
@@ -451,6 +454,10 @@ class LocalAttachmentStore:
             "status": "staged",
             "created_at": datetime.now(UTC).isoformat(),
         }
+        if deidentified is True:
+            # Only files pulled through the upload plug carry the key; plain uploads keep
+            # their manifest shape unchanged.
+            manifest["deidentified"] = True
         if isinstance(scope, ThreadStorageScope):
             manifest["owner_user_id"] = scope.owner_user_id
         self._atomic_write(content_path, content)
