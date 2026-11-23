@@ -70,6 +70,7 @@ def _project_attachment(
     *,
     is_dataset: bool,
     origin_message_id: str | None,
+    is_file: bool = False,
 ) -> dict:
     byte_size = manifest.get("byte_size")
     if isinstance(byte_size, bool) or not isinstance(byte_size, int):
@@ -93,6 +94,13 @@ def _project_attachment(
         "byte_size": byte_size,
         "relationship": relationship,
         "origin_message_id": origin_message_id,
+        # Only an upload staged by the plug route is flagged; derived files and datasets never are.
+        "deidentified": (
+            relationship != "output"
+            and not is_dataset
+            and not is_file
+            and manifest.get("deidentified") is True
+        ),
     }
 
 
@@ -140,6 +148,7 @@ def _attachments_by_parent_event_id(
                 artifact_id,
                 relationship,
                 is_dataset=artifact_id in dataset_ids,
+                is_file=artifact_id in file_ids,
                 origin_message_id=(
                     input_origins.get(artifact_id)
                     if relationship == "used"

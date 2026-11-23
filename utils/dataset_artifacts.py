@@ -762,6 +762,22 @@ def load_verified_dataset_artifact(
     return artifact
 
 
+def parquet_safe_dataframe(dataframe: pd.DataFrame) -> pd.DataFrame:
+    """Stringify object columns that mix value types (e.g. numbers and "Not done")."""
+    safe = dataframe
+    for column in dataframe.columns:
+        series = dataframe[column]
+        if series.dtype != object:
+            continue
+        values = series.dropna()
+        if len({type(value) for value in values}) <= 1:
+            continue
+        if safe is dataframe:
+            safe = dataframe.copy()
+        safe[column] = series.map(lambda value: value if pd.isna(value) else str(value))
+    return safe
+
+
 def stage_dataset_artifact(
     *,
     runtime_root: str | Path | ThreadStorageScope | None,
@@ -818,7 +834,7 @@ def stage_dataset_artifact(
     if artifact_status is not None:
         artifact["status"] = str(artifact_status)
     try:
-        dataframe.to_parquet(staging["path"], index=False)
+        parquet_safe_dataframe(dataframe).to_parquet(staging["path"], index=False)
         staging["schema_path"].write_text(
             json.dumps(schema or {}, indent=2, ensure_ascii=False),
             encoding="utf-8",

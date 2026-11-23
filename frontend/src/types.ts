@@ -140,6 +140,8 @@ export interface ConversationAttachment {
   byte_size: number | null;
   relationship: "input" | "used" | "output";
   origin_message_id: string | null;
+  // Set by the server only for files pulled through the upload checker.
+  deidentified?: boolean;
 }
 
 export interface ClarificationExchange {
@@ -156,12 +158,28 @@ export interface AttachmentManifestSummary {
   mime: string;
   byte_size: number;
   status: "staged" | "available";
+  deidentified?: boolean;
 }
 
 export interface AttachmentUploadError {
   filename: string;
   code: string;
   message: string;
+}
+
+export interface UploadPlugCaps {
+  max_files: number;
+  max_file_bytes: number;
+  max_total_bytes: number;
+  max_table_rows: number;
+  max_table_columns: number;
+  max_table_cells: number;
+}
+
+export interface UploadPlugInfo {
+  origin: string;
+  contract: string;
+  caps: UploadPlugCaps;
 }
 
 export interface AttachmentUploadResult {

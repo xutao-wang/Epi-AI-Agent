@@ -64,7 +64,11 @@ from api.schemas import (
     TablePreview,
 )
 from api.activity_store import SqliteActivityStore
-from api.conversation_history import ConversationHistoryStore, OpenAIConversationTitleGenerator
+from api.conversation_history import (
+    ConversationHistoryStore,
+    OpenAIConversationTitleGenerator,
+    title_from_message,
+)
 from epi_agent.analysis_artifacts import AnalysisRun
 from epi_agent.tool_call_protocol import follow_up_message_patch
 from graph.conversation_events import (
@@ -2158,35 +2162,15 @@ class ReportAgentApiRuntime:
             raise ThreadAlreadyRunningError(thread_id)
         if self.history_store is not None:
             record = self.history_store.get(identity.owner_user_id, thread_id)
-            title_generator = (
-                self.title_generator_factory(thread.settings, provider_api_key or "")
-                if self.title_generator_factory is not None
-                else self.title_generator
-            )
-            if (
-                not thread.locked
-                and record is not None
-                and text.strip()
-                and record.title == "Untitled conversation"
-                and title_generator is not None
-            ):
-                self._title_executor.submit(
-                    self._generate_title,
-                    identity.owner_user_id,
-                    thread_id,
-                    text,
-                    title_generator,
-                )
-            elif (
-                not thread.locked
-                and record is not None
-                and not text.strip()
-                and attachment_ids
-            ):
+            title = title_from_message(text) if record is not None else None
+            if title is not None:
+                # "New chat" until the first typed message (a message of files only keeps it), then the
+                # first 10 words of that message; the store replaces only the placeholder of an automatic
+                # title, never a manual rename.
                 self.history_store.set_initial_automatic_title(
                     identity.owner_user_id,
                     thread_id,
-                    ConversationHistoryStore.fallback_title(text),
+                    title,
                 )
         thread.locked = True
 
@@ -2196,13 +2180,14 @@ class ReportAgentApiRuntime:
         thread_id: str,
         text: str,
         title_generator: OpenAIConversationTitleGenerator,
+        has_attachments: bool = False,
     ) -> None:
         try:
             assert self.history_store is not None
             self.history_store.set_automatic_title(
                 owner_user_id,
                 thread_id,
-                title_generator.generate(text),
+                title_generator.generate(text, has_attachments=has_attachments),
             )
         except Exception:
             return
@@ -2373,6 +2358,8 @@ class ReportAgentApiRuntime:
         identity: RequestIdentity | str,
         thread_id: str | list[tuple[str, str, bytes]],
         uploads: list[tuple[str, str, bytes]] | None = None,
+        *,
+        deidentified: bool = False,
     ) -> AttachmentUploadResult:
         if isinstance(identity, RequestIdentity):
             assert isinstance(thread_id, str)
@@ -2403,6 +2390,7 @@ class ReportAgentApiRuntime:
                     filename,
                     mime,
                     content,
+                    deidentified=deidentified,
                 )
             except AttachmentError as exc:
                 errors.append(
@@ -3190,6 +3178,7 @@ def _message_attachments(message: Any) -> list[ConversationAttachment]:
                 mime=str(attachment.get("mime") or ""),
                 byte_size=attachment.get("byte_size"),
                 relationship=relationship,
+                deidentified=attachment.get("deidentified") is True,
                 origin_message_id=(
                     str(attachment["origin_message_id"])
                     if attachment.get("origin_message_id")

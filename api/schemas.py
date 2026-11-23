@@ -122,6 +122,7 @@ class ConversationAttachment(BaseModel):
     byte_size: int | None = None
     relationship: Literal["input", "used", "output"]
     origin_message_id: str | None = None
+    deidentified: bool = False
 
 
 class ClarificationExchange(BaseModel):
@@ -148,6 +149,7 @@ class AttachmentManifestSummary(BaseModel):
     mime: str
     byte_size: int
     status: Literal["staged", "available"]
+    deidentified: bool = False
 
 
 class AttachmentUploadError(BaseModel):

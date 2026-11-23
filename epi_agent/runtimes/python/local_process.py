@@ -21,6 +21,7 @@ from epi_agent.runtimes.python.models import (
     PythonRuntimeFailure,
 )
 from tools.execution_policy import validate_generated_code
+from utils.dataset_artifacts import parquet_safe_dataframe
 from utils.run_cancellation import RunCancelled, cancellation_point
 
 
@@ -414,7 +415,7 @@ class LocalPythonRuntime:
                     dataset_id = request.selected_dataset_id
                     dataframe = datasets[dataset_id]
                     filename = "0.parquet"
-                    dataframe.to_parquet(datasets_dir / filename)
+                    parquet_safe_dataframe(dataframe).to_parquet(datasets_dir / filename)
                     manifest[str(dataset_id)] = filename
                 (input_dir / "datasets.json").write_text(
                     json.dumps(manifest, ensure_ascii=True, sort_keys=True),
