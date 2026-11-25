@@ -17,6 +17,7 @@ frontend/vite.config.js
 frontend/vite.config.d.ts
 
 # Local-only generated content.
+/dist/
 runtime/
 local_data/
 

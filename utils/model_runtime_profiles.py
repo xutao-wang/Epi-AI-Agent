@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -156,6 +157,13 @@ class ModelRuntimeProfile:
 
     @property
     def label(self) -> str:
+        if self.provider == PROVIDER_BEDROCK:
+            name = self.base_label.split(" · ", 1)[0].rstrip()
+            return re.sub(
+                r" \((?:Amazon Bedrock|AWS Bedrock|AWS Mantle)(?:, [^()]*)?\)$",
+                "",
+                name,
+            )
         if self.provider == PROVIDER_OPENAI_COMPATIBLE:
             return self.base_label
         return f"{self.base_label} ({self.reasoning_display})"
